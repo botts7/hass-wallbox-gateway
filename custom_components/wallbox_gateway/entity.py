@@ -58,3 +58,9 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
 
     def _health(self) -> dict[str, Any]:
         return self.coordinator.data.get("health", {}) or {}
+
+    def _autolock(self) -> dict[str, Any]:
+        return self.coordinator.data.get("autolock") or {}
+
+    def _eco_smart(self) -> dict[str, Any]:
+        return self.coordinator.data.get("eco_smart") or {}

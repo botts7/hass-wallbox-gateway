@@ -42,3 +42,22 @@ ENDPOINT_STATUS = "/api/status"
 ENDPOINT_CHARGER = "/api/charger"
 ENDPOINT_DIAG = "/api/diag/disconnects"
 ENDPOINT_HEALTH = "/api/health"
+
+# Eco-Smart mode integer -> HA select option label. Mirrors the
+# Wallbox app's wording so users see familiar terminology.
+ECO_MODES = {
+    0: "Disabled",
+    1: "Full Green",
+    2: "Eco Smart",
+}
+ECO_MODE_TO_INT = {v: k for k, v in ECO_MODES.items()}
+
+# Max current limits supported by the BAPI passthrough (matches the
+# dashboard slider). Real-world charger range is 6 – 32 A on a Pulsar.
+MIN_CURRENT_A = 6
+MAX_CURRENT_A = 32
+
+# Default auto-lock window we write when the switch is toggled on but
+# no specific minutes value has been configured. Mirrors the dashboard
+# default of 60 s.
+DEFAULT_AUTOLOCK_SECONDS = 60

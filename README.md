@@ -25,9 +25,9 @@ This integration is for users who:
 
 | Version | Adds |
 |---------|------|
-| **v0.1.0** | Config flow + DataUpdateCoordinator + 6 sensors + 2 binary_sensors |
-| v0.2.0    | Switch (charging, lock, auto_lock) + Number (max_current) + Select (eco_smart_mode) |
-| v0.3.0    | Button (start, stop, refresh) + Update entity (firmware version surface) |
+| v0.1.0    | Config flow + DataUpdateCoordinator + 6 sensors + 2 binary_sensors |
+| **v0.2.0** | 3 switches (charging, lock, auto_lock) + Number (max_current) + Select (eco_smart_mode) + Button (refresh_now) |
+| v0.3.0    | Number (auto_lock_minutes, eco_smart_power_pct) + Button (reboot_gateway, once firmware-side auth-only reboot endpoint lands) + Update entity (firmware version surface) |
 | v0.4.0    | Services: `add_schedule`, `delete_schedule`, `toggle_schedule`, `set_max_current` |
 | v0.5.0    | Long-term statistics for HA Energy dashboard |
 | v1.0.0    | Stable / submit to HA core |
@@ -74,6 +74,12 @@ stable unique-id.
 | `sensor.<name>_house_power`           | W (if MID meter installed) | power |
 | `sensor.<name>_mains_voltage`         | V (L1) | voltage |
 | `sensor.<name>_ble_rssi`              | dBm (disabled by default — diagnostic) | signal_strength |
+| `switch.<name>_charging`              | start / stop charging | switch |
+| `switch.<name>_lock`                  | lock / unlock charger | switch |
+| `switch.<name>_auto_lock`             | auto-lock-after-disconnect (60 s default window) | switch |
+| `number.<name>_max_current`           | 6 – 32 A slider | current |
+| `select.<name>_eco_smart_mode`        | Disabled / Full Green / Eco Smart | — |
+| `button.<name>_refresh_now`           | force the coordinator to poll immediately | update |
 
 ## Compatibility
 

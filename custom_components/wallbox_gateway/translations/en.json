@@ -32,6 +32,27 @@
       "house_power": {"name": "House power"},
       "mains_voltage": {"name": "Mains voltage"},
       "ble_rssi": {"name": "BLE RSSI"}
+    },
+    "switch": {
+      "charging": {"name": "Charging"},
+      "lock": {"name": "Lock"},
+      "auto_lock_enabled": {"name": "Auto lock"}
+    },
+    "number": {
+      "max_current": {"name": "Max current"}
+    },
+    "select": {
+      "eco_smart_mode": {
+        "name": "Eco Smart mode",
+        "state": {
+          "Disabled": "Disabled",
+          "Full Green": "Full Green",
+          "Eco Smart": "Eco Smart"
+        }
+      }
+    },
+    "button": {
+      "refresh_now": {"name": "Refresh now"}
     }
   }
 }
