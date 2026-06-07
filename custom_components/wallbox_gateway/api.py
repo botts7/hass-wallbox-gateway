@@ -1,0 +1,84 @@
+"""HTTP client for the Wallbox BLE Gateway.
+
+Thin async wrapper around the gateway's /api/* endpoints. Lives on
+the integration side so the coordinator stays focused on orchestration
+and the entities never touch HTTP directly.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import aiohttp
+
+
+class GatewayAuthError(Exception):
+    """Raised on 401/403 — credentials wrong or auth disabled mid-flight."""
+
+
+class GatewayUnreachable(Exception):
+    """Raised when the gateway TCP/HTTP layer can't be talked to."""
+
+
+class GatewayError(Exception):
+    """Raised for everything else (5xx, malformed JSON, etc.)."""
+
+
+@dataclass(frozen=True)
+class ClientConfig:
+    host: str
+    username: str
+    password: str
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}"
+
+
+class GatewayClient:
+    """Async HTTP client for the Wallbox BLE Gateway.
+
+    `session` is HA's shared aiohttp ClientSession so we benefit from
+    connection pooling and HA's lifecycle management.
+    """
+
+    def __init__(self, session: aiohttp.ClientSession, config: ClientConfig) -> None:
+        self._session = session
+        self._config = config
+
+    @property
+    def base_url(self) -> str:
+        return self._config.base_url
+
+    def _auth(self) -> aiohttp.BasicAuth | None:
+        if not self._config.password:
+            return None
+        return aiohttp.BasicAuth(self._config.username, self._config.password)
+
+    async def get(self, path: str, timeout: float = 6.0) -> Any:
+        url = self._config.base_url + path
+        try:
+            async with self._session.get(
+                url,
+                auth=self._auth(),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise GatewayAuthError(f"{resp.status} on {path}")
+                if resp.status >= 500:
+                    raise GatewayError(f"{resp.status} on {path}")
+                if resp.status >= 400:
+                    raise GatewayError(f"{resp.status} on {path}")
+                return await resp.json(content_type=None)
+        except aiohttp.ClientConnectorError as e:
+            raise GatewayUnreachable(str(e)) from e
+        except TimeoutError as e:
+            raise GatewayUnreachable(f"timeout on {path}") from e
+
+    async def bapi(self, met: str, par: str = "null", wait_ms: int = 5000) -> Any:
+        """Invoke a BAPI method via /api/command. Returns the parsed JSON
+        body — caller decides what to do with `r:` / `error:` fields.
+        """
+        path = f"/api/command?action=bapi&met={met}&par={par}&wait={wait_ms}"
+        return await self.get(path, timeout=(wait_ms / 1000.0) + 3.0)

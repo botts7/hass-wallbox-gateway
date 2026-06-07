@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "host": "Gateway host (IP or hostname)",
+          "username": "Username",
+          "password": "Password",
+          "poll_interval": "Poll interval (seconds)"
+        },
+        "description": "Enter the local IP or mDNS name of your Wallbox Gateway. Username + password are only required if you enabled web auth on the gateway's /config page."
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot reach the gateway at that address.",
+      "invalid_auth": "Authentication rejected by gateway.",
+      "unknown": "Unexpected error contacting the gateway."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "ble_connected": {"name": "BLE connected"},
+      "charging": {"name": "Charging"}
+    },
+    "sensor": {
+      "charger_status": {"name": "Charger status"},
+      "charging_power": {"name": "Charging power"},
+      "session_energy": {"name": "Session energy"},
+      "house_power": {"name": "House power"},
+      "mains_voltage": {"name": "Mains voltage"},
+      "ble_rssi": {"name": "BLE RSSI"}
+    }
+  }
+}
