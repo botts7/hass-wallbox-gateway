@@ -23,7 +23,8 @@
   "entity": {
     "binary_sensor": {
       "ble_connected": {"name": "BLE connected"},
-      "charging": {"name": "Charging"}
+      "charging": {"name": "Charging"},
+      "schedule_paused": {"name": "Schedule paused"}
     },
     "sensor": {
       "charger_status": {"name": "Charger status"},

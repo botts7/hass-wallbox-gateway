@@ -35,6 +35,14 @@ directly onto what the gateway already exposes — `start`/`stop`/`lock`/
   (best-effort, via `return_exceptions=True` so a transient BLE
   blip doesn't flap the device offline). Prior parsed values
   carry forward when a BAPI read fails.
+- **`binary_sensor.schedule_paused`** — surfaces the Wallbox app's
+  "Schedule & Solar charging paused" state. Backed by
+  `r_dat.gen != 0`, the sticky manual-override flag: ON when the
+  schedule has been overridden (Stop in our gateway, or Pause in
+  the app), OFF only after the Wallbox app's Resume button is
+  pressed. Independent of whether the charger is currently
+  charging — a manual Start while the schedule is paused will
+  keep this sensor ON, matching the official app's behavior.
 
 ### Fixed
 

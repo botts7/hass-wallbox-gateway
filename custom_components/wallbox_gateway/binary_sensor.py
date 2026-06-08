@@ -33,6 +33,19 @@ def _charging(entity: GatewayEntity) -> bool:
     return entity._realtime().get("charger_status") == 1
 
 
+def _schedule_paused(entity: GatewayEntity) -> bool:
+    # r_dat.gen is the sticky manual-override flag the Wallbox app
+    # surfaces as "Schedule paused" / "Solar charging paused":
+    #   gen == 0 -> schedule armed (will fire normally)
+    #   gen != 0 -> schedule paused (override active, persists across
+    #               Start/Stop until the Wallbox app's Resume button
+    #               is pressed)
+    # Independent of charger_status: a manually-started charge while
+    # the schedule is paused will report status=1 (CHARGING) with
+    # gen != 0.
+    return (entity._status().get("gen") or 0) != 0
+
+
 BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
     GatewayBinaryDescription(
         key="ble_connected",
@@ -47,6 +60,13 @@ BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
         name="Charging",
         device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
         value_fn=_charging,
+    ),
+    GatewayBinaryDescription(
+        key="schedule_paused",
+        translation_key="schedule_paused",
+        name="Schedule paused",
+        icon="mdi:calendar-clock",
+        value_fn=_schedule_paused,
     ),
 )
 
