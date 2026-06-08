@@ -26,7 +26,7 @@ This integration is for users who:
 | Version | Adds |
 |---------|------|
 | v0.1.0    | Config flow + DataUpdateCoordinator + 6 sensors + 2 binary_sensors |
-| **v0.2.0** | 3 switches (charging, lock, auto_lock) + Number (max_current) + Select (eco_smart_mode) + Button (refresh_now) |
+| **v0.2.0** | 3 switches (charging, lock, auto_lock) + Number (max_current) + Select (eco_smart_mode) + Button (refresh_now); coordinator polls `r_dca` for working `mains_voltage` + `house_power` |
 | v0.3.0    | Number (auto_lock_minutes, eco_smart_power_pct) + Button (reboot_gateway, once firmware-side auth-only reboot endpoint lands) + Update entity (firmware version surface) |
 | v0.4.0    | Services: `add_schedule`, `delete_schedule`, `toggle_schedule`, `set_max_current` |
 | v0.5.0    | Long-term statistics for HA Energy dashboard |

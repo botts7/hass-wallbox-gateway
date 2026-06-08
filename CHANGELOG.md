@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.0] - 2026-06-07
+## [0.2.0] - 2026-06-08
 
 The control-surface release. v0.1 was sensors-only and didn't let HA
 automations actually do anything; v0.2 adds the entities that map
@@ -31,10 +31,22 @@ directly onto what the gateway already exposes — `start`/`stop`/`lock`/
 - **`button.refresh_now`** — forces a coordinator refresh without
   waiting for the next poll tick. Useful after writing settings via
   the dashboard or curl when HA state hasn't caught up yet.
-- Coordinator now pulls `g_alo` and `g_ecos` each tick (best-effort,
-  via `return_exceptions=True` so a transient BLE blip doesn't flap
-  the device offline). Prior parsed values carry forward when a BAPI
-  read fails.
+- Coordinator now pulls `g_alo`, `g_ecos`, and `r_dca` each tick
+  (best-effort, via `return_exceptions=True` so a transient BLE
+  blip doesn't flap the device offline). Prior parsed values
+  carry forward when a BAPI read fails.
+
+### Fixed
+
+- `sensor.<name>_mains_voltage` + `sensor.<name>_house_power` were
+  reading from `chg_volt` / `chg_house_power` keys in `/api/status`
+  which the gateway doesn't populate. Both values actually live
+  behind the BAPI `r_dca` (power-meter) call. Coordinator now
+  polls `r_dca` alongside the existing endpoints, parses
+  `{v1, p1, p2, p3}` into a `meter` dict, and both sensors read
+  voltage_v + house_power_w from there. Same path the gateway's
+  own dashboard uses. House power is summed across all three
+  phases (negative = exporting to grid, positive = importing).
 
 ### Deferred to v0.3
 
