@@ -64,3 +64,6 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
 
     def _eco_smart(self) -> dict[str, Any]:
         return self.coordinator.data.get("eco_smart") or {}
+
+    def _meter(self) -> dict[str, Any]:
+        return self.coordinator.data.get("meter") or {}

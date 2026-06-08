@@ -72,9 +72,13 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except GatewayUnreachable as e:
             raise UpdateFailed(f"gateway unreachable: {e}") from e
 
-        autolock_raw, ecos_raw = await asyncio.gather(
+        autolock_raw, ecos_raw, dca_raw = await asyncio.gather(
             self.client.bapi("g_alo", wait_ms=2000),
             self.client.bapi("g_ecos", wait_ms=2000),
+            # r_dca = realtime power meter: per-phase voltage + power.
+            # Required for the mains_voltage + house_power sensors.
+            # /api/status doesn't include these — they live behind BAPI.
+            self.client.bapi("r_dca", wait_ms=2000),
             return_exceptions=True,
         )
 
@@ -90,6 +94,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "health": health or {},
             "autolock": _parse_autolock(autolock_raw, prior.get("autolock")),
             "eco_smart": _parse_ecos(ecos_raw, prior.get("eco_smart")),
+            "meter": _parse_dca(dca_raw, prior.get("meter")),
         }
 
 
@@ -125,4 +130,25 @@ def _parse_ecos(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None
         "mode": int(r.get("esm") or 0),
         "power_pct": int(r.get("esp") or 0),
         "active": bool(r.get("ese")),
+    }
+
+
+def _parse_dca(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
+    """r_dca returns {"r": {"v1": V, "p1": W, "p2": W, "p3": W, ...}}
+    where v1 is L1 voltage (used as 'mains voltage' for the single
+    sensor) and p1+p2+p3 sum to house power (negative = exporting to
+    grid, positive = importing).
+    """
+    if isinstance(raw, Exception) or not isinstance(raw, dict):
+        return prior
+    r = raw.get("r")
+    if not isinstance(r, dict):
+        return prior
+    v1 = r.get("v1")
+    p1 = r.get("p1") or 0
+    p2 = r.get("p2") or 0
+    p3 = r.get("p3") or 0
+    return {
+        "voltage_v": int(v1) if isinstance(v1, (int, float)) else None,
+        "house_power_w": int(p1) + int(p2) + int(p3),
     }

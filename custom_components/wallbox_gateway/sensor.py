@@ -68,16 +68,18 @@ def _ble_rssi(entity: GatewayEntity) -> int | None:
 
 
 def _mains_voltage(entity: GatewayEntity) -> int | None:
-    # The dashboard pulls L1 voltage from BAPI r_dca; the gateway
-    # /api/status convenience-keys it under chg_volt if available,
-    # otherwise we leave it None and the user can add the BAPI poll
-    # in a follow-on.
-    v = entity._status().get("chg_volt")
+    # L1 voltage from the BAPI r_dca power-meter call — the coordinator
+    # polls r_dca alongside the HTTP endpoints and stuffs the parsed
+    # values into the meter dict. /api/status doesn't carry these.
+    v = entity._meter().get("voltage_v")
     return int(v) if isinstance(v, (int, float)) else None
 
 
 def _house_power(entity: GatewayEntity) -> int | None:
-    p = entity._status().get("chg_house_power")
+    # p1+p2+p3 summed in the coordinator's _parse_dca. Positive = the
+    # house is importing from grid; negative = exporting (typically
+    # solar overproduction).
+    p = entity._meter().get("house_power_w")
     return int(p) if isinstance(p, (int, float)) else None
 
 
