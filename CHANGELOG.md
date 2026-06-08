@@ -39,10 +39,15 @@ directly onto what the gateway already exposes — `start`/`stop`/`lock`/
   "Schedule & Solar charging paused" state. Backed by
   `r_dat.gen != 0`, the sticky manual-override flag: ON when the
   schedule has been overridden (Stop in our gateway, or Pause in
-  the app), OFF only after the Wallbox app's Resume button is
-  pressed. Independent of whether the charger is currently
-  charging — a manual Start while the schedule is paused will
-  keep this sensor ON, matching the official app's behavior.
+  the app), OFF when armed. Independent of whether the charger is
+  currently charging — a manual Start while the schedule is paused
+  will keep this sensor ON, matching the official app's behavior.
+- **`button.resume_schedule`** — fires the gateway's
+  `/api/command?action=resume`, which maps to `s_cmode` with
+  `{"mode":0}`. Clears the override flag so the schedule + Eco
+  Smart loops resume controlling the charger. HA automations
+  paired with `binary_sensor.schedule_paused` can implement
+  "auto-resume after N minutes of manual override" patterns.
 
 ### Fixed
 

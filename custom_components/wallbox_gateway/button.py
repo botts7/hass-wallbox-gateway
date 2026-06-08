@@ -35,7 +35,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: GatewayCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([RefreshNow(coordinator)])
+    async_add_entities([
+        RefreshNow(coordinator),
+        ResumeSchedule(coordinator),
+    ])
 
 
 class RefreshNow(GatewayEntity, ButtonEntity):
@@ -54,4 +57,25 @@ class RefreshNow(GatewayEntity, ButtonEntity):
         super().__init__(coordinator, "refresh_now")
 
     async def async_press(self) -> None:
+        await self.coordinator.async_request_refresh()
+
+
+class ResumeSchedule(GatewayEntity, ButtonEntity):
+    """Clears the manual-override flag (r_dat.gen -> 0) so the
+    schedule + Eco Smart loops resume controlling the charger.
+    Mirrors the Wallbox app's Resume button. Independent of
+    charging state."""
+
+    entity_description = ButtonEntityDescription(
+        key="resume_schedule",
+        translation_key="resume_schedule",
+        name="Resume schedule",
+        icon="mdi:play-circle",
+    )
+
+    def __init__(self, coordinator: GatewayCoordinator) -> None:
+        super().__init__(coordinator, "resume_schedule")
+
+    async def async_press(self) -> None:
+        await self.coordinator.client.get("/api/command?action=resume")
         await self.coordinator.async_request_refresh()

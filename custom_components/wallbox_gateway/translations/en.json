@@ -53,7 +53,8 @@
       }
     },
     "button": {
-      "refresh_now": {"name": "Refresh now"}
+      "refresh_now": {"name": "Refresh now"},
+      "resume_schedule": {"name": "Resume schedule"}
     }
   }
 }
