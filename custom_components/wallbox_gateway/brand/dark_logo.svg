@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img"
+     aria-label="Wallbox Gateway logo (dark mode)">
+  <title>Wallbox Gateway</title>
+  <defs>
+    <linearGradient id="tileGradDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(32 32)">
+    <rect width="256" height="256" rx="56" ry="56" fill="url(#tileGradDark)"/>
+    <circle cx="32" cy="128" r="18" fill="#ffffff"/>
+    <circle cx="224" cy="128" r="18" fill="#ffffff"/>
+    <path d="M 50 120 Q 90 80 116 108" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.7"/>
+    <path d="M 50 136 Q 90 176 116 148" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.7"/>
+    <path d="M 206 120 Q 166 80 140 108" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.7"/>
+    <path d="M 206 136 Q 166 176 140 148" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.7"/>
+    <path d="M 128 56 L 90 134 L 122 134 L 110 200 L 162 126 L 134 126 Z"
+          fill="#fbbf24"/>
+  </g>
+
+  <g transform="translate(330 0)"
+     font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+    <text x="0" y="170" font-size="100" font-weight="700"
+          fill="#e5e7eb" letter-spacing="-1.5">
+      Wallbox Gateway
+    </text>
+    <text x="4" y="222" font-size="32" font-weight="400"
+          fill="#94a3b8" letter-spacing="0.4">
+      BLE bridge · local · no cloud
+    </text>
+  </g>
+</svg>

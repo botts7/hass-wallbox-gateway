@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img"
+     aria-label="Wallbox Gateway icon (dark mode)">
+  <title>Wallbox Gateway</title>
+  <!--
+    Dark-mode variant — orbs and arcs shifted to a slightly lighter
+    blue (#60a5fa instead of #3b82f6) so they hold contrast against
+    dark HA themes. Bolt brightened to #fbbf24.
+  -->
+  <circle cx="32" cy="128" r="18" fill="#60a5fa"/>
+  <circle cx="224" cy="128" r="18" fill="#60a5fa"/>
+  <path d="M 50 120 Q 90 80 116 108" stroke="#60a5fa" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.6"/>
+  <path d="M 50 136 Q 90 176 116 148" stroke="#60a5fa" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.6"/>
+  <path d="M 206 120 Q 166 80 140 108" stroke="#60a5fa" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.6"/>
+  <path d="M 206 136 Q 166 176 140 148" stroke="#60a5fa" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.6"/>
+  <path d="M 128 56 L 90 134 L 122 134 L 110 200 L 162 126 L 134 126 Z"
+        fill="#fbbf24"/>
+</svg>

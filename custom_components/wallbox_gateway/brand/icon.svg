@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img"
+     aria-label="Wallbox Gateway icon">
+  <title>Wallbox Gateway</title>
+  <!--
+    E6a — bridge composition.
+    Two blue endpoint orbs connected through a central amber bolt by
+    two converging signal arcs per side. Reads as "gateway bridges
+    two endpoints" — BLE source on one side, HA / MQTT on the other.
+    Transparent background; colors #3b82f6 (primary blue) and
+    #f59e0b (amber accent).
+  -->
+  <circle cx="32" cy="128" r="18" fill="#3b82f6"/>
+  <circle cx="224" cy="128" r="18" fill="#3b82f6"/>
+  <path d="M 50 120 Q 90 80 116 108" stroke="#3b82f6" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 50 136 Q 90 176 116 148" stroke="#3b82f6" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 206 120 Q 166 80 140 108" stroke="#3b82f6" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 206 136 Q 166 176 140 148" stroke="#3b82f6" stroke-width="10"
+        fill="none" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 128 56 L 90 134 L 122 134 L 110 200 L 162 126 L 134 126 Z"
+        fill="#f59e0b"/>
+</svg>

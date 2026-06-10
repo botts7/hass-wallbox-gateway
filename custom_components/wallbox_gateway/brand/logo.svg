@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img"
+     aria-label="Wallbox Gateway logo">
+  <title>Wallbox Gateway</title>
+  <defs>
+    <linearGradient id="tileGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Tile: 256x256 rounded square at left, blue gradient. -->
+  <g transform="translate(32 32)">
+    <rect width="256" height="256" rx="56" ry="56" fill="url(#tileGrad)"/>
+    <!-- E6a icon recoloured for inside the tile: white orbs + arcs,
+         amber bolt. Same geometry as brand/icon.svg. -->
+    <circle cx="32" cy="128" r="18" fill="#ffffff"/>
+    <circle cx="224" cy="128" r="18" fill="#ffffff"/>
+    <path d="M 50 120 Q 90 80 116 108" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.65"/>
+    <path d="M 50 136 Q 90 176 116 148" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.65"/>
+    <path d="M 206 120 Q 166 80 140 108" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.65"/>
+    <path d="M 206 136 Q 166 176 140 148" stroke="#ffffff" stroke-width="10"
+          fill="none" stroke-linecap="round" opacity="0.65"/>
+    <path d="M 128 56 L 90 134 L 122 134 L 110 200 L 162 126 L 134 126 Z"
+          fill="#fbbf24"/>
+  </g>
+
+  <!-- Wordmark: bold name + smaller tagline, baseline-aligned with tile. -->
+  <g transform="translate(330 0)"
+     font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+    <text x="0" y="170" font-size="100" font-weight="700"
+          fill="#1d4ed8" letter-spacing="-1.5">
+      Wallbox Gateway
+    </text>
+    <text x="4" y="222" font-size="32" font-weight="400"
+          fill="#64748b" letter-spacing="0.4">
+      BLE bridge · local · no cloud
+    </text>
+  </g>
+</svg>
