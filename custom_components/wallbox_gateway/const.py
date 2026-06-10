@@ -42,6 +42,7 @@ ENDPOINT_STATUS = "/api/status"
 ENDPOINT_CHARGER = "/api/charger"
 ENDPOINT_DIAG = "/api/diag/disconnects"
 ENDPOINT_HEALTH = "/api/health"
+ENDPOINT_BOOT = "/api/boot/history"
 
 # Eco-Smart mode integer -> HA select option label. Mirrors the
 # Wallbox app's wording so users see familiar terminology.

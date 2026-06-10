@@ -38,6 +38,7 @@ async def async_setup_entry(
     async_add_entities([
         RefreshNow(coordinator),
         ResumeSchedule(coordinator),
+        RebootCharger(coordinator),
     ])
 
 
@@ -78,4 +79,26 @@ class ResumeSchedule(GatewayEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.client.get("/api/command?action=resume")
+        await self.coordinator.async_request_refresh()
+
+
+class RebootCharger(GatewayEntity, ButtonEntity):
+    """Reboot the charger itself (not the gateway). Mirrors the MQTT
+    button.reboot — sends the BAPI `rebot` command via the gateway's
+    /api/command shortcut. Diagnostic-category so it lives in the
+    diagnostic section of the device page."""
+
+    entity_description = ButtonEntityDescription(
+        key="reboot_charger",
+        translation_key="reboot_charger",
+        name="Reboot charger",
+        icon="mdi:restart",
+        device_class=ButtonDeviceClass.RESTART,
+    )
+
+    def __init__(self, coordinator: GatewayCoordinator) -> None:
+        super().__init__(coordinator, "reboot_charger")
+
+    async def async_press(self) -> None:
+        await self.coordinator.client.get("/api/command?action=reboot")
         await self.coordinator.async_request_refresh()

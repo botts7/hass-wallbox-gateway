@@ -59,6 +59,9 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
     def _health(self) -> dict[str, Any]:
         return self.coordinator.data.get("health", {}) or {}
 
+    def _boot(self) -> dict[str, Any]:
+        return self.coordinator.data.get("boot", {}) or {}
+
     def _autolock(self) -> dict[str, Any]:
         return self.coordinator.data.get("autolock") or {}
 
@@ -67,3 +70,15 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
 
     def _meter(self) -> dict[str, Any]:
         return self.coordinator.data.get("meter") or {}
+
+    def _power_sharing(self) -> Any:
+        return self.coordinator.data.get("power_sharing")
+
+    def _phase_switch(self) -> Any:
+        return self.coordinator.data.get("phase_switch")
+
+    def _timezone(self) -> Any:
+        return self.coordinator.data.get("timezone")
+
+    def _notifications(self) -> dict[str, Any]:
+        return self.coordinator.data.get("notifications") or {}

@@ -11,6 +11,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -67,6 +68,34 @@ BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
         name="Schedule paused",
         icon="mdi:calendar-clock",
         value_fn=_schedule_paused,
+    ),
+    # v0.3.0 parity additions (task #110)
+    GatewayBinaryDescription(
+        key="power_sharing",
+        translation_key="power_sharing",
+        name="Dynamic power sharing",
+        icon="mdi:transit-connection-variant",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: bool(e._power_sharing()) if e._power_sharing() is not None else None,
+    ),
+    GatewayBinaryDescription(
+        key="phase_switch",
+        translation_key="phase_switch",
+        name="Phase switch",
+        icon="mdi:numeric-3-circle",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: bool(e._phase_switch()) if e._phase_switch() is not None else None,
+    ),
+    GatewayBinaryDescription(
+        key="ble_paused",
+        translation_key="ble_paused",
+        name="BLE paused",
+        icon="mdi:bluetooth-off",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: bool(e._status().get("ble_paused")) if "ble_paused" in e._status() else None,
     ),
 )
 

@@ -24,7 +24,10 @@
     "binary_sensor": {
       "ble_connected": {"name": "BLE connected"},
       "charging": {"name": "Charging"},
-      "schedule_paused": {"name": "Schedule paused"}
+      "schedule_paused": {"name": "Schedule paused"},
+      "power_sharing": {"name": "Dynamic power sharing"},
+      "phase_switch": {"name": "Phase switch"},
+      "ble_paused": {"name": "BLE paused"}
     },
     "sensor": {
       "charger_status": {"name": "Charger status"},
@@ -32,7 +35,41 @@
       "session_energy": {"name": "Session energy"},
       "house_power": {"name": "House power"},
       "mains_voltage": {"name": "Mains voltage"},
-      "ble_rssi": {"name": "BLE RSSI"}
+      "ble_rssi": {"name": "BLE RSSI"},
+      "grid_energy": {"name": "Grid energy (session)"},
+      "green_energy": {"name": "Green energy (session)"},
+      "discharge_energy": {"name": "Discharge energy (V2H)"},
+      "lifetime_energy": {"name": "Lifetime energy"},
+      "house_current": {"name": "House current"},
+      "max_available_current": {"name": "Max available current"},
+      "max_charging_current": {"name": "Max charging current"},
+      "ocpp_status": {"name": "OCPP status"},
+      "notification_count": {"name": "Active notifications"},
+      "notification_latest": {"name": "Latest notification"},
+      "chg_app_fw": {"name": "Charger firmware"},
+      "chg_project": {"name": "Charger project"},
+      "chg_sessions": {"name": "Total charging sessions"},
+      "chg_power_boost": {"name": "Power Boost limit"},
+      "chg_lock_state": {"name": "Lock state"},
+      "chg_net_ssid": {"name": "Charger WiFi SSID"},
+      "chg_net_ip": {"name": "Charger IP"},
+      "chg_net_signal": {"name": "Charger WiFi signal"},
+      "chg_grounding": {"name": "Charger grounding"},
+      "gateway_ip": {"name": "Gateway IP"},
+      "gateway_fw": {"name": "Gateway firmware"},
+      "dev_name": {"name": "Charger name"},
+      "dev_mfg": {"name": "Charger manufacturer"},
+      "dev_model": {"name": "BLE radio model"},
+      "dev_fw": {"name": "BLE module FW"},
+      "timezone": {"name": "Timezone"},
+      "boot_reason": {"name": "Last boot reason"},
+      "max_reentry": {"name": "Reentry tripwire"},
+      "tokens": {"name": "Rate-limit tokens"},
+      "loop_max_ms": {"name": "Loop max ms"},
+      "heap_min_ever": {"name": "Heap min watermark"},
+      "heap_free": {"name": "Heap free"},
+      "gw_uptime": {"name": "Gateway uptime"},
+      "wifi_rssi": {"name": "WiFi signal"}
     },
     "switch": {
       "charging": {"name": "Charging"},
@@ -40,7 +77,9 @@
       "auto_lock_enabled": {"name": "Auto lock"}
     },
     "number": {
-      "max_current": {"name": "Max current"}
+      "max_current": {"name": "Max current"},
+      "autolock_time": {"name": "Auto lock timeout"},
+      "eco_smart_solar_target": {"name": "Eco Smart solar %"}
     },
     "select": {
       "eco_smart_mode": {
@@ -54,7 +93,8 @@
     },
     "button": {
       "refresh_now": {"name": "Refresh now"},
-      "resume_schedule": {"name": "Resume schedule"}
+      "resume_schedule": {"name": "Resume schedule"},
+      "reboot_charger": {"name": "Reboot charger"}
     }
   }
 }

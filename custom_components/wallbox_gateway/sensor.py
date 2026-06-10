@@ -25,9 +25,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
+    UnitOfInformation,
     UnitOfPower,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -144,7 +148,346 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         entity_registry_enabled_default=False,  # diagnostic — off by default
         value_fn=_ble_rssi,
     ),
+    # ------------------------------------------------------------------
+    # v0.3.0 parity additions (task #110). Most are diagnostic and
+    # disabled by default; users enable per device if they want them.
+    # ------------------------------------------------------------------
+    # Energy split (good for HA Energy dashboard)
+    GatewaySensorEntityDescription(
+        key="grid_energy",
+        translation_key="grid_energy",
+        name="Grid energy (session)",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        value_fn=lambda e: _opt_float(e._charger_status().get("grid"), divisor=100),
+    ),
+    GatewaySensorEntityDescription(
+        key="green_energy",
+        translation_key="green_energy",
+        name="Green energy (session)",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        value_fn=lambda e: _opt_float(e._charger_status().get("gen"), divisor=100),
+    ),
+    GatewaySensorEntityDescription(
+        key="discharge_energy",
+        translation_key="discharge_energy",
+        name="Discharge energy (V2H)",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_float(e._charger_status().get("den"), divisor=100),
+    ),
+    GatewaySensorEntityDescription(
+        key="lifetime_energy",
+        translation_key="lifetime_energy",
+        name="Lifetime energy",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        value_fn=lambda e: e._meter().get("lifetime_kwh"),
+    ),
+    GatewaySensorEntityDescription(
+        key="house_current",
+        translation_key="house_current",
+        name="House current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._meter().get("house_current_a"),
+    ),
+    # Live charger status (numeric counterparts of the existing enum)
+    GatewaySensorEntityDescription(
+        key="max_available_current",
+        translation_key="max_available_current",
+        name="Max available current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._realtime().get("max_available_current")),
+    ),
+    GatewaySensorEntityDescription(
+        key="max_charging_current",
+        translation_key="max_charging_current",
+        name="Max charging current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._realtime().get("max_charging_current")),
+    ),
+    GatewaySensorEntityDescription(
+        key="ocpp_status",
+        translation_key="ocpp_status",
+        name="OCPP status",
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _ocpp_label(e._realtime().get("ocpp_status")),
+    ),
+    # Notifications
+    GatewaySensorEntityDescription(
+        key="notification_count",
+        translation_key="notification_count",
+        name="Active notifications",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda e: e._notifications().get("count"),
+    ),
+    GatewaySensorEntityDescription(
+        key="notification_latest",
+        translation_key="notification_latest",
+        name="Latest notification",
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._notifications().get("latest") or "None",
+    ),
+    # Charger identity (diagnostic)
+    GatewaySensorEntityDescription(
+        key="chg_app_fw",
+        translation_key="chg_app_fw",
+        name="Charger firmware",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("chg_app_fw") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_project",
+        translation_key="chg_project",
+        name="Charger project",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("chg_project") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_sessions",
+        translation_key="chg_sessions",
+        name="Total charging sessions",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._status().get("chg_sessions")),
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_power_boost",
+        translation_key="chg_power_boost",
+        name="Power Boost limit",
+        device_class=SensorDeviceClass.CURRENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._status().get("chg_power_boost")),
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_lock_state",
+        translation_key="chg_lock_state",
+        name="Lock state",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: "Locked" if e._status().get("chg_lock_state") == 1 else "Unlocked",
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_net_ssid",
+        translation_key="chg_net_ssid",
+        name="Charger WiFi SSID",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("chg_net_ssid") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_net_ip",
+        translation_key="chg_net_ip",
+        name="Charger IP",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("chg_net_ip") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_net_signal",
+        translation_key="chg_net_signal",
+        name="Charger WiFi signal",
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._status().get("chg_net_signal")),
+    ),
+    GatewaySensorEntityDescription(
+        key="chg_grounding",
+        translation_key="chg_grounding",
+        name="Charger grounding",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("chg_grounding") or None,
+    ),
+    # Gateway identity (diagnostic)
+    GatewaySensorEntityDescription(
+        key="gateway_ip",
+        translation_key="gateway_ip",
+        name="Gateway IP",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("ip") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="gateway_fw",
+        translation_key="gateway_fw",
+        name="Gateway firmware",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._boot().get("current_fw") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="dev_name",
+        translation_key="dev_name",
+        name="Charger name",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("dev_name") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="dev_mfg",
+        translation_key="dev_mfg",
+        name="Charger manufacturer",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("dev_mfg") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="dev_model",
+        translation_key="dev_model",
+        name="BLE radio model",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("dev_model") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="dev_fw",
+        translation_key="dev_fw",
+        name="BLE module FW",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._status().get("dev_fw") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="timezone",
+        translation_key="timezone",
+        name="Timezone",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._timezone(),
+    ),
+    # Gateway runtime diagnostics (from /api/health)
+    GatewaySensorEntityDescription(
+        key="boot_reason",
+        translation_key="boot_reason",
+        name="Last boot reason",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: e._boot().get("current") or None,
+    ),
+    GatewaySensorEntityDescription(
+        key="max_reentry",
+        translation_key="max_reentry",
+        name="Reentry tripwire",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._health().get("max_reentry")),
+    ),
+    GatewaySensorEntityDescription(
+        key="tokens",
+        translation_key="tokens",
+        name="Rate-limit tokens",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._health().get("tokens")),
+    ),
+    GatewaySensorEntityDescription(
+        key="loop_max_ms",
+        translation_key="loop_max_ms",
+        name="Loop max ms",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.MILLISECONDS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._health().get("loop_max_ms")),
+    ),
+    GatewaySensorEntityDescription(
+        key="heap_min_ever",
+        translation_key="heap_min_ever",
+        name="Heap min watermark",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._health().get("heap_min_ever")),
+    ),
+    GatewaySensorEntityDescription(
+        key="heap_free",
+        translation_key="heap_free",
+        name="Heap free",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._health().get("heap_free")),
+    ),
+    GatewaySensorEntityDescription(
+        key="gw_uptime",
+        translation_key="gw_uptime",
+        name="Gateway uptime",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._health().get("uptime")),
+    ),
+    GatewaySensorEntityDescription(
+        key="wifi_rssi",
+        translation_key="wifi_rssi",
+        name="WiFi signal",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._status().get("wifi_rssi")),
+    ),
 )
+
+
+def _opt_int(v: Any) -> int | None:
+    return int(v) if isinstance(v, (int, float)) else None
+
+
+def _opt_float(v: Any, divisor: float = 1.0) -> float | None:
+    if isinstance(v, (int, float)):
+        return float(v) / divisor if divisor != 1.0 else float(v)
+    return None
+
+
+OCPP_STATUS_LABELS = {
+    0: "Not available",
+    1: "Not configured",
+    2: "Connected",
+    3: "Charging",
+}
+
+
+def _ocpp_label(code: Any) -> str | None:
+    if not isinstance(code, (int, float)):
+        return None
+    return OCPP_STATUS_LABELS.get(int(code), f"Code {int(code)}")
 
 
 async def async_setup_entry(
