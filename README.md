@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="custom_components/wallbox_gateway/brand/logo.png" alt="Wallbox Gateway" width="600">
+</p>
+
 # Wallbox BLE Gateway — Home Assistant Integration
 
 Native Home Assistant integration for the
