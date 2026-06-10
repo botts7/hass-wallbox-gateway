@@ -85,9 +85,9 @@
       "eco_smart_mode": {
         "name": "Eco Smart mode",
         "state": {
-          "Disabled": "Disabled",
-          "Full Green": "Full Green",
-          "Eco Smart": "Eco Smart"
+          "disabled": "Disabled",
+          "full_green": "Full Green",
+          "eco_smart": "Eco Smart"
         }
       }
     },

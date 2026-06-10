@@ -2,6 +2,5 @@
   "name": "Wallbox BLE Gateway",
   "render_readme": true,
   "homeassistant": "2024.12.0",
-  "country": ["AU", "GB", "US", "ES", "DE", "NL", "FR"],
-  "iot_class": "Local Polling"
+  "country": ["AU", "GB", "US", "ES", "DE", "NL", "FR"]
 }

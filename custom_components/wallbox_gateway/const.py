@@ -44,12 +44,14 @@ ENDPOINT_DIAG = "/api/diag/disconnects"
 ENDPOINT_HEALTH = "/api/health"
 ENDPOINT_BOOT = "/api/boot/history"
 
-# Eco-Smart mode integer -> HA select option label. Mirrors the
-# Wallbox app's wording so users see familiar terminology.
+# Eco-Smart mode integer -> HA select option key. Keys must match
+# [a-z0-9-_]+ per HA's translation spec (hassfest fail otherwise).
+# User-facing labels come from translations/en.json under
+# entity.select.eco_smart_mode.state.{key}.
 ECO_MODES = {
-    0: "Disabled",
-    1: "Full Green",
-    2: "Eco Smart",
+    0: "disabled",
+    1: "full_green",
+    2: "eco_smart",
 }
 ECO_MODE_TO_INT = {v: k for k, v in ECO_MODES.items()}
 
