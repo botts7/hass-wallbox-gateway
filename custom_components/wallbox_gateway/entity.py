@@ -82,3 +82,6 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
 
     def _notifications(self) -> dict[str, Any]:
         return self.coordinator.data.get("notifications") or {}
+
+    def _lse(self) -> dict[str, Any]:
+        return self.coordinator.data.get("lse") or {}

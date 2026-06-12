@@ -463,6 +463,56 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         entity_registry_enabled_default=False,
         value_fn=lambda e: _opt_int(e._status().get("wifi_rssi")),
     ),
+    # ---- Live-session feed (r_lse), v0.3.1 ----------------------------
+    # Per-session solar/grid energy split + live solar surplus. MEASUREMENT
+    # (not TOTAL_INCREASING) because each value resets when a new session
+    # starts. user_id from r_lse is dropped in the coordinator — never here.
+    GatewaySensorEntityDescription(
+        key="green_energy_session",
+        translation_key="green_energy_session",
+        name="Green energy (session)",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        value_fn=lambda e: e._lse().get("green_energy_kwh"),
+    ),
+    GatewaySensorEntityDescription(
+        key="grid_energy_session",
+        translation_key="grid_energy_session",
+        name="Grid energy (session)",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        value_fn=lambda e: e._lse().get("grid_energy_kwh"),
+    ),
+    GatewaySensorEntityDescription(
+        key="surplus_power",
+        translation_key="surplus_power",
+        name="Solar surplus power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        suggested_display_precision=2,
+        value_fn=lambda e: e._lse().get("surplus_power_kw"),
+    ),
+    GatewaySensorEntityDescription(
+        key="active_feature",
+        translation_key="active_feature",
+        name="Active feature",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._lse().get("active_feature")),
+    ),
+    GatewaySensorEntityDescription(
+        key="control_mode",
+        translation_key="control_mode",
+        name="Control mode",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._lse().get("control_mode")),
+    ),
 )
 
 

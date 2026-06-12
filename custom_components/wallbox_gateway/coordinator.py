@@ -74,23 +74,35 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except GatewayUnreachable as e:
             raise UpdateFailed(f"gateway unreachable: {e}") from e
 
-        autolock_raw, ecos_raw, dca_raw, psh_raw, phsw_raw, tzn_raw, not_raw = (
-            await asyncio.gather(
-                self.client.bapi("g_alo", wait_ms=2000),
-                self.client.bapi("g_ecos", wait_ms=2000),
-                # r_dca = realtime power meter: per-phase voltage + power.
-                # Required for the mains_voltage + house_power sensors.
-                # /api/status doesn't include these — they live behind BAPI.
-                self.client.bapi("r_dca", wait_ms=2000),
-                # Additional settings for full MQTT-discovery parity (v0.3.0).
-                # All best-effort with the same fallback semantics as the
-                # original three: prior value carried forward on failure.
-                self.client.bapi("g_psh", wait_ms=2000),
-                self.client.bapi("g_phsw", wait_ms=2000),
-                self.client.bapi("g_tzn", wait_ms=2000),
-                self.client.bapi("r_not", wait_ms=2000),
-                return_exceptions=True,
-            )
+        (
+            autolock_raw,
+            ecos_raw,
+            dca_raw,
+            psh_raw,
+            phsw_raw,
+            tzn_raw,
+            not_raw,
+            lse_raw,
+        ) = await asyncio.gather(
+            self.client.bapi("g_alo", wait_ms=2000),
+            self.client.bapi("g_ecos", wait_ms=2000),
+            # r_dca = realtime power meter: per-phase voltage + power.
+            # Required for the mains_voltage + house_power sensors.
+            # /api/status doesn't include these — they live behind BAPI.
+            self.client.bapi("r_dca", wait_ms=2000),
+            # Additional settings for full MQTT-discovery parity (v0.3.0).
+            # All best-effort with the same fallback semantics as the
+            # original three: prior value carried forward on failure.
+            self.client.bapi("g_psh", wait_ms=2000),
+            self.client.bapi("g_phsw", wait_ms=2000),
+            self.client.bapi("g_tzn", wait_ms=2000),
+            self.client.bapi("r_not", wait_ms=2000),
+            # r_lse = live session energy feed (v0.3.1): per-session
+            # solar/grid kWh split, surplus power, active feature,
+            # control mode. user_id in the response is PII and dropped
+            # by _parse_lse — never exposed as an entity.
+            self.client.bapi("r_lse", wait_ms=2000),
+            return_exceptions=True,
         )
 
         # Carry forward the prior settings dict when the BAPI read failed
@@ -111,6 +123,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "phase_switch": _parse_phsw(phsw_raw, prior.get("phase_switch")),
             "timezone": _parse_tzn(tzn_raw, prior.get("timezone")),
             "notifications": _parse_not(not_raw, prior.get("notifications")),
+            "lse": _parse_lse(lse_raw, prior.get("lse")),
         }
 
 
@@ -242,3 +255,36 @@ def _parse_not(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
     if isinstance(r, (int, float)):
         return {"count": int(r), "latest": ""}
     return prior
+
+
+def _parse_lse(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
+    """r_lse is the live-session energy feed:
+        {"r": {"green_energy": kWh, "grid_energy": kWh,
+               "charged_energy": kWh, "charging_power": kW,
+               "charging_time": s, "control_mode": int,
+               "active_feature": {"feature": int, "feature_detail": int,
+                                  "surplus_power": kW},
+               "discharged_energy": kWh, "start_time": ts, "user_id": int}}
+
+    We surface the solar/grid split, surplus power, active feature, and
+    control mode. ``user_id`` is PII and is deliberately never read —
+    it must not become an entity, an attribute, or a log line.
+    """
+    if isinstance(raw, Exception) or not isinstance(raw, dict):
+        return prior
+    r = raw.get("r")
+    if not isinstance(r, dict):
+        return prior
+    af = r.get("active_feature")
+    af = af if isinstance(af, dict) else {}
+
+    def _num(v: Any) -> float | None:
+        return float(v) if isinstance(v, (int, float)) else None
+
+    return {
+        "green_energy_kwh": _num(r.get("green_energy")),
+        "grid_energy_kwh": _num(r.get("grid_energy")),
+        "surplus_power_kw": _num(af.get("surplus_power")),
+        "active_feature": int(af["feature"]) if isinstance(af.get("feature"), (int, float)) else None,
+        "control_mode": int(r["control_mode"]) if isinstance(r.get("control_mode"), (int, float)) else None,
+    }

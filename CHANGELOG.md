@@ -4,6 +4,41 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-06-12
+
+### Added
+
+- **Live-session energy sensors**, backed by the charger's `r_lse`
+  feed (polled alongside the other BAPI reads, same best-effort
+  fallback):
+  - `sensor.green_energy_session` — solar kWh for the current session
+  - `sensor.grid_energy_session` — grid kWh for the current session
+  - `sensor.surplus_power` — live solar surplus (kW)
+  - `sensor.active_feature` — which feature is controlling (diagnostic,
+    disabled by default)
+  - `sensor.control_mode` — canonical control-mode code (diagnostic,
+    disabled by default)
+
+### Security
+
+- `r_lse` includes a `user_id` field (the Wallbox account id). It is
+  parsed out and **never** exposed as an entity, attribute, or log
+  line — `_parse_lse` reads only the public energy/feature fields.
+
+## [0.3.0] - 2026-06-10
+
+### Added
+
+- **Full parity with the firmware's MQTT discovery** — ~30 additional
+  sensors and binary_sensors so the native integration surfaces the
+  same data an MQTT user already gets (charger firmware/project,
+  session counters, power-boost limit, network info, OCPP status,
+  notifications, power-sharing, phase-switch, timezone, boot/health
+  diagnostics). Diagnostic entities are disabled by default via
+  `entity_category`.
+- **Controls:** auto-lock timeout (number, minutes), Eco-Smart solar
+  target (number, %), reboot-charger button.
+
 ## [0.2.0] - 2026-06-08
 
 The control-surface release. v0.1 was sensors-only and didn't let HA

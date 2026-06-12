@@ -69,7 +69,12 @@
       "heap_min_ever": {"name": "Heap min watermark"},
       "heap_free": {"name": "Heap free"},
       "gw_uptime": {"name": "Gateway uptime"},
-      "wifi_rssi": {"name": "WiFi signal"}
+      "wifi_rssi": {"name": "WiFi signal"},
+      "green_energy_session": {"name": "Green energy (session)"},
+      "grid_energy_session": {"name": "Grid energy (session)"},
+      "surplus_power": {"name": "Solar surplus power"},
+      "active_feature": {"name": "Active feature"},
+      "control_mode": {"name": "Control mode"}
     },
     "switch": {
       "charging": {"name": "Charging"},
