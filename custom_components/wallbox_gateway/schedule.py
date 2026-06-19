@@ -107,6 +107,19 @@ def _raise_on_error(result: object, what: str) -> None:
         raise HomeAssistantError(f"{what} rejected by charger: {msg}")
 
 
+def _schedule_rows(res: object) -> list:
+    """Pull the schedule list out of an r_schs reply.
+
+    The charger nests it as {"r": {"schedules": [...]}}; older/Zentri shapes
+    return {"r": [...]}. Accept either.
+    """
+    r = res.get("r") if isinstance(res, dict) else None
+    if isinstance(r, dict):
+        rows = r.get("schedules")
+        return rows if isinstance(rows, list) else []
+    return r if isinstance(r, list) else []
+
+
 async def _next_sid(client: GatewayClient) -> int:
     """Next free schedule id = max(existing) + 1 (0 if none)."""
     try:
@@ -115,9 +128,7 @@ async def _next_sid(client: GatewayClient) -> int:
         )
     except (GatewayError, GatewayUnreachable):
         return 0
-    rows = res.get("r") if isinstance(res, dict) else None
-    if not isinstance(rows, list) or not rows:
-        return 0
+    rows = _schedule_rows(res)
     sids = [int(r["sid"]) for r in rows if isinstance(r, dict) and "sid" in r]
     return (max(sids) + 1) if sids else 0
 
