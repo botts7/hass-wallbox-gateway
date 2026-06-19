@@ -122,11 +122,10 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         translation_key="session_energy",
         name="Session energy",
         device_class=SensorDeviceClass.ENERGY,
-        # MEASUREMENT (not TOTAL_INCREASING) because the value resets
-        # when a new session starts. Long-term statistics for the HA
-        # Energy dashboard come from a separate cumulative sensor we
-        # add in a follow-on commit.
-        state_class=SensorStateClass.MEASUREMENT,
+        # TOTAL_INCREASING: energy device_class can't be MEASUREMENT (HA
+        # rejects it). The per-session value resets each session, which
+        # total_increasing models correctly (HA detects the reset).
+        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=_session_energy,
@@ -173,7 +172,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         translation_key="discharge_energy",
         name="Discharge energy (V2H)",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         entity_registry_enabled_default=False,
