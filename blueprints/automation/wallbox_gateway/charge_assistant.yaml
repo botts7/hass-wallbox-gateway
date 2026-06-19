@@ -153,8 +153,14 @@ blueprint:
         entity:
           domain: [input_number, sensor, number]
     avg_distance_entity:
-      name: "[Scheduled] Rolling-distance sensor (travel-based target)"
-      description: A Statistics helper on your odometer (characteristic "change", over N days). If set, target is computed from average daily travel.
+      name: "[Scheduled] Rolling-distance sensor (OPTIONAL — auto target)"
+      description: >
+        Leave blank to just use the fixed Target % above — that's the normal
+        setup. Only fill this if you want the target to auto-adjust to how much
+        you drive: create a Statistics helper on your car's odometer
+        (characteristic "change", over N days) under Settings -> Devices &
+        Services -> Helpers, and select it here. Works with any car that has an
+        odometer.
       default:
       selector:
         entity:
