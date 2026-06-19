@@ -8,10 +8,11 @@ blueprint:
     Point it at the Wallbox Gateway's **Plug-in reminder** binary_sensor —
     available whether you use the HA Integration or plain MQTT discovery.
     The gateway already works out "a charge is due within your lead time
-    AND the car isn't connected", so this blueprint just decides *who* gets
-    told and *when not* to (quiet hours / already-charged). Because it
-    triggers on a binary_sensor, it also works with any other charger
-    integration that exposes an equivalent "should remind" sensor.
+    AND the car isn't connected", so this blueprint decides *who* gets told,
+    *when not* to (quiet hours / already-charged / stale battery reading),
+    and makes the alert actionable (tap to open a page, or a "Start charging
+    now" button). Because it triggers on a binary_sensor, it also works with
+    any other charger integration that exposes an equivalent sensor.
   domain: automation
   source_url: https://github.com/botts7/hass-wallbox-gateway/blob/main/blueprints/automation/wallbox_gateway/plug_in_reminder.yaml
   input:
@@ -19,7 +20,7 @@ blueprint:
       name: Plug-in reminder sensor
       description: >
         The binary_sensor that turns ON when you should plug in
-        (Wallbox Gateway → "Plug-in reminder").
+        (Wallbox Gateway -> "Plug-in reminder").
       selector:
         entity:
           domain: binary_sensor
@@ -39,6 +40,25 @@ blueprint:
       default: "Wallbox — plug in to charge"
       selector:
         text:
+    tap_path:
+      name: Open this page when tapped (optional)
+      description: >
+        Where the notification opens when you tap it — e.g. a Lovelace view
+        "/lovelace/wallbox", or the add-on dashboard. Leave blank to just
+        open the app.
+      default: ""
+      selector:
+        text:
+    charge_switch:
+      name: Charging switch (optional, for the "Start now" button)
+      description: >
+        The Wallbox Gateway "Charging" switch. If set, the notification gets
+        a "Start charging now" button that turns it on. Leave empty to send a
+        notify-only reminder.
+      default:
+      selector:
+        entity:
+          domain: switch
     soc_entity:
       name: Battery level sensor (optional)
       description: >
@@ -58,6 +78,29 @@ blueprint:
           max: 100
           unit_of_measurement: "%"
           mode: slider
+    soc_max_age_min:
+      name: Ignore battery level if older than (minutes)
+      description: >
+        If the battery sensor hasn't updated within this many minutes, its
+        value is treated as untrustworthy and the reminder is sent anyway —
+        so a stale reading can't wrongly suppress it. 0 = never treat as stale.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+          mode: box
+    next_charge_entity:
+      name: Next-charge sensor (optional, for the message)
+      description: >
+        A timestamp sensor (Wallbox Gateway -> "Next scheduled charge").
+        Only used to add the scheduled time to the notification text.
+      default:
+      selector:
+        entity:
+          domain: sensor
+          device_class: timestamp
     quiet_start:
       name: Quiet hours start (optional)
       description: Set start = end to disable quiet hours.
@@ -76,41 +119,80 @@ max_exceeded: silent
 variables:
   soc_entity: !input soc_entity
   soc_threshold: !input soc_threshold
+  soc_max_age: !input soc_max_age_min
   quiet_start: !input quiet_start
   quiet_end: !input quiet_end
+  msg: !input message
+  next_charge_entity: !input next_charge_entity
+  charge_switch: !input charge_switch
+  tap_path: !input tap_path
 
 trigger:
   - platform: state
     entity_id: !input reminder_entity
     to: "on"
-
-condition:
-  # Skip if the car is already charged enough (only when a SOC sensor is set).
-  - condition: template
-    value_template: >
-      {% if soc_entity %}
-        {{ states(soc_entity) | float(0) < (soc_threshold | float(100)) }}
-      {% else %}
-        true
-      {% endif %}
-  # Respect quiet hours. start == end disables the window. Handles windows
-  # that wrap past midnight (e.g. 22:00 -> 07:00).
-  - condition: template
-    value_template: >
-      {% if quiet_start == quiet_end %}
-        true
-      {% else %}
-        {% set n = now().strftime('%H:%M:%S') %}
-        {% if quiet_start < quiet_end %}
-          {{ not (quiet_start <= n < quiet_end) }}
-        {% else %}
-          {{ not (n >= quiet_start or n < quiet_end) }}
-        {% endif %}
-      {% endif %}
+    id: remind
+  # Fired when the "Start charging now" button on the notification is tapped.
+  - platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: WB_PLUG_START
+    id: startbtn
 
 action:
-  - domain: mobile_app
-    type: notify
-    device_id: !input notify_device
-    title: !input title
-    message: !input message
+  - choose:
+      # ---- "Start charging now" button ----
+      - conditions:
+          - "{{ trigger.id == 'startbtn' }}"
+          - "{{ charge_switch not in [none, ''] }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ charge_switch }}"
+      # ---- Reminder fired: notify, unless suppressed ----
+      - conditions:
+          - "{{ trigger.id == 'remind' }}"
+          # Notify UNLESS we have a fresh, trustworthy battery reading already
+          # at/above the threshold. Missing / unavailable / STALE -> not
+          # trusted to suppress; better to nag than miss a charge.
+          - condition: template
+            value_template: >
+              {% if not soc_entity %}
+                true
+              {% elif not has_value(soc_entity) %}
+                true
+              {% else %}
+                {% set age = (now() - states[soc_entity].last_updated).total_seconds() / 60 %}
+                {% set fresh = (soc_max_age | float(0) == 0) or (age <= (soc_max_age | float(0))) %}
+                {{ not (fresh and (states(soc_entity) | float(0) >= (soc_threshold | float(100)))) }}
+              {% endif %}
+          # Quiet hours. start == end disables it; handles past-midnight windows.
+          - condition: template
+            value_template: >
+              {% if quiet_start == quiet_end %}
+                true
+              {% else %}
+                {% set n = now().strftime('%H:%M:%S') %}
+                {% if quiet_start < quiet_end %}
+                  {{ not (quiet_start <= n < quiet_end) }}
+                {% else %}
+                  {{ not (n >= quiet_start or n < quiet_end) }}
+                {% endif %}
+              {% endif %}
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: !input title
+            # Echo live battery % + scheduled time so the alert is informative
+            # and you can see at a glance whether the SOC sensor is alive.
+            message: >
+              {{ msg }}
+              {%- if soc_entity and has_value(soc_entity) %} · battery {{ states(soc_entity) }}%{% endif %}
+              {%- if next_charge_entity and has_value(next_charge_entity) %} · charge {{ as_timestamp(states(next_charge_entity)) | timestamp_custom('%a %H:%M') }}{% endif %}
+            data:
+              # Tap opens your chosen page; the button starts charging.
+              clickAction: "{{ tap_path }}"
+              actions:
+                - action: "WB_PLUG_START"
+                  title: "Start charging now"
