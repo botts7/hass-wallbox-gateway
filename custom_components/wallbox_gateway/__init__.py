@@ -11,7 +11,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ClientConfig, GatewayClient
@@ -55,6 +55,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN].setdefault("_assistants", {})[entry.entry_id] = assistant
     # Re-run setup (and thus re-read the assistant config) on options change.
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    # One-time service: fire a test reminder notification on demand, so the
+    # notify path + config can be confirmed without faking entity states.
+    if not hass.services.has_service(DOMAIN, "test_reminder"):
+        async def _async_test_reminder(call: ServiceCall) -> None:
+            for a in hass.data.get(DOMAIN, {}).get("_assistants", {}).values():
+                await a.async_test()
+        hass.services.async_register(DOMAIN, "test_reminder", _async_test_reminder)
     return True
 
 

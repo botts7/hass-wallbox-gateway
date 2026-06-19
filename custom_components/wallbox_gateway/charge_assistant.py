@@ -70,7 +70,10 @@ class ChargeAssistant:
         """Wire up listeners for the configured mode."""
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
         mode = self._opts.get(CA_MODE)
+        # TEMP diagnostics at WARNING so they show without debug logging.
+        _LOGGER.warning("Charge Assistant: async_start for %s — mode=%r", self.entry.title, mode)
         if mode != MODE_REMINDER:
+            _LOGGER.warning("Charge Assistant: mode is not 'reminder' — nothing wired")
             return  # off / not-yet-implemented modes do nothing
 
         # Auto-resolve the gateway's OWN entities for this entry (a stored
@@ -103,6 +106,23 @@ class ChargeAssistant:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+
+    async def async_test(self) -> None:
+        """Fire the reminder notification on demand (ignores conditions).
+
+        Exposed via the wallbox_gateway.test_reminder service so a user can
+        confirm the notify path + config without faking entity states.
+        """
+        self._opts = dict(self.entry.options.get(CA_KEY) or {})
+        self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
+            "charging", "switch"
+        )
+        self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
+        _LOGGER.warning(
+            "Charge Assistant: TEST notification requested (notify=%s)",
+            self._opts.get(CA_NOTIFY_SERVICE),
+        )
+        await self._send_notification()
 
     # ---- reminder trigger ----
 
