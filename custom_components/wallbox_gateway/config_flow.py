@@ -26,23 +26,37 @@ from .api import (
     GatewayUnreachable,
 )
 from .const import (
+    CA_ACTIONABLE,
+    CA_ARRIVAL_ENTITY,
+    CA_ESCALATE_MIN,
     CA_KEY,
+    CA_LEAD_HOURS,
     CA_MESSAGE,
     CA_MODE,
+    CA_NIGHTLY_TIME,
     CA_NOTIFY_SERVICE,
+    CA_ONLY_IF_SCHEDULED,
     CA_QUIET_END,
     CA_QUIET_START,
+    CA_SCHEDULED_WITHIN_H,
     CA_SKIP_ABOVE,
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
     CA_TAP_PATH,
+    CA_TARIFF_BELOW,
+    CA_TARIFF_ENTITY,
     CA_TITLE,
+    CA_TRIGGERS,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_USERNAME,
     DOMAIN,
     MODE_OFF,
     MODE_REMINDER,
+    TRIG_ARRIVAL,
+    TRIG_LEAD,
+    TRIG_NIGHTLY,
+    TRIG_TARIFF,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -265,35 +279,40 @@ class WallboxGatewayConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
-    """Guided Charge Assistant wizard (Phase 1: Reminder mode).
+    """Guided Charge Assistant wizard — choose-your-own-adventure.
 
-    Multi-step + conditional: the Mode step routes to the matching
-    settings step. The Integration runs the behaviour itself
+    Reminder mode is a multi-step, conditional flow: pick triggers, then
+    only the steps/fields those triggers need, then shared conditions, then
+    the notification. The Integration runs the behaviour itself
     (charge_assistant.ChargeAssistant) — no automation is generated.
     """
 
-    def _ca(self) -> dict:
+    def _cur(self) -> dict:
+        """The currently-saved Charge Assistant config (for defaults)."""
         return dict(self.config_entry.options.get(CA_KEY) or {})
 
+    # ---- step 1: mode ----
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
             mode = user_input[CA_MODE]
             if mode == MODE_REMINDER:
-                return await self.async_step_reminder()
-            # "Off" (and not-yet-built modes) — store mode only, clears the assistant.
+                # Start a fresh accumulator for this run-through.
+                self._ca: dict[str, Any] = {CA_MODE: MODE_REMINDER}
+                return await self.async_step_triggers()
+            # "Off" (and not-yet-built modes) — store mode only.
             return self.async_create_entry(title="", data={CA_KEY: {CA_MODE: mode}})
 
         schema = vol.Schema(
             {
-                vol.Required(CA_MODE, default=self._ca().get(CA_MODE, MODE_OFF)): selector.SelectSelector(
+                vol.Required(CA_MODE, default=self._cur().get(CA_MODE, MODE_OFF)): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
                             {"value": MODE_OFF, "label": "Off"},
                             {
                                 "value": MODE_REMINDER,
-                                "label": "Reminder — notify me if a scheduled charge is coming up and the car isn't plugged in",
+                                "label": "Reminder — nudge me to plug the car in",
                             },
                         ],
                         mode=selector.SelectSelectorMode.LIST,
@@ -303,39 +322,94 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         )
         return self.async_show_form(step_id="init", data_schema=schema)
 
-    async def async_step_reminder(
+    # ---- step 2: which triggers ----
+    async def async_step_triggers(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
-            return self.async_create_entry(
-                title="", data={CA_KEY: {CA_MODE: MODE_REMINDER, **user_input}}
-            )
+            self._ca[CA_TRIGGERS] = user_input.get(CA_TRIGGERS, [])
+            return await self.async_step_setup()
 
-        cur = self._ca()
-        notify_opts = [
-            f"notify.{name}"
-            for name in sorted(self.hass.services.async_services().get("notify", {}))
-        ]
-        # The gateway's own sensors (plug-in reminder, charging switch,
-        # next-charge) are auto-resolved by the controller from this config
-        # entry — the user only picks their phone + optional preferences.
+        default = self._cur().get(CA_TRIGGERS, [TRIG_ARRIVAL])
         schema = vol.Schema(
             {
-                vol.Required(
-                    CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
-                ): selector.SelectSelector(
+                vol.Required(CA_TRIGGERS, default=default): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=notify_opts,
-                        custom_value=True,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
+                        options=[
+                            {"value": TRIG_ARRIVAL, "label": "When I get home (presence turns home)"},
+                            {"value": TRIG_NIGHTLY, "label": "Each evening at a set time"},
+                            {"value": TRIG_LEAD, "label": "Before a scheduled charge"},
+                            {"value": TRIG_TARIFF, "label": "When electricity price drops (e.g. Amber)"},
+                        ],
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
                     )
-                ),
+                )
+            }
+        )
+        return self.async_show_form(step_id="triggers", data_schema=schema)
+
+    # ---- step 3: per-trigger settings (only the chosen ones) ----
+    async def async_step_setup(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            self._ca.update(user_input)
+            return await self.async_step_conditions()
+
+        cur = self._cur()
+        triggers = self._ca.get(CA_TRIGGERS, [])
+        fields: dict[Any, Any] = {}
+        if TRIG_ARRIVAL in triggers:
+            fields[
+                vol.Required(CA_ARRIVAL_ENTITY, default=cur.get(CA_ARRIVAL_ENTITY, vol.UNDEFINED))
+            ] = selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["person", "device_tracker"])
+            )
+        if TRIG_NIGHTLY in triggers:
+            fields[
+                vol.Required(CA_NIGHTLY_TIME, default=cur.get(CA_NIGHTLY_TIME, "20:00:00"))
+            ] = selector.TimeSelector()
+        if TRIG_LEAD in triggers:
+            fields[
+                vol.Required(CA_LEAD_HOURS, default=cur.get(CA_LEAD_HOURS, 2))
+            ] = selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=24, step=0.5, unit_of_measurement="h",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            )
+        if TRIG_TARIFF in triggers:
+            fields[
+                vol.Required(CA_TARIFF_ENTITY, default=cur.get(CA_TARIFF_ENTITY, vol.UNDEFINED))
+            ] = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
+            fields[
+                vol.Required(CA_TARIFF_BELOW, default=cur.get(CA_TARIFF_BELOW, 0.15))
+            ] = selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=0.01, mode=selector.NumberSelectorMode.BOX
+                )
+            )
+
+        if not fields:  # no per-trigger setup needed — skip ahead
+            return await self.async_step_conditions()
+        return self.async_show_form(step_id="setup", data_schema=vol.Schema(fields))
+
+    # ---- step 4: shared conditions ----
+    async def async_step_conditions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            self._ca.update(user_input)
+            return await self.async_step_notify()
+
+        cur = self._cur()
+        schema = vol.Schema(
+            {
                 vol.Optional(
                     CA_SOC_ENTITY, default=cur.get(CA_SOC_ENTITY, vol.UNDEFINED)
                 ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor", device_class="battery"
-                    )
+                    selector.EntitySelectorConfig(domain="sensor", device_class="battery")
                 ),
                 vol.Optional(CA_SKIP_ABOVE, default=cur.get(CA_SKIP_ABOVE, 80)): selector.NumberSelector(
                     selector.NumberSelectorConfig(
@@ -350,20 +424,68 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                     )
                 ),
                 vol.Optional(
+                    CA_ONLY_IF_SCHEDULED, default=cur.get(CA_ONLY_IF_SCHEDULED, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_SCHEDULED_WITHIN_H, default=cur.get(CA_SCHEDULED_WITHIN_H, 12)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=48, unit_of_measurement="h",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
                     CA_QUIET_START, default=cur.get(CA_QUIET_START, "00:00:00")
                 ): selector.TimeSelector(),
                 vol.Optional(
                     CA_QUIET_END, default=cur.get(CA_QUIET_END, "00:00:00")
                 ): selector.TimeSelector(),
+            }
+        )
+        return self.async_show_form(step_id="conditions", data_schema=schema)
+
+    # ---- step 5: notification ----
+    async def async_step_notify(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            self._ca.update(user_input)
+            return self.async_create_entry(title="", data={CA_KEY: self._ca})
+
+        cur = self._cur()
+        notify_opts = [
+            f"notify.{name}"
+            for name in sorted(self.hass.services.async_services().get("notify", {}))
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=notify_opts,
+                        custom_value=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 vol.Optional(CA_TITLE, default=cur.get(CA_TITLE, "Wallbox")): str,
                 vol.Optional(
                     CA_MESSAGE,
                     default=cur.get(
                         CA_MESSAGE,
-                        "Your car isn't plugged in — a scheduled charge is coming up.",
+                        "Your car isn't plugged in — plug it in to charge.",
                     ),
                 ): str,
+                vol.Optional(
+                    CA_ACTIONABLE, default=cur.get(CA_ACTIONABLE, True)
+                ): selector.BooleanSelector(),
+                vol.Optional(CA_ESCALATE_MIN, default=cur.get(CA_ESCALATE_MIN, 0)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=120, unit_of_measurement="min",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
                 vol.Optional(CA_TAP_PATH, default=cur.get(CA_TAP_PATH, "")): str,
             }
         )
-        return self.async_show_form(step_id="reminder", data_schema=schema)
+        return self.async_show_form(step_id="notify", data_schema=schema)

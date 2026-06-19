@@ -55,6 +55,14 @@ def _plug_reminder(entity: GatewayEntity) -> bool | None:
     return bool(val) if val is not None else None
 
 
+def _car_connected(entity: GatewayEntity) -> bool | None:
+    # sta_connected from /api/status: the car cable is plugged in (whether
+    # or not it's actively charging). The Charge Assistant uses this to
+    # decide whether a "plug in" reminder is still relevant.
+    val = entity._status().get("sta_connected")
+    return bool(val) if val is not None else None
+
+
 BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
     GatewayBinaryDescription(
         key="ble_connected",
@@ -112,6 +120,13 @@ BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
         name="Plug-in reminder",
         icon="mdi:power-plug-off",
         value_fn=_plug_reminder,
+    ),
+    GatewayBinaryDescription(
+        key="car_connected",
+        translation_key="car_connected",
+        name="Car connected",
+        device_class=BinarySensorDeviceClass.PLUG,
+        value_fn=_car_connected,
     ),
 )
 

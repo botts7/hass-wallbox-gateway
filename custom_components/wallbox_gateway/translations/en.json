@@ -44,23 +44,48 @@
   "options": {
     "step": {
       "init": {
-        "title": "Charge Assistant — choose a mode",
+        "title": "Charge Assistant",
+        "description": "Pick what the assistant should do. Reminder nudges you to plug the car in.",
         "data": {"mode": "Mode"}
       },
-      "reminder": {
-        "title": "Reminder settings",
-        "description": "Notify when a scheduled charge is due soon but the car isn't plugged in. Fill the two required fields; the rest are optional.",
+      "triggers": {
+        "title": "When should I remind you?",
+        "description": "Tick any combination. The next step only asks for what these need.",
+        "data": {"triggers": "Triggers"}
+      },
+      "setup": {
+        "title": "Trigger settings",
+        "description": "Fill in the details for the triggers you chose.",
         "data": {
-          "reminder_entity": "Plug-in reminder sensor (required)",
-          "notify_service": "Notify service / your phone (required)",
-          "charge_switch": "Charging switch (optional — adds a Start button)",
-          "soc_entity": "Battery level sensor (optional)",
+          "arrival_entity": "Presence entity (person or phone) that means you're home",
+          "nightly_time": "Evening reminder time",
+          "lead_hours": "Hours before a scheduled charge",
+          "tariff_entity": "Electricity price sensor",
+          "tariff_below": "Remind when price at or below"
+        }
+      },
+      "conditions": {
+        "title": "Conditions",
+        "description": "Optional guards. Leave blank/off to skip.",
+        "data": {
+          "soc_entity": "Car battery level sensor (optional)",
           "skip_above_pct": "Skip when battery at or above (%)",
           "soc_max_age_min": "Ignore battery level if older than (min)",
+          "only_if_scheduled": "Only remind if a charge is actually scheduled",
+          "scheduled_within_h": "…within this many hours",
           "quiet_start": "Quiet hours start (set = end to disable)",
-          "quiet_end": "Quiet hours end",
+          "quiet_end": "Quiet hours end"
+        }
+      },
+      "notify": {
+        "title": "Notification",
+        "description": "Where to send the reminder and how it behaves.",
+        "data": {
+          "notify_service": "Notify service / your phone (required)",
           "title": "Notification title",
           "message": "Notification message",
+          "actionable": "Add Start / Snooze / Skip buttons",
+          "escalate_min": "Re-remind after (min) if still unplugged (0 = off)",
           "tap_path": "Open this page when tapped (optional)"
         }
       }
@@ -74,7 +99,8 @@
       "power_sharing": {"name": "Dynamic power sharing"},
       "phase_switch": {"name": "Phase switch"},
       "ble_paused": {"name": "BLE paused"},
-      "plug_reminder": {"name": "Plug-in reminder"}
+      "plug_reminder": {"name": "Plug-in reminder"},
+      "car_connected": {"name": "Car connected"}
     },
     "sensor": {
       "charger_status": {"name": "Charger status"},

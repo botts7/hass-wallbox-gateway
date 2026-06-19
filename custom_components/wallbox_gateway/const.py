@@ -22,7 +22,10 @@ MODE_OFF = "off"
 MODE_REMINDER = "reminder"
 MODE_SCHEDULED = "scheduled"  # future phases
 MODE_PROMPT = "prompt"        # future phases
-CA_START_ACTION = "WB_CA_START"  # mobile_app notification action id
+# mobile_app notification action ids
+CA_START_ACTION = "WB_CA_START"
+CA_SNOOZE_ACTION = "WB_CA_SNOOZE"
+CA_SKIP_ACTION = "WB_CA_SKIP"
 
 # Field keys (shared across modes)
 CA_REMINDER_ENTITY = "reminder_entity"
@@ -36,6 +39,29 @@ CA_QUIET_END = "quiet_end"
 CA_MESSAGE = "message"
 CA_TITLE = "title"
 CA_TAP_PATH = "tap_path"
+
+# Reminder triggers (choose-your-own-adventure). CA_TRIGGERS holds the
+# list of enabled trigger ids; each enabled trigger reads its own
+# settings key below. All triggers share the conditions + notification.
+CA_TRIGGERS = "triggers"
+TRIG_ARRIVAL = "arrival"   # presence entity -> home
+TRIG_NIGHTLY = "nightly"   # daily at a set time
+TRIG_LEAD = "lead"         # N hours before the next scheduled charge
+TRIG_TARIFF = "tariff"     # electricity price drops below a threshold
+
+CA_ARRIVAL_ENTITY = "arrival_entity"      # person / device_tracker
+CA_NIGHTLY_TIME = "nightly_time"          # "HH:MM:SS"
+CA_LEAD_HOURS = "lead_hours"              # float hours before charge
+CA_TARIFF_ENTITY = "tariff_entity"        # price sensor (e.g. Amber)
+CA_TARIFF_BELOW = "tariff_below"          # notify when price <= this
+
+# Conditions
+CA_ONLY_IF_SCHEDULED = "only_if_scheduled"      # bool
+CA_SCHEDULED_WITHIN_H = "scheduled_within_h"    # hours window for "scheduled"
+
+# Notification behaviour
+CA_ACTIONABLE = "actionable"        # bool — add Start/Snooze/Skip buttons
+CA_ESCALATE_MIN = "escalate_min"    # re-remind after N min if still unplugged (0 = off)
 
 # BAPI status code -> human label. Mirrors STATUS_CODES from the BLE
 # protocol; same numbering jagheterfredrik/wallbox-ble documents.

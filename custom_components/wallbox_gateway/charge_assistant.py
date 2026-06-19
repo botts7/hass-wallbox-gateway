@@ -1,9 +1,24 @@
 """Guided Charge Assistant — native controller.
 
-Phase 1: Reminder mode. Configured via the Options flow (see
-config_flow.py) and stored in entry.options[CA_KEY]. The controller runs
-the logic itself — no user automation, no helpers. Mirrors the Reminder
-branch of the charge_assistant blueprint, in Python.
+Reminder mode: nudge the user to plug in. The wizard (config_flow.py
+Options flow) lets the user pick any combination of triggers, all sharing
+the same conditions + notification — no automation, no helpers. The
+controller runs it in Python.
+
+Triggers:
+  * arrival  — a presence entity (person/device_tracker) turns ``home``
+  * nightly  — a fixed time of day
+  * lead     — N hours before the next scheduled charge
+  * tariff   — an electricity-price entity drops to/below a threshold
+
+Conditions (gate every trigger):
+  * car not plugged in (binary_sensor.car_connected, from sta_connected)
+  * optional SOC skip (don't nag if already charged enough)
+  * quiet hours
+  * optional "only if a charge is scheduled within X hours"
+
+Notification: optional Start now / Snooze / Skip action buttons and an
+optional escalate (re-remind if still unplugged).
 
 Scheduled / Prompt modes are reserved for later phases.
 """
@@ -11,35 +26,56 @@ Scheduled / Prompt modes are reserved for later phases.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_point_in_time,
+    async_track_state_change_event,
+    async_track_time_change,
+)
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CA_ACTIONABLE,
+    CA_ARRIVAL_ENTITY,
     CA_CHARGE_SWITCH,
+    CA_ESCALATE_MIN,
     CA_KEY,
+    CA_LEAD_HOURS,
     CA_MESSAGE,
+    CA_MODE,
+    CA_NIGHTLY_TIME,
     CA_NOTIFY_SERVICE,
+    CA_ONLY_IF_SCHEDULED,
     CA_QUIET_END,
     CA_QUIET_START,
-    CA_REMINDER_ENTITY,
+    CA_SCHEDULED_WITHIN_H,
     CA_SKIP_ABOVE,
+    CA_SKIP_ACTION,
+    CA_SNOOZE_ACTION,
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
     CA_START_ACTION,
     CA_TAP_PATH,
+    CA_TARIFF_BELOW,
+    CA_TARIFF_ENTITY,
     CA_TITLE,
-    CA_MODE,
+    CA_TRIGGERS,
     MODE_REMINDER,
+    TRIG_ARRIVAL,
+    TRIG_LEAD,
+    TRIG_NIGHTLY,
+    TRIG_TARIFF,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 _UNAVAILABLE = (None, "", "unknown", "unavailable")
+_MAX_ESCALATIONS = 3
+_SNOOZE_MINUTES = 60
 
 
 class ChargeAssistant:
@@ -50,15 +86,24 @@ class ChargeAssistant:
         self.entry = entry
         self._opts: dict = {}
         self._unsubs: list = []
+        self._lead_unsub = None
+        self._escalate_unsub = None
         self._charge_switch: str | None = None
         self._next_charge: str | None = None
+        self._connected_entity: str | None = None
+        # Suppression windows set by the Snooze / Skip notification actions.
+        self._suppress_until: datetime | None = None
+        self._escalations_left = 0
         self._last_result: str = "(not run)"
 
+    # ------------------------------------------------------------------
+    # Own-entity resolution
+    # ------------------------------------------------------------------
     def _own_entity(self, key: str, domain: str) -> str | None:
         """This config entry's own entity, by unique-id key + domain.
 
         Entities are unique_id = "<serial>_<key>", registered to this entry,
-        so we can find the gateway's own plug_reminder / charging /
+        so we find the gateway's own car_connected / charging /
         next_scheduled_charge without the user picking them.
         """
         reg = er.async_get(self.hass)
@@ -67,98 +112,192 @@ class ChargeAssistant:
                 return ent.entity_id
         return None
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
     async def async_start(self) -> None:
-        """Wire up listeners for the configured mode."""
+        """Wire up listeners for the configured triggers."""
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
         mode = self._opts.get(CA_MODE)
         _LOGGER.debug("Charge Assistant: async_start for %s — mode=%r", self.entry.title, mode)
         if mode != MODE_REMINDER:
-            _LOGGER.debug("Charge Assistant: mode %r not active — nothing wired", mode)
-            return  # off / not-yet-implemented modes do nothing
+            return
 
-        # Auto-resolve the gateway's OWN entities for this entry (a stored
-        # override is honoured if ever set), so the user never has to pick them.
-        reminder_entity = self._opts.get(CA_REMINDER_ENTITY) or self._own_entity(
-            "plug_reminder", "binary_sensor"
-        )
+        # Auto-resolve the gateway's own entities for this entry.
         self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
             "charging", "switch"
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
-        if not reminder_entity:
-            _LOGGER.warning(
-                "Charge Assistant: couldn't find this gateway's plug-in reminder sensor"
-            )
+        self._connected_entity = self._own_entity("car_connected", "binary_sensor")
+
+        triggers = self._opts.get(CA_TRIGGERS) or []
+        if not triggers:
+            _LOGGER.warning("Charge Assistant: reminder mode on but no triggers selected")
             return
 
-        self._unsubs.append(
-            async_track_state_change_event(
-                self.hass, [reminder_entity], self._on_reminder
-            )
-        )
-        # "Start charging now" button on the notification.
+        # The Start/Snooze/Skip buttons fire mobile_app_notification_action.
         self._unsubs.append(
             self.hass.bus.async_listen("mobile_app_notification_action", self._on_action)
         )
-        _LOGGER.info("Charge Assistant: reminder mode active on %s", reminder_entity)
+
+        if TRIG_ARRIVAL in triggers and (pe := self._opts.get(CA_ARRIVAL_ENTITY)):
+            self._unsubs.append(
+                async_track_state_change_event(self.hass, [pe], self._on_arrival)
+            )
+        if TRIG_NIGHTLY in triggers:
+            h, m, s = _parse_hms(self._opts.get(CA_NIGHTLY_TIME, "20:00:00"))
+            self._unsubs.append(
+                async_track_time_change(self.hass, self._on_nightly, hour=h, minute=m, second=s)
+            )
+        if TRIG_LEAD in triggers and self._next_charge:
+            # Re-evaluate the lead alarm whenever the next-charge time moves.
+            self._unsubs.append(
+                async_track_state_change_event(
+                    self.hass, [self._next_charge], self._on_next_charge_change
+                )
+            )
+            self._schedule_lead()
+        if TRIG_TARIFF in triggers and (pre := self._opts.get(CA_TARIFF_ENTITY)):
+            self._unsubs.append(
+                async_track_state_change_event(self.hass, [pre], self._on_price)
+            )
+
+        _LOGGER.info(
+            "Charge Assistant: reminder active on %s (triggers=%s)",
+            self.entry.title,
+            ",".join(triggers),
+        )
 
     async def async_stop(self) -> None:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        for handle in (self._lead_unsub, self._escalate_unsub):
+            if handle:
+                handle()
+        self._lead_unsub = None
+        self._escalate_unsub = None
 
-    async def async_test(self) -> None:
-        """Fire the reminder notification on demand (ignores conditions).
-
-        Exposed via the wallbox_gateway.test_reminder service so a user can
-        confirm the notify path + config without faking entity states. The
-        outcome is also written to <config>/wallbox_ca_test.txt so it can be
-        inspected without scraping the live log.
-        """
-        self._opts = dict(self.entry.options.get(CA_KEY) or {})
-        self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
-            "charging", "switch"
-        )
-        self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
-        _LOGGER.info(
-            "Charge Assistant: TEST notification requested (notify=%s)",
-            self._opts.get(CA_NOTIFY_SERVICE),
-        )
-        self._last_result = "(no result recorded)"
-        await self._send_notification()
-        path = self.hass.config.path("wallbox_ca_test.txt")
-        await self.hass.async_add_executor_job(self._write_result, path)
-
-    def _write_result(self, path: str) -> None:
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(self._last_result)
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Charge Assistant: couldn't write test result file")
-
-    # ---- reminder trigger ----
-
+    # ------------------------------------------------------------------
+    # Triggers
+    # ------------------------------------------------------------------
     @callback
-    def _on_reminder(self, event: Event) -> None:
+    def _on_arrival(self, event: Event) -> None:
         new = event.data.get("new_state")
         old = event.data.get("old_state")
-        if new is None or new.state != "on":
+        if new is None or new.state != "home":
             return
-        if old is not None and old.state == "on":
-            return  # only the off->on edge
-        _LOGGER.info("Charge Assistant: plug-in reminder turned ON")
+        if old is not None and old.state == "home":
+            return  # only the ->home edge
+        self._maybe_remind("arrival")
+
+    @callback
+    def _on_nightly(self, now: datetime) -> None:
+        self._maybe_remind("nightly")
+
+    @callback
+    def _on_price(self, event: Event) -> None:
+        new = event.data.get("new_state")
+        old = event.data.get("old_state")
+        below = self._opts.get(CA_TARIFF_BELOW)
+        if below is None or new is None or new.state in _UNAVAILABLE:
+            return
+        try:
+            new_v = float(new.state)
+            thr = float(below)
+        except (TypeError, ValueError):
+            return
+        old_v = None
+        if old is not None and old.state not in _UNAVAILABLE:
+            try:
+                old_v = float(old.state)
+            except (TypeError, ValueError):
+                old_v = None
+        # Fire only on the downward crossing into the cheap window.
+        if new_v <= thr and (old_v is None or old_v > thr):
+            self._maybe_remind("tariff")
+
+    @callback
+    def _on_next_charge_change(self, event: Event) -> None:
+        self._schedule_lead()
+
+    def _schedule_lead(self) -> None:
+        """(Re)arm the lead-time alarm from the next-charge sensor."""
+        if self._lead_unsub:
+            self._lead_unsub()
+            self._lead_unsub = None
+        if not self._next_charge:
+            return
+        st = self.hass.states.get(self._next_charge)
+        if st is None or st.state in _UNAVAILABLE:
+            return
+        charge_dt = dt_util.parse_datetime(st.state)
+        if charge_dt is None:
+            return
+        lead_h = float(self._opts.get(CA_LEAD_HOURS, 0) or 0)
+        fire_at = charge_dt - timedelta(hours=lead_h)
+        now = dt_util.utcnow()
+        if fire_at <= now < charge_dt:
+            # Lead point already passed but charge still ahead — check soon.
+            fire_at = now + timedelta(seconds=5)
+        if fire_at <= now:
+            return  # charge already in the past
+        self._lead_unsub = async_track_point_in_time(
+            self.hass, self._on_lead, fire_at
+        )
+
+    @callback
+    def _on_lead(self, now: datetime) -> None:
+        self._lead_unsub = None
+        self._maybe_remind("lead")
+
+    # ------------------------------------------------------------------
+    # Decision + notification
+    # ------------------------------------------------------------------
+    @callback
+    def _maybe_remind(self, source: str) -> None:
+        if self._suppressed():
+            _LOGGER.debug("Charge Assistant: %s suppressed (snooze/skip)", source)
+            return
+        plugged = self._plugged_in()
+        if plugged is not False:
+            _LOGGER.debug("Charge Assistant: %s — car connected/unknown, no nudge", source)
+            return
         if not self._soc_skip_ok():
-            _LOGGER.info("Charge Assistant: skipped — battery at/above the skip threshold")
+            _LOGGER.debug("Charge Assistant: %s skipped — SOC at/above threshold", source)
             return
         if not self._quiet_ok():
-            _LOGGER.info("Charge Assistant: skipped — quiet hours")
+            _LOGGER.debug("Charge Assistant: %s skipped — quiet hours", source)
             return
-        _LOGGER.info("Charge Assistant: sending reminder notification")
-        self.hass.async_create_task(self._send_notification())
+        if self._opts.get(CA_ONLY_IF_SCHEDULED) and not self._charge_within():
+            _LOGGER.debug("Charge Assistant: %s skipped — no charge scheduled in window", source)
+            return
+        _LOGGER.info("Charge Assistant: reminding (trigger=%s)", source)
+        self._escalations_left = _MAX_ESCALATIONS
+        self.hass.async_create_task(self._send_notification(source))
+        self._arm_escalation()
 
-    async def _send_notification(self) -> None:
-        # Whole body guarded so ANY failure (message build, bad service
-        # string, async_call) surfaces as an ERROR instead of vanishing.
+    def _arm_escalation(self) -> None:
+        if self._escalate_unsub:
+            self._escalate_unsub()
+            self._escalate_unsub = None
+        mins = int(self._opts.get(CA_ESCALATE_MIN, 0) or 0)
+        if mins <= 0 or self._escalations_left <= 0:
+            return
+        self._escalate_unsub = async_track_point_in_time(
+            self.hass, self._on_escalate, dt_util.utcnow() + timedelta(minutes=mins)
+        )
+
+    @callback
+    def _on_escalate(self, now: datetime) -> None:
+        self._escalate_unsub = None
+        if self._suppressed() or self._plugged_in() is not False:
+            return  # plugged in or snoozed — stop nagging
+        self._escalations_left -= 1
+        self.hass.async_create_task(self._send_notification("reminder"))
+        self._arm_escalation()
+
+    async def _send_notification(self, source: str = "reminder") -> None:
         try:
             service = self._opts.get(CA_NOTIFY_SERVICE)
             if not service or "." not in service:
@@ -167,53 +306,98 @@ class ChargeAssistant:
                 self._last_result = msg
                 return
             domain, name = service.split(".", 1)
-            message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — a charge is coming up."
+            message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — plug it in to charge."
             soc_entity = self._opts.get(CA_SOC_ENTITY)
             if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
                 message = f"{message} · battery {st.state}%"
-            # Append the scheduled time from the gateway's own next-charge sensor.
             if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
                 dt = dt_util.parse_datetime(nc.state)
                 if dt:
                     message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
 
             data: dict = {}
-            if self._charge_switch:
-                data["actions"] = [
-                    {"action": CA_START_ACTION, "title": "Start charging now"}
-                ]
+            if self._opts.get(CA_ACTIONABLE, True):
+                actions = []
+                if self._charge_switch:
+                    actions.append({"action": CA_START_ACTION, "title": "Start charging now"})
+                actions.append({"action": CA_SNOOZE_ACTION, "title": "Snooze 1h"})
+                actions.append({"action": CA_SKIP_ACTION, "title": "Skip tonight"})
+                data["actions"] = actions
             if self._opts.get(CA_TAP_PATH):
                 data["clickAction"] = self._opts[CA_TAP_PATH]
 
             payload = {"title": self._opts.get(CA_TITLE) or "Wallbox", "message": message}
             if data:
                 payload["data"] = data
-            _LOGGER.debug(
-                "Charge Assistant: calling %s.%s payload=%s", domain, name, payload
-            )
+            _LOGGER.debug("Charge Assistant: calling %s.%s payload=%s", domain, name, payload)
             await self.hass.services.async_call(domain, name, payload, blocking=True)
-            _LOGGER.info("Charge Assistant: notification sent via %s.%s", domain, name)
+            _LOGGER.info("Charge Assistant: notification sent via %s.%s (trigger=%s)", domain, name, source)
             self._last_result = f"sent OK via {domain}.{name}\npayload={payload}"
         except Exception as err:  # noqa: BLE001 — don't let a notify failure crash the loop
             _LOGGER.exception("Charge Assistant: _send_notification FAILED")
             self._last_result = f"FAILED: {type(err).__name__}: {err}"
 
-    # ---- "Start now" button ----
-
+    # ------------------------------------------------------------------
+    # Notification action buttons
+    # ------------------------------------------------------------------
     @callback
     def _on_action(self, event: Event) -> None:
-        if event.data.get("action") != CA_START_ACTION:
-            return
-        if not self._charge_switch:
-            return
-        _LOGGER.info("Charge Assistant: 'Start now' tapped -> turning on %s", self._charge_switch)
-        self.hass.async_create_task(
-            self.hass.services.async_call(
-                "switch", "turn_on", {"entity_id": self._charge_switch}, blocking=False
+        action = event.data.get("action")
+        if action == CA_START_ACTION:
+            if self._charge_switch:
+                _LOGGER.info("Charge Assistant: 'Start now' -> %s", self._charge_switch)
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        "switch", "turn_on", {"entity_id": self._charge_switch}, blocking=False
+                    )
+                )
+        elif action == CA_SNOOZE_ACTION:
+            self._suppress_until = dt_util.utcnow() + timedelta(minutes=_SNOOZE_MINUTES)
+            self._cancel_escalation()
+            _LOGGER.info("Charge Assistant: snoozed until %s", self._suppress_until)
+        elif action == CA_SKIP_ACTION:
+            # Suppress until tomorrow morning (06:00 local).
+            now_local = dt_util.now()
+            tomorrow = (now_local + timedelta(days=1)).replace(
+                hour=6, minute=0, second=0, microsecond=0
             )
-        )
+            self._suppress_until = dt_util.as_utc(tomorrow)
+            self._cancel_escalation()
+            _LOGGER.info("Charge Assistant: skipped until %s", self._suppress_until)
 
-    # ---- conditions (mirror the blueprint) ----
+    def _cancel_escalation(self) -> None:
+        if self._escalate_unsub:
+            self._escalate_unsub()
+            self._escalate_unsub = None
+
+    # ------------------------------------------------------------------
+    # Conditions
+    # ------------------------------------------------------------------
+    def _plugged_in(self) -> bool | None:
+        """True = connected, False = unplugged, None = unknown."""
+        if not self._connected_entity:
+            return None
+        st = self.hass.states.get(self._connected_entity)
+        if st is None or st.state in _UNAVAILABLE:
+            return None
+        return st.state == "on"
+
+    def _suppressed(self) -> bool:
+        return self._suppress_until is not None and dt_util.utcnow() < self._suppress_until
+
+    def _charge_within(self) -> bool:
+        """True if the next scheduled charge is within the configured window."""
+        if not self._next_charge:
+            return False
+        st = self.hass.states.get(self._next_charge)
+        if st is None or st.state in _UNAVAILABLE:
+            return False
+        dt = dt_util.parse_datetime(st.state)
+        if dt is None:
+            return False
+        window_h = float(self._opts.get(CA_SCHEDULED_WITHIN_H, 12) or 12)
+        delta = (dt - dt_util.utcnow()).total_seconds()
+        return 0 <= delta <= window_h * 3600
 
     def _soc_skip_ok(self) -> bool:
         """True = ok to notify. False only when a FRESH reading is >= skip%."""
@@ -222,7 +406,7 @@ class ChargeAssistant:
             return True
         st = self.hass.states.get(soc_entity)
         if st is None or st.state in _UNAVAILABLE:
-            return True  # no/dead reading -> don't trust it to suppress
+            return True
         try:
             soc = float(st.state)
         except (TypeError, ValueError):
@@ -244,3 +428,44 @@ class ChargeAssistant:
         if start < end:
             return not (start <= now < end)
         return not (now >= start or now < end)
+
+    # ------------------------------------------------------------------
+    # On-demand test (wallbox_gateway.test_reminder)
+    # ------------------------------------------------------------------
+    async def async_test(self) -> None:
+        """Fire the reminder notification on demand (ignores conditions).
+
+        Writes the outcome to <config>/wallbox_ca_test.txt for inspection.
+        """
+        self._opts = dict(self.entry.options.get(CA_KEY) or {})
+        self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
+            "charging", "switch"
+        )
+        self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
+        _LOGGER.info(
+            "Charge Assistant: TEST notification requested (notify=%s)",
+            self._opts.get(CA_NOTIFY_SERVICE),
+        )
+        self._last_result = "(no result recorded)"
+        await self._send_notification("test")
+        path = self.hass.config.path("wallbox_ca_test.txt")
+        await self.hass.async_add_executor_job(self._write_result, path)
+
+    def _write_result(self, path: str) -> None:
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self._last_result)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Charge Assistant: couldn't write test result file")
+
+
+def _parse_hms(value: str) -> tuple[int, int, int]:
+    """Parse 'HH:MM' or 'HH:MM:SS' into (h, m, s); default 20:00:00."""
+    try:
+        parts = [int(p) for p in str(value).split(":")]
+        h = parts[0] if len(parts) > 0 else 20
+        m = parts[1] if len(parts) > 1 else 0
+        s = parts[2] if len(parts) > 2 else 0
+        return h, m, s
+    except (TypeError, ValueError):
+        return 20, 0, 0
