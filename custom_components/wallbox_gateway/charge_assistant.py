@@ -60,11 +60,14 @@ from .const import (
     CA_SOC_MAX_AGE,
     CA_START_ACTION,
     CA_TAP_PATH,
+    CA_TARGET_AUTOSTART,
+    CA_TARGET_PCT,
     CA_TARIFF_BELOW,
     CA_TARIFF_ENTITY,
     CA_TITLE,
     CA_TRIGGERS,
     MODE_REMINDER,
+    MODE_TARGET,
     TRIG_ARRIVAL,
     TRIG_LEAD,
     TRIG_NIGHTLY,
@@ -76,6 +79,9 @@ _LOGGER = logging.getLogger(__name__)
 _UNAVAILABLE = (None, "", "unknown", "unavailable")
 _MAX_ESCALATIONS = 3
 _SNOOZE_MINUTES = 60
+# Target-SOC auto-start deadband: once stopped at target, don't auto-restart
+# until SOC has fallen this far below target (prevents flapping around the cap).
+_TARGET_DEADBAND = 5
 
 
 class ChargeAssistant:
@@ -91,6 +97,7 @@ class ChargeAssistant:
         self._charge_switch: str | None = None
         self._next_charge: str | None = None
         self._connected_entity: str | None = None
+        self._charging_sensor: str | None = None
         # Suppression windows set by the Snooze / Skip notification actions.
         self._suppress_until: datetime | None = None
         self._escalations_left = 0
@@ -116,20 +123,22 @@ class ChargeAssistant:
     # Lifecycle
     # ------------------------------------------------------------------
     async def async_start(self) -> None:
-        """Wire up listeners for the configured triggers."""
+        """Wire up listeners for the configured mode."""
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
         mode = self._opts.get(CA_MODE)
         _LOGGER.debug("Charge Assistant: async_start for %s — mode=%r", self.entry.title, mode)
-        if mode != MODE_REMINDER:
-            return
-
-        # Auto-resolve the gateway's own entities for this entry.
+        # Auto-resolve the gateway's own entities for this entry (shared).
         self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
             "charging", "switch"
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
         self._connected_entity = self._own_entity("car_connected", "binary_sensor")
+        if mode == MODE_REMINDER:
+            await self._start_reminder()
+        elif mode == MODE_TARGET:
+            await self._start_target()
 
+    async def _start_reminder(self) -> None:
         triggers = self._opts.get(CA_TRIGGERS) or []
         if not triggers:
             _LOGGER.warning("Charge Assistant: reminder mode on but no triggers selected")
@@ -252,6 +261,100 @@ class ChargeAssistant:
         self._maybe_remind("lead")
 
     # ------------------------------------------------------------------
+    # Target-SOC (smart charge) mode
+    # ------------------------------------------------------------------
+    async def _start_target(self) -> None:
+        soc_entity = self._opts.get(CA_SOC_ENTITY)
+        if not soc_entity:
+            _LOGGER.warning("Charge Assistant: target mode needs a battery-level sensor")
+            return
+        if not self._charge_switch:
+            _LOGGER.warning("Charge Assistant: target mode couldn't find the charging switch")
+            return
+        self._charging_sensor = self._own_entity("charging", "binary_sensor")
+        # Re-evaluate whenever SOC moves or the cable is plugged/unplugged.
+        watch = [soc_entity]
+        if self._connected_entity:
+            watch.append(self._connected_entity)
+        self._unsubs.append(
+            async_track_state_change_event(self.hass, watch, self._on_target_change)
+        )
+        _LOGGER.info(
+            "Charge Assistant: target mode active — cap %s%% on %s (autostart=%s)",
+            self._opts.get(CA_TARGET_PCT, 80),
+            soc_entity,
+            bool(self._opts.get(CA_TARGET_AUTOSTART)),
+        )
+        # Evaluate once at startup in case we're already at/over target.
+        self._eval_target()
+
+    @callback
+    def _on_target_change(self, event: Event) -> None:
+        self._eval_target()
+
+    def _eval_target(self) -> None:
+        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
+        if soc is None:
+            return
+        try:
+            target = float(self._opts.get(CA_TARGET_PCT, 80) or 80)
+        except (TypeError, ValueError):
+            return
+        charging = self._is_charging()
+        if soc >= target:
+            # Charge cap reached — stop if we're charging.
+            if charging:
+                _LOGGER.info("Charge Assistant: SOC %.0f%% >= target %.0f%% — stopping charge", soc, target)
+                self._set_charging(False)
+                self.hass.async_create_task(
+                    self._send_notification("target", message_override=(
+                        f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
+                    ))
+                )
+        elif self._opts.get(CA_TARGET_AUTOSTART):
+            # Below target: optionally (re)start when plugged in. The deadband
+            # stops us re-starting the instant SOC dips just under the cap.
+            if self._plugged_in() is True and not charging and soc <= target - _TARGET_DEADBAND:
+                _LOGGER.info("Charge Assistant: SOC %.0f%% below target %.0f%% — starting charge", soc, target)
+                self._set_charging(True)
+                self.hass.async_create_task(
+                    self._send_notification("target", message_override=(
+                        f"Charging started — {soc:.0f}% (target {target:.0f}%)."
+                    ))
+                )
+
+    def _is_charging(self) -> bool:
+        """True if the charger reports it's actively charging."""
+        ent = getattr(self, "_charging_sensor", None)
+        if ent and (st := self.hass.states.get(ent)) and st.state not in _UNAVAILABLE:
+            return st.state == "on"
+        # Fall back to the control switch's commanded state.
+        if self._charge_switch and (sw := self.hass.states.get(self._charge_switch)):
+            return sw.state == "on"
+        return False
+
+    def _set_charging(self, on: bool) -> None:
+        if not self._charge_switch:
+            return
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "switch", "turn_on" if on else "turn_off",
+                {"entity_id": self._charge_switch}, blocking=False,
+            )
+        )
+
+    def _read_float(self, entity_id: str | None) -> float | None:
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        if st is None or st.state in _UNAVAILABLE:
+            return None
+        try:
+            return float(st.state)
+        except (TypeError, ValueError):
+            return None
+
+    # ------------------------------------------------------------------
     # Decision + notification
     # ------------------------------------------------------------------
     @callback
@@ -297,34 +400,39 @@ class ChargeAssistant:
         self.hass.async_create_task(self._send_notification("reminder"))
         self._arm_escalation()
 
-    async def _send_notification(self, source: str = "reminder") -> None:
+    async def _send_notification(self, source: str = "reminder", message_override: str | None = None) -> None:
         try:
             service = self._opts.get(CA_NOTIFY_SERVICE)
             if not service or "." not in service:
+                if message_override is not None:
+                    return  # target-mode notify is optional — silently skip
                 msg = f"no valid notify service configured (got {service!r})"
                 _LOGGER.warning("Charge Assistant: %s", msg)
                 self._last_result = msg
                 return
             domain, name = service.split(".", 1)
-            message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — plug it in to charge."
-            soc_entity = self._opts.get(CA_SOC_ENTITY)
-            if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
-                message = f"{message} · battery {st.state}%"
-            if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
-                dt = dt_util.parse_datetime(nc.state)
-                if dt:
-                    message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
-
             data: dict = {}
-            if self._opts.get(CA_ACTIONABLE, True):
-                actions = []
-                if self._charge_switch:
-                    actions.append({"action": CA_START_ACTION, "title": "Start charging now"})
-                actions.append({"action": CA_SNOOZE_ACTION, "title": "Snooze 1h"})
-                actions.append({"action": CA_SKIP_ACTION, "title": "Skip tonight"})
-                data["actions"] = actions
-            if self._opts.get(CA_TAP_PATH):
-                data["clickAction"] = self._opts[CA_TAP_PATH]
+            if message_override is not None:
+                # Target-mode status message — informational, no action buttons.
+                message = message_override
+            else:
+                message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — plug it in to charge."
+                soc_entity = self._opts.get(CA_SOC_ENTITY)
+                if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
+                    message = f"{message} · battery {st.state}%"
+                if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
+                    dt = dt_util.parse_datetime(nc.state)
+                    if dt:
+                        message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
+                if self._opts.get(CA_ACTIONABLE, True):
+                    actions = []
+                    if self._charge_switch:
+                        actions.append({"action": CA_START_ACTION, "title": "Start charging now"})
+                    actions.append({"action": CA_SNOOZE_ACTION, "title": "Snooze 1h"})
+                    actions.append({"action": CA_SKIP_ACTION, "title": "Skip tonight"})
+                    data["actions"] = actions
+                if self._opts.get(CA_TAP_PATH):
+                    data["clickAction"] = self._opts[CA_TAP_PATH]
 
             payload = {"title": self._opts.get(CA_TITLE) or "Wallbox", "message": message}
             if data:

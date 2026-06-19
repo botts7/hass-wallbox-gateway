@@ -43,6 +43,8 @@ from .const import (
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
     CA_TAP_PATH,
+    CA_TARGET_AUTOSTART,
+    CA_TARGET_PCT,
     CA_TARIFF_BELOW,
     CA_TARIFF_ENTITY,
     CA_TITLE,
@@ -53,6 +55,7 @@ from .const import (
     DOMAIN,
     MODE_OFF,
     MODE_REMINDER,
+    MODE_TARGET,
     TRIG_ARRIVAL,
     TRIG_LEAD,
     TRIG_NIGHTLY,
@@ -301,6 +304,9 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 # Start a fresh accumulator for this run-through.
                 self._ca: dict[str, Any] = {CA_MODE: MODE_REMINDER}
                 return await self.async_step_triggers()
+            if mode == MODE_TARGET:
+                self._ca = {CA_MODE: MODE_TARGET}
+                return await self.async_step_target()
             # "Off" (and not-yet-built modes) — store mode only.
             return self.async_create_entry(title="", data={CA_KEY: {CA_MODE: mode}})
 
@@ -314,6 +320,10 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                                 "value": MODE_REMINDER,
                                 "label": "Reminder — nudge me to plug the car in",
                             },
+                            {
+                                "value": MODE_TARGET,
+                                "label": "Smart charge — charge to a target % then stop",
+                            },
                         ],
                         mode=selector.SelectSelectorMode.LIST,
                     )
@@ -321,6 +331,48 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
+
+    # ---- Smart charge (target-SOC) ----
+    async def async_step_target(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            self._ca.update(user_input)
+            return self.async_create_entry(title="", data={CA_KEY: self._ca})
+
+        cur = self._cur()
+        notify_opts = [
+            f"notify.{name}"
+            for name in sorted(self.hass.services.async_services().get("notify", {}))
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CA_SOC_ENTITY, default=cur.get(CA_SOC_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="battery")
+                ),
+                vol.Required(CA_TARGET_PCT, default=cur.get(CA_TARGET_PCT, 80)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=100, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CA_TARGET_AUTOSTART, default=cur.get(CA_TARGET_AUTOSTART, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=notify_opts,
+                        custom_value=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="target", data_schema=schema)
 
     # ---- step 2: which triggers ----
     async def async_step_triggers(

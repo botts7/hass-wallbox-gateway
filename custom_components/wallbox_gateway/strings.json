@@ -88,6 +88,16 @@
           "escalate_min": "Re-remind after (min) if still unplugged (0 = off)",
           "tap_path": "Open this page when tapped (optional)"
         }
+      },
+      "target": {
+        "title": "Smart charge — charge to a target",
+        "description": "Stops charging once the car reaches your target. Optionally also starts it. Auto-start is off by default so it won't charge (cost money) until you choose.",
+        "data": {
+          "soc_entity": "Car battery level sensor (required)",
+          "target_soc_pct": "Target charge level (%)",
+          "target_autostart": "Also start charging when below target (and plugged in)",
+          "notify_service": "Notify me when it starts/stops (optional)"
+        }
       }
     }
   },

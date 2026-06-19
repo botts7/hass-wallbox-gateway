@@ -20,8 +20,14 @@ CA_KEY = "charge_assistant"
 CA_MODE = "mode"
 MODE_OFF = "off"
 MODE_REMINDER = "reminder"
+MODE_TARGET = "target_soc"    # Phase 2: charge to a target % then stop
 MODE_SCHEDULED = "scheduled"  # future phases
 MODE_PROMPT = "prompt"        # future phases
+
+# Target-SOC (smart charge) mode fields. Reuses CA_SOC_ENTITY (now
+# required), CA_CHARGE_SWITCH (auto-resolved), CA_NOTIFY_SERVICE (optional).
+CA_TARGET_PCT = "target_soc_pct"          # stop charging at/above this %
+CA_TARGET_AUTOSTART = "target_autostart"  # also START when below target + plugged in
 # mobile_app notification action ids
 CA_START_ACTION = "WB_CA_START"
 CA_SNOOZE_ACTION = "WB_CA_SNOOZE"
