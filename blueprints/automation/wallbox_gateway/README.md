@@ -3,6 +3,39 @@
 One blueprint, one automation, a **Mode** dropdown — so charge strategies can't
 conflict. Import `charge_assistant.yaml` and create a single automation.
 
+## Decide what you want (walk-through)
+
+Answer these and you'll land on the right Mode + fields.
+
+**1. Should Home Assistant actually start/stop the charge — or just message you?**
+- *Just message me* → go to Q2.
+- *HA should control charging* → **Scheduled charge (HA-driven)**. Go to Q3.
+
+**2. (Messaging) Do you set charging times on the charger itself (Wallbox app schedule)?**
+- *Yes, I use the charger's schedule* → **Reminder** mode — nudges you if a
+  scheduled charge is coming up but the car isn't plugged in.
+  *Need:* Plug-in reminder sensor + Notify device. *Optional:* Charging switch
+  ("Start now" button), Battery sensor (skip if already charged), Next-charge
+  sensor (shows the time).
+- *No, I just plug in whenever* → **Plugged-in prompt** mode — when you plug in
+  with nothing scheduled, it asks "start now?".
+  *Need:* Car connected + Next-charge sensor + Notify device. *Optional:* Charging
+  switch, Battery sensor.
+
+**3. (HA-driven) When, and to what level?**
+- *At a set time, to a fixed %* → set **Start time** + **Target %**.
+- *To a level based on how much I drive* → also add the **Rolling-distance
+  sensor** (a Statistics helper on your odometer) + **Range on a full charge**.
+- *Only top up when the battery is actually low ("override")* → just set a
+  **Target %**: it starts at the time **only if SOC is below target**, and stops
+  when it reaches it — so a near-full car won't charge, a low one will. This is
+  how you override/skip a charge based on SOC.
+  *Always need:* Car connected + Charging switch + Battery sensor + Start time.
+
+**Conditions you can layer on any mode:** quiet hours · skip/don't-charge if
+battery already ≥ X% · stale-SOC guard (ignore an old reading) · hard stop time
+(Scheduled safety cut-off).
+
 ## Pick a Mode
 
 | Mode | Use if… | Does |
