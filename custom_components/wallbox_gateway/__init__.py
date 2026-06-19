@@ -18,6 +18,7 @@ from .api import ClientConfig, GatewayClient
 from .charge_assistant import ChargeAssistant
 from .const import DEFAULT_USERNAME, DOMAIN
 from .coordinator import GatewayCoordinator
+from .schedule import async_setup_schedule_services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for a in hass.data.get(DOMAIN, {}).get("_assistants", {}).values():
                 await a.async_test()
         hass.services.async_register(DOMAIN, "test_reminder", _async_test_reminder)
+
+    # Charge-schedule create/update/delete services (idempotent).
+    async_setup_schedule_services(hass)
     return True
 
 

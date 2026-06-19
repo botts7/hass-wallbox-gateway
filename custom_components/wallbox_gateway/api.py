@@ -82,3 +82,31 @@ class GatewayClient:
         """
         path = f"/api/command?action=bapi&met={met}&par={par}&wait={wait_ms}"
         return await self.get(path, timeout=(wait_ms / 1000.0) + 3.0)
+
+    async def command(
+        self, params: dict[str, str], timeout: float = 9.0
+    ) -> Any:
+        """GET /api/command with properly-encoded query params.
+
+        Used for BAPI writes whose `par` is raw JSON (e.g. s_sch / clr_sch):
+        building the query as a dict lets aiohttp percent-encode it exactly
+        once, the way the dashboard's encodeURIComponent does.
+        """
+        url = self._config.base_url + "/api/command"
+        try:
+            async with self._session.get(
+                url,
+                params=params,
+                auth=self._auth(),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise GatewayAuthError(f"{resp.status} on /api/command")
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise GatewayError(f"{resp.status} on /api/command: {body[:200]}")
+                return await resp.json(content_type=None)
+        except aiohttp.ClientConnectorError as e:
+            raise GatewayUnreachable(str(e)) from e
+        except TimeoutError as e:
+            raise GatewayUnreachable("timeout on /api/command") from e
