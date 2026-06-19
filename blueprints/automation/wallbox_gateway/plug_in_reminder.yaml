@@ -1,0 +1,116 @@
+blueprint:
+  name: Wallbox Gateway — Plug-in reminder
+  description: >
+    Notify when a scheduled charge is coming up and the car is NOT plugged
+    in, so the schedule doesn't silently no-op.
+
+
+    Point it at the Wallbox Gateway's **Plug-in reminder** binary_sensor —
+    available whether you use the HA Integration or plain MQTT discovery.
+    The gateway already works out "a charge is due within your lead time
+    AND the car isn't connected", so this blueprint just decides *who* gets
+    told and *when not* to (quiet hours / already-charged). Because it
+    triggers on a binary_sensor, it also works with any other charger
+    integration that exposes an equivalent "should remind" sensor.
+  domain: automation
+  source_url: https://github.com/botts7/hass-wallbox-gateway/blob/main/blueprints/automation/wallbox_gateway/plug_in_reminder.yaml
+  input:
+    reminder_entity:
+      name: Plug-in reminder sensor
+      description: >
+        The binary_sensor that turns ON when you should plug in
+        (Wallbox Gateway → "Plug-in reminder").
+      selector:
+        entity:
+          domain: binary_sensor
+    notify_device:
+      name: Notify device
+      description: The mobile device (Home Assistant app) to notify.
+      selector:
+        device:
+          integration: mobile_app
+    message:
+      name: Notification message
+      default: "Your car isn't plugged in — a scheduled charge is coming up."
+      selector:
+        text:
+    title:
+      name: Notification title
+      default: "Wallbox — plug in to charge"
+      selector:
+        text:
+    soc_entity:
+      name: Battery level sensor (optional)
+      description: >
+        If set, the reminder is skipped when the car is already at or above
+        the threshold below (no point nagging if it doesn't need charge).
+      default:
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+    soc_threshold:
+      name: Skip when battery at or above (%)
+      default: 80
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+    quiet_start:
+      name: Quiet hours start (optional)
+      description: Set start = end to disable quiet hours.
+      default: "00:00:00"
+      selector:
+        time:
+    quiet_end:
+      name: Quiet hours end (optional)
+      default: "00:00:00"
+      selector:
+        time:
+
+mode: single
+max_exceeded: silent
+
+variables:
+  soc_entity: !input soc_entity
+  soc_threshold: !input soc_threshold
+  quiet_start: !input quiet_start
+  quiet_end: !input quiet_end
+
+trigger:
+  - platform: state
+    entity_id: !input reminder_entity
+    to: "on"
+
+condition:
+  # Skip if the car is already charged enough (only when a SOC sensor is set).
+  - condition: template
+    value_template: >
+      {% if soc_entity %}
+        {{ states(soc_entity) | float(0) < (soc_threshold | float(100)) }}
+      {% else %}
+        true
+      {% endif %}
+  # Respect quiet hours. start == end disables the window. Handles windows
+  # that wrap past midnight (e.g. 22:00 -> 07:00).
+  - condition: template
+    value_template: >
+      {% if quiet_start == quiet_end %}
+        true
+      {% else %}
+        {% set n = now().strftime('%H:%M:%S') %}
+        {% if quiet_start < quiet_end %}
+          {{ not (quiet_start <= n < quiet_end) }}
+        {% else %}
+          {{ not (n >= quiet_start or n < quiet_end) }}
+        {% endif %}
+      {% endif %}
+
+action:
+  - domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    title: !input title
+    message: !input message

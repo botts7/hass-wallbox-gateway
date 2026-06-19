@@ -27,7 +27,8 @@
       "schedule_paused": {"name": "Schedule paused"},
       "power_sharing": {"name": "Dynamic power sharing"},
       "phase_switch": {"name": "Phase switch"},
-      "ble_paused": {"name": "BLE paused"}
+      "ble_paused": {"name": "BLE paused"},
+      "plug_reminder": {"name": "Plug-in reminder"}
     },
     "sensor": {
       "charger_status": {"name": "Charger status"},

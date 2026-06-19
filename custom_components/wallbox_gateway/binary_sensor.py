@@ -47,6 +47,14 @@ def _schedule_paused(entity: GatewayEntity) -> bool:
     return (entity._status().get("gen") or 0) != 0
 
 
+def _plug_reminder(entity: GatewayEntity) -> bool | None:
+    # Charge-reminder engine (#127): ON when a charge is due within the
+    # configured lead window and the car is NOT plugged in. The gateway
+    # computes it; this is the single entity a notify blueprint binds to.
+    val = entity._status().get("plug_reminder")
+    return bool(val) if val is not None else None
+
+
 BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
     GatewayBinaryDescription(
         key="ble_connected",
@@ -96,6 +104,14 @@ BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda e: bool(e._status().get("ble_paused")) if "ble_paused" in e._status() else None,
+    ),
+    # Charge-reminder engine (#127)
+    GatewayBinaryDescription(
+        key="plug_reminder",
+        translation_key="plug_reminder",
+        name="Plug-in reminder",
+        icon="mdi:power-plug-off",
+        value_fn=_plug_reminder,
     ),
 )
 

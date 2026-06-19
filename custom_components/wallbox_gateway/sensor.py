@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -77,6 +78,16 @@ def _mains_voltage(entity: GatewayEntity) -> int | None:
     # values into the meter dict. /api/status doesn't carry these.
     v = entity._meter().get("voltage_v")
     return int(v) if isinstance(v, (int, float)) else None
+
+
+def _next_charge(entity: GatewayEntity) -> datetime | None:
+    # Charge-reminder engine (#127): the gateway computes the UTC epoch of
+    # the next enabled schedule. A timestamp sensor needs a tz-aware
+    # datetime; 0/absent means no upcoming schedule (or NTP not synced).
+    epoch = entity._status().get("next_scheduled_charge")
+    if not isinstance(epoch, (int, float)) or epoch <= 0:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
 
 
 def _house_power(entity: GatewayEntity) -> int | None:
@@ -512,6 +523,16 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda e: _opt_int(e._lse().get("control_mode")),
+    ),
+    # ---- Charge reminder (#127) ----------------------------------------
+    # Gateway-computed next enabled schedule start. device_class TIMESTAMP
+    # so HA renders it as a tz-aware time and blueprints can do time math.
+    GatewaySensorEntityDescription(
+        key="next_scheduled_charge",
+        translation_key="next_scheduled_charge",
+        name="Next scheduled charge",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=_next_charge,
     ),
 )
 

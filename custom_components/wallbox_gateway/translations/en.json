@@ -27,7 +27,8 @@
       "schedule_paused": {"name": "Schedule paused"},
       "power_sharing": {"name": "Dynamic power sharing"},
       "phase_switch": {"name": "Phase switch"},
-      "ble_paused": {"name": "BLE paused"}
+      "ble_paused": {"name": "BLE paused"},
+      "plug_reminder": {"name": "Plug-in reminder"}
     },
     "sensor": {
       "charger_status": {"name": "Charger status"},
@@ -74,7 +75,8 @@
       "grid_energy_session": {"name": "Grid energy (session)"},
       "surplus_power": {"name": "Solar surplus power"},
       "active_feature": {"name": "Active feature"},
-      "control_mode": {"name": "Control mode"}
+      "control_mode": {"name": "Control mode"},
+      "next_scheduled_charge": {"name": "Next scheduled charge"}
     },
     "switch": {
       "charging": {"name": "Charging"},
