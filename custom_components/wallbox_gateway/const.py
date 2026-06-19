@@ -13,6 +13,30 @@ CONF_POLL_INTERVAL = "poll_interval"
 DEFAULT_USERNAME = "admin"
 DEFAULT_POLL_INTERVAL = 10  # seconds
 
+# ---- Guided Charge Assistant (Options flow + native controller) ----
+# Config lives under entry.options[CA_KEY] as a flat dict. See
+# docs/design/guided-charge-assistant.md. Phase 1 = Reminder mode.
+CA_KEY = "charge_assistant"
+CA_MODE = "mode"
+MODE_OFF = "off"
+MODE_REMINDER = "reminder"
+MODE_SCHEDULED = "scheduled"  # future phases
+MODE_PROMPT = "prompt"        # future phases
+CA_START_ACTION = "WB_CA_START"  # mobile_app notification action id
+
+# Field keys (shared across modes)
+CA_REMINDER_ENTITY = "reminder_entity"
+CA_NOTIFY_SERVICE = "notify_service"
+CA_CHARGE_SWITCH = "charge_switch"
+CA_SOC_ENTITY = "soc_entity"
+CA_SKIP_ABOVE = "skip_above_pct"
+CA_SOC_MAX_AGE = "soc_max_age_min"
+CA_QUIET_START = "quiet_start"
+CA_QUIET_END = "quiet_end"
+CA_MESSAGE = "message"
+CA_TITLE = "title"
+CA_TAP_PATH = "tap_path"
+
 # BAPI status code -> human label. Mirrors STATUS_CODES from the BLE
 # protocol; same numbering jagheterfredrik/wallbox-ble documents.
 STATUS_CODES = {

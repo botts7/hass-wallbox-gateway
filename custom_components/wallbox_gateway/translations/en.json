@@ -20,6 +20,31 @@
       "already_configured": "This gateway is already configured."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Charge Assistant — choose a mode",
+        "data": {"mode": "Mode"}
+      },
+      "reminder": {
+        "title": "Reminder settings",
+        "description": "Notify when a scheduled charge is due soon but the car isn't plugged in. Fill the two required fields; the rest are optional.",
+        "data": {
+          "reminder_entity": "Plug-in reminder sensor (required)",
+          "notify_service": "Notify service / your phone (required)",
+          "charge_switch": "Charging switch (optional — adds a Start button)",
+          "soc_entity": "Battery level sensor (optional)",
+          "skip_above_pct": "Skip when battery at or above (%)",
+          "soc_max_age_min": "Ignore battery level if older than (min)",
+          "quiet_start": "Quiet hours start (set = end to disable)",
+          "quiet_end": "Quiet hours end",
+          "title": "Notification title",
+          "message": "Notification message",
+          "tap_path": "Open this page when tapped (optional)"
+        }
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "ble_connected": {"name": "BLE connected"},
