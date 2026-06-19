@@ -1,0 +1,365 @@
+blueprint:
+  name: Wallbox Gateway — Charge Assistant
+  description: >
+    One automation for charge automation — pick a Mode so the strategies can't
+    conflict (the old separate reminder / planner / prompt blueprints could be
+    enabled together and fight). Charger-agnostic; triggers on entities.
+
+
+    **Modes**
+
+    - **Reminder** — you use the charger's own schedule. Notifies if a charge is
+      due soon but the car isn't plugged in.
+
+    - **Scheduled charge (HA-driven)** — no charger schedule. HA starts charging
+      at your time once plugged in and stops at a target battery %.
+
+    - **Plugged-in prompt** — ad-hoc. When you plug in with no schedule, asks if
+      you want to start now.
+
+
+    HA can't hide fields per mode, so every field is shown — each is tagged with
+    the mode(s) that use it. Set the two required gateway sensors regardless of
+    mode (they're on the Wallbox device); fill only the rest your mode needs.
+  domain: automation
+  source_url: https://github.com/botts7/hass-wallbox-gateway/blob/main/blueprints/automation/wallbox_gateway/charge_assistant.yaml
+  input:
+    assistant_mode:
+      name: Mode
+      description: Which charge strategy this automation runs.
+      default: "Reminder (charger schedule)"
+      selector:
+        select:
+          options:
+            - "Reminder (charger schedule)"
+            - "Scheduled charge (HA-driven)"
+            - "Plugged-in prompt (ad-hoc)"
+    # ---- Required core signals (from the Wallbox Gateway device) ----
+    reminder_entity:
+      name: "[core] Plug-in reminder sensor"
+      description: Wallbox Gateway "Plug-in reminder" binary_sensor. Used by Reminder mode; pick it regardless.
+      selector:
+        entity:
+          domain: binary_sensor
+    connected_entity:
+      name: "[core] Car connected sensor"
+      description: Binary_sensor that's ON when plugged in (Wallbox "Car Connected", or your car's plug sensor). Used by Scheduled / Prompt modes.
+      selector:
+        entity:
+          domain: binary_sensor
+    # ---- Shared optional ----
+    charge_switch:
+      name: "[shared] Charging switch"
+      description: Wallbox "Charging" switch — ON starts, OFF stops. Needed for HA-driven start and the "Start now" button.
+      default:
+      selector:
+        entity:
+          domain: switch
+    soc_entity:
+      name: "[shared] Battery level sensor"
+      description: Your car's battery %. Used for skip-if-charged (Reminder/Prompt) and stop-at-target (Scheduled).
+      default:
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+    notify_device:
+      name: "[Reminder/Prompt] Notify device"
+      description: Mobile device to notify. (Not used in Scheduled mode.)
+      default:
+      selector:
+        device:
+          integration: mobile_app
+    next_charge_entity:
+      name: "[Reminder/Prompt] Next-charge sensor"
+      description: Wallbox "Next scheduled charge". Reminder mode adds it to the message; Prompt mode uses "empty = no schedule".
+      default:
+      selector:
+        entity:
+          domain: sensor
+          device_class: timestamp
+    tap_path:
+      name: "[Reminder/Prompt] Open this page when tapped"
+      description: Lovelace path opened on tap, e.g. /lovelace/wallbox. Blank = just open the app.
+      default: ""
+      selector:
+        text:
+    message:
+      name: "[Reminder/Prompt] Notification message"
+      default: "Your car isn't plugged in / has no charge scheduled."
+      selector:
+        text:
+    title:
+      name: "[Reminder/Prompt] Notification title"
+      default: "Wallbox"
+      selector:
+        text:
+    soc_threshold:
+      name: "[Reminder/Prompt] Skip when battery at or above (%)"
+      default: 80
+      selector:
+        number: { min: 1, max: 100, unit_of_measurement: "%", mode: slider }
+    soc_max_age_min:
+      name: "[shared] Ignore battery level if older than (minutes)"
+      description: Stale SOC isn't trusted to suppress a reminder or stop a charge. 0 = never stale.
+      default: 60
+      selector:
+        number: { min: 0, max: 1440, unit_of_measurement: min, mode: box }
+    quiet_start:
+      name: "[Reminder/Prompt] Quiet hours start"
+      description: Set start = end to disable.
+      default: "00:00:00"
+      selector:
+        time:
+    quiet_end:
+      name: "[Reminder/Prompt] Quiet hours end"
+      default: "00:00:00"
+      selector:
+        time:
+    charging_entity:
+      name: "[Prompt] Charging sensor"
+      description: If set, the prompt is suppressed while this shows the car is already charging.
+      default:
+      selector:
+        entity:
+          domain: binary_sensor
+    prompt_delay:
+      name: "[Prompt] Wait after plugging in before prompting"
+      default: { minutes: 2 }
+      selector:
+        duration:
+    # ---- Scheduled mode ----
+    start_time:
+      name: "[Scheduled] Start time"
+      default: "23:00:00"
+      selector:
+        time:
+    stop_time:
+      name: "[Scheduled] Hard stop time"
+      description: Safety cut-off. Leave 00:00:00 to stop only on target.
+      default: "00:00:00"
+      selector:
+        time:
+    target_soc_fixed:
+      name: "[Scheduled] Target battery level (%)"
+      default: 80
+      selector:
+        number: { min: 1, max: 100, unit_of_measurement: "%", mode: slider }
+    target_soc_entity:
+      name: "[Scheduled] Dynamic target source (optional)"
+      description: An entity holding the target % (input_number / template). Overrides the fixed value.
+      default:
+      selector:
+        entity:
+          domain: [input_number, sensor, number]
+    avg_distance_entity:
+      name: "[Scheduled] Rolling-distance sensor (travel-based target)"
+      description: A Statistics helper on your odometer (characteristic "change", over N days). If set, target is computed from average daily travel.
+      default:
+      selector:
+        entity:
+          domain: sensor
+    window_days:
+      name: "[Scheduled] Days covered by that rolling-distance sensor"
+      default: 7
+      selector:
+        number: { min: 1, max: 90, unit_of_measurement: days, mode: box }
+    full_range_km:
+      name: "[Scheduled] Range on a full charge (km)"
+      default: 400
+      selector:
+        number: { min: 50, max: 1200, unit_of_measurement: km, mode: box }
+    travel_buffer_pct:
+      name: "[Scheduled] Travel target buffer (%)"
+      default: 15
+      selector:
+        number: { min: 0, max: 50, unit_of_measurement: "%", mode: slider }
+
+mode: single
+max_exceeded: silent
+
+variables:
+  assistant_mode: !input assistant_mode
+  mode_key: >
+    {% set m = (assistant_mode | string) | lower %}
+    {% if 'schedul' in m %}schedule{% elif 'prompt' in m or 'plug' in m %}prompt{% else %}reminder{% endif %}
+  charge_switch: !input charge_switch
+  connected_entity: !input connected_entity
+  soc_entity: !input soc_entity
+  next_charge_entity: !input next_charge_entity
+  charging_entity: !input charging_entity
+  target_soc_entity: !input target_soc_entity
+  target_soc_fixed: !input target_soc_fixed
+  avg_distance_entity: !input avg_distance_entity
+  window_days: !input window_days
+  full_range_km: !input full_range_km
+  travel_buffer_pct: !input travel_buffer_pct
+  soc_threshold: !input soc_threshold
+  soc_max_age: !input soc_max_age_min
+  quiet_start: !input quiet_start
+  quiet_end: !input quiet_end
+  start_time: !input start_time
+  stop_time: !input stop_time
+  msg: !input message
+  tap_path: !input tap_path
+
+trigger:
+  - platform: state
+    entity_id: !input reminder_entity
+    to: "on"
+    id: remind
+  - platform: state
+    entity_id: !input connected_entity
+    to: "on"
+    id: plugged
+  - platform: state
+    entity_id: !input connected_entity
+    to: "on"
+    for: !input prompt_delay
+    id: prompt
+  - platform: time
+    at: !input start_time
+    id: schedstart
+  - platform: time
+    at: !input stop_time
+    id: stop
+  - platform: time_pattern
+    minutes: "/5"
+    id: tick
+  - platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: WB_CA_START
+    id: startbtn
+
+action:
+  - variables:
+      soc_now: "{{ states(soc_entity) | float(-1) if soc_entity not in [none,''] else -1 }}"
+      soc_fresh: >
+        {% if soc_entity in [none,''] or not has_value(soc_entity) %}
+          false
+        {% else %}
+          {% set age = (now() - states[soc_entity].last_updated).total_seconds() / 60 %}
+          {{ (soc_max_age | float(0) == 0) or (age <= (soc_max_age | float(0))) }}
+        {% endif %}
+      connected: "{{ connected_entity not in [none,''] and is_state(connected_entity, 'on') }}"
+      target: >
+        {% if target_soc_entity not in [none, ''] and has_value(target_soc_entity) %}
+          {{ states(target_soc_entity) | float(target_soc_fixed | float(80)) }}
+        {% elif avg_distance_entity not in [none, ''] and has_value(avg_distance_entity) and (full_range_km | float(0)) > 0 %}
+          {% set daily = (states(avg_distance_entity) | float(0)) / (window_days | float(7)) %}
+          {{ [ ((daily / (full_range_km | float(400)) * 100) + (travel_buffer_pct | float(15))) | round(0), 100 ] | min }}
+        {% else %}
+          {{ target_soc_fixed | float(80) }}
+        {% endif %}
+      in_window: >
+        {% set n = now().strftime('%H:%M:%S') %}
+        {% if stop_time in ['00:00:00', start_time] %}
+          {{ n >= start_time }}
+        {% elif start_time < stop_time %}
+          {{ start_time <= n < stop_time }}
+        {% else %}
+          {{ n >= start_time or n < stop_time }}
+        {% endif %}
+      # Notify allowed = not a fresh reading already at/above the skip threshold.
+      soc_skip_ok: >
+        {% if soc_entity in [none,''] or not has_value(soc_entity) %}
+          true
+        {% else %}
+          {% set age = (now() - states[soc_entity].last_updated).total_seconds() / 60 %}
+          {% set fresh = (soc_max_age | float(0) == 0) or (age <= (soc_max_age | float(0))) %}
+          {{ not (fresh and (states(soc_entity) | float(0) >= (soc_threshold | float(100)))) }}
+        {% endif %}
+      quiet_ok: >
+        {% if quiet_start == quiet_end %}
+          true
+        {% else %}
+          {% set n = now().strftime('%H:%M:%S') %}
+          {% if quiet_start < quiet_end %}{{ not (quiet_start <= n < quiet_end) }}
+          {% else %}{{ not (n >= quiet_start or n < quiet_end) }}{% endif %}
+        {% endif %}
+  - choose:
+      # ---- "Start charging now" button (Reminder / Prompt) ----
+      - conditions:
+          - "{{ trigger.id == 'startbtn' }}"
+          - "{{ charge_switch not in [none, ''] }}"
+        sequence:
+          - service: switch.turn_on
+            target: { entity_id: "{{ charge_switch }}" }
+
+      # ---- REMINDER mode ----
+      - conditions:
+          - "{{ mode_key == 'reminder' }}"
+          - "{{ trigger.id == 'remind' }}"
+          - "{{ soc_skip_ok }}"
+          - "{{ quiet_ok }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: !input title
+            message: >
+              {{ msg }}
+              {%- if soc_entity not in [none,''] and has_value(soc_entity) %} · battery {{ states(soc_entity) }}%{% endif %}
+              {%- if next_charge_entity not in [none,''] and has_value(next_charge_entity) %} · charge {{ as_timestamp(states(next_charge_entity)) | timestamp_custom('%a %H:%M') }}{% endif %}
+            data:
+              clickAction: "{{ tap_path }}"
+              actions:
+                - action: "WB_CA_START"
+                  title: "Start charging now"
+
+      # ---- PROMPT mode ----
+      - conditions:
+          - "{{ mode_key == 'prompt' }}"
+          - "{{ trigger.id == 'prompt' }}"
+          - "{{ next_charge_entity in [none,''] or not has_value(next_charge_entity) }}"
+          - "{{ charging_entity in [none,''] or not is_state(charging_entity, 'on') }}"
+          - "{{ soc_skip_ok }}"
+          - "{{ quiet_ok }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: !input title
+            message: >
+              {{ msg }}
+              {%- if soc_entity not in [none,''] and has_value(soc_entity) %} · battery {{ states(soc_entity) }}%{% endif %}
+            data:
+              clickAction: "{{ tap_path }}"
+              actions:
+                - action: "WB_CA_START"
+                  title: "Start charging now"
+
+      # ---- SCHEDULED mode: hard stop time ----
+      - conditions:
+          - "{{ mode_key == 'schedule' }}"
+          - "{{ trigger.id == 'stop' }}"
+          - "{{ stop_time not in ['00:00:00', start_time] }}"
+          - "{{ charge_switch not in [none, ''] }}"
+        sequence:
+          - service: switch.turn_off
+            target: { entity_id: "{{ charge_switch }}" }
+
+      # ---- SCHEDULED mode: target reached -> stop ----
+      - conditions:
+          - "{{ mode_key == 'schedule' }}"
+          - "{{ trigger.id in ['schedstart', 'plugged', 'tick'] }}"
+          - "{{ connected }}"
+          - "{{ in_window }}"
+          - "{{ soc_fresh and soc_now >= (target | float(100)) }}"
+          - "{{ charge_switch not in [none, ''] }}"
+        sequence:
+          - service: switch.turn_off
+            target: { entity_id: "{{ charge_switch }}" }
+
+      # ---- SCHEDULED mode: start / continue ----
+      - conditions:
+          - "{{ mode_key == 'schedule' }}"
+          - "{{ trigger.id in ['schedstart', 'plugged', 'tick'] }}"
+          - "{{ connected }}"
+          - "{{ in_window }}"
+          - "{{ (not soc_fresh) or (soc_now < (target | float(0))) }}"
+          - "{{ charge_switch not in [none, ''] }}"
+        sequence:
+          - service: switch.turn_on
+            target: { entity_id: "{{ charge_switch }}" }
