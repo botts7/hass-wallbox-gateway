@@ -15,6 +15,7 @@ from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
@@ -49,6 +50,21 @@ class ChargeAssistant:
         self.entry = entry
         self._opts: dict = {}
         self._unsubs: list = []
+        self._charge_switch: str | None = None
+        self._next_charge: str | None = None
+
+    def _own_entity(self, key: str, domain: str) -> str | None:
+        """This config entry's own entity, by unique-id key + domain.
+
+        Entities are unique_id = "<serial>_<key>", registered to this entry,
+        so we can find the gateway's own plug_reminder / charging /
+        next_scheduled_charge without the user picking them.
+        """
+        reg = er.async_get(self.hass)
+        for ent in er.async_entries_for_config_entry(reg, self.entry.entry_id):
+            if ent.domain == domain and ent.unique_id.endswith(f"_{key}"):
+                return ent.entity_id
+        return None
 
     async def async_start(self) -> None:
         """Wire up listeners for the configured mode."""
@@ -57,9 +73,19 @@ class ChargeAssistant:
         if mode != MODE_REMINDER:
             return  # off / not-yet-implemented modes do nothing
 
-        reminder_entity = self._opts.get(CA_REMINDER_ENTITY)
+        # Auto-resolve the gateway's OWN entities for this entry (a stored
+        # override is honoured if ever set), so the user never has to pick them.
+        reminder_entity = self._opts.get(CA_REMINDER_ENTITY) or self._own_entity(
+            "plug_reminder", "binary_sensor"
+        )
+        self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
+            "charging", "switch"
+        )
+        self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
         if not reminder_entity:
-            _LOGGER.warning("Charge Assistant (reminder): no reminder sensor configured")
+            _LOGGER.warning(
+                "Charge Assistant: couldn't find this gateway's plug-in reminder sensor"
+            )
             return
 
         self._unsubs.append(
@@ -71,7 +97,7 @@ class ChargeAssistant:
         self._unsubs.append(
             self.hass.bus.async_listen("mobile_app_notification_action", self._on_action)
         )
-        _LOGGER.debug("Charge Assistant started in reminder mode on %s", reminder_entity)
+        _LOGGER.info("Charge Assistant: reminder mode active on %s", reminder_entity)
 
     async def async_stop(self) -> None:
         for unsub in self._unsubs:
@@ -88,10 +114,14 @@ class ChargeAssistant:
             return
         if old is not None and old.state == "on":
             return  # only the off->on edge
+        _LOGGER.info("Charge Assistant: plug-in reminder turned ON")
         if not self._soc_skip_ok():
+            _LOGGER.info("Charge Assistant: skipped — battery at/above the skip threshold")
             return
         if not self._quiet_ok():
+            _LOGGER.info("Charge Assistant: skipped — quiet hours")
             return
+        _LOGGER.info("Charge Assistant: sending reminder notification")
         self.hass.async_create_task(self._send_notification())
 
     async def _send_notification(self) -> None:
@@ -104,10 +134,14 @@ class ChargeAssistant:
         soc_entity = self._opts.get(CA_SOC_ENTITY)
         if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
             message = f"{message} · battery {st.state}%"
+        # Append the scheduled time from the gateway's own next-charge sensor.
+        if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
+            dt = dt_util.parse_datetime(nc.state)
+            if dt:
+                message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
 
         data: dict = {}
-        charge_switch = self._opts.get(CA_CHARGE_SWITCH)
-        if charge_switch:
+        if self._charge_switch:
             data["actions"] = [
                 {"action": CA_START_ACTION, "title": "Start charging now"}
             ]
@@ -118,9 +152,10 @@ class ChargeAssistant:
         if data:
             payload["data"] = data
         try:
-            await self.hass.services.async_call(domain, name, payload, blocking=False)
+            await self.hass.services.async_call(domain, name, payload, blocking=True)
+            _LOGGER.info("Charge Assistant: notification sent via %s.%s", domain, name)
         except Exception:  # noqa: BLE001 — don't let a notify failure crash the loop
-            _LOGGER.exception("Charge Assistant: notify call failed")
+            _LOGGER.exception("Charge Assistant: notify call to %s.%s failed", domain, name)
 
     # ---- "Start now" button ----
 
@@ -128,12 +163,12 @@ class ChargeAssistant:
     def _on_action(self, event: Event) -> None:
         if event.data.get("action") != CA_START_ACTION:
             return
-        switch = self._opts.get(CA_CHARGE_SWITCH)
-        if not switch:
+        if not self._charge_switch:
             return
+        _LOGGER.info("Charge Assistant: 'Start now' tapped -> turning on %s", self._charge_switch)
         self.hass.async_create_task(
             self.hass.services.async_call(
-                "switch", "turn_on", {"entity_id": switch}, blocking=False
+                "switch", "turn_on", {"entity_id": self._charge_switch}, blocking=False
             )
         )
 

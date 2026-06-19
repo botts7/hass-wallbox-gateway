@@ -26,14 +26,12 @@ from .api import (
     GatewayUnreachable,
 )
 from .const import (
-    CA_CHARGE_SWITCH,
     CA_KEY,
     CA_MESSAGE,
     CA_MODE,
     CA_NOTIFY_SERVICE,
     CA_QUIET_END,
     CA_QUIET_START,
-    CA_REMINDER_ENTITY,
     CA_SKIP_ABOVE,
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
@@ -185,14 +183,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             f"notify.{name}"
             for name in sorted(self.hass.services.async_services().get("notify", {}))
         ]
+        # The gateway's own sensors (plug-in reminder, charging switch,
+        # next-charge) are auto-resolved by the controller from this config
+        # entry — the user only picks their phone + optional preferences.
         schema = vol.Schema(
             {
-                vol.Required(
-                    CA_REMINDER_ENTITY,
-                    default=cur.get(CA_REMINDER_ENTITY, vol.UNDEFINED),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="binary_sensor")
-                ),
                 vol.Required(
                     CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
                 ): selector.SelectSelector(
@@ -201,11 +196,6 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         custom_value=True,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
-                ),
-                vol.Optional(
-                    CA_CHARGE_SWITCH, default=cur.get(CA_CHARGE_SWITCH, vol.UNDEFINED)
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="switch")
                 ),
                 vol.Optional(
                     CA_SOC_ENTITY, default=cur.get(CA_SOC_ENTITY, vol.UNDEFINED)
