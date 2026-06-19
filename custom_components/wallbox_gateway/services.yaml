@@ -1,0 +1,6 @@
+test_reminder:
+  name: Test charge reminder
+  description: >
+    Sends the Charge Assistant reminder notification immediately (ignoring
+    the schedule/SOC/quiet-hours conditions), so you can confirm the notify
+    target and setup are working.

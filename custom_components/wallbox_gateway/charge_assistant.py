@@ -52,6 +52,7 @@ class ChargeAssistant:
         self._unsubs: list = []
         self._charge_switch: str | None = None
         self._next_charge: str | None = None
+        self._last_result: str = "(not run)"
 
     def _own_entity(self, key: str, domain: str) -> str | None:
         """This config entry's own entity, by unique-id key + domain.
@@ -70,10 +71,9 @@ class ChargeAssistant:
         """Wire up listeners for the configured mode."""
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
         mode = self._opts.get(CA_MODE)
-        # TEMP diagnostics at WARNING so they show without debug logging.
-        _LOGGER.warning("Charge Assistant: async_start for %s — mode=%r", self.entry.title, mode)
+        _LOGGER.debug("Charge Assistant: async_start for %s — mode=%r", self.entry.title, mode)
         if mode != MODE_REMINDER:
-            _LOGGER.warning("Charge Assistant: mode is not 'reminder' — nothing wired")
+            _LOGGER.debug("Charge Assistant: mode %r not active — nothing wired", mode)
             return  # off / not-yet-implemented modes do nothing
 
         # Auto-resolve the gateway's OWN entities for this entry (a stored
@@ -111,18 +111,30 @@ class ChargeAssistant:
         """Fire the reminder notification on demand (ignores conditions).
 
         Exposed via the wallbox_gateway.test_reminder service so a user can
-        confirm the notify path + config without faking entity states.
+        confirm the notify path + config without faking entity states. The
+        outcome is also written to <config>/wallbox_ca_test.txt so it can be
+        inspected without scraping the live log.
         """
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
         self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
             "charging", "switch"
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
-        _LOGGER.warning(
+        _LOGGER.info(
             "Charge Assistant: TEST notification requested (notify=%s)",
             self._opts.get(CA_NOTIFY_SERVICE),
         )
+        self._last_result = "(no result recorded)"
         await self._send_notification()
+        path = self.hass.config.path("wallbox_ca_test.txt")
+        await self.hass.async_add_executor_job(self._write_result, path)
+
+    def _write_result(self, path: str) -> None:
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self._last_result)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Charge Assistant: couldn't write test result file")
 
     # ---- reminder trigger ----
 
@@ -145,37 +157,46 @@ class ChargeAssistant:
         self.hass.async_create_task(self._send_notification())
 
     async def _send_notification(self) -> None:
-        service = self._opts.get(CA_NOTIFY_SERVICE)
-        if not service or "." not in service:
-            _LOGGER.warning("Charge Assistant: no valid notify service configured")
-            return
-        domain, name = service.split(".", 1)
-        message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — a charge is coming up."
-        soc_entity = self._opts.get(CA_SOC_ENTITY)
-        if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
-            message = f"{message} · battery {st.state}%"
-        # Append the scheduled time from the gateway's own next-charge sensor.
-        if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
-            dt = dt_util.parse_datetime(nc.state)
-            if dt:
-                message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
-
-        data: dict = {}
-        if self._charge_switch:
-            data["actions"] = [
-                {"action": CA_START_ACTION, "title": "Start charging now"}
-            ]
-        if self._opts.get(CA_TAP_PATH):
-            data["clickAction"] = self._opts[CA_TAP_PATH]
-
-        payload = {"title": self._opts.get(CA_TITLE) or "Wallbox", "message": message}
-        if data:
-            payload["data"] = data
+        # Whole body guarded so ANY failure (message build, bad service
+        # string, async_call) surfaces as an ERROR instead of vanishing.
         try:
+            service = self._opts.get(CA_NOTIFY_SERVICE)
+            if not service or "." not in service:
+                msg = f"no valid notify service configured (got {service!r})"
+                _LOGGER.warning("Charge Assistant: %s", msg)
+                self._last_result = msg
+                return
+            domain, name = service.split(".", 1)
+            message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — a charge is coming up."
+            soc_entity = self._opts.get(CA_SOC_ENTITY)
+            if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
+                message = f"{message} · battery {st.state}%"
+            # Append the scheduled time from the gateway's own next-charge sensor.
+            if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
+                dt = dt_util.parse_datetime(nc.state)
+                if dt:
+                    message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
+
+            data: dict = {}
+            if self._charge_switch:
+                data["actions"] = [
+                    {"action": CA_START_ACTION, "title": "Start charging now"}
+                ]
+            if self._opts.get(CA_TAP_PATH):
+                data["clickAction"] = self._opts[CA_TAP_PATH]
+
+            payload = {"title": self._opts.get(CA_TITLE) or "Wallbox", "message": message}
+            if data:
+                payload["data"] = data
+            _LOGGER.debug(
+                "Charge Assistant: calling %s.%s payload=%s", domain, name, payload
+            )
             await self.hass.services.async_call(domain, name, payload, blocking=True)
             _LOGGER.info("Charge Assistant: notification sent via %s.%s", domain, name)
-        except Exception:  # noqa: BLE001 — don't let a notify failure crash the loop
-            _LOGGER.exception("Charge Assistant: notify call to %s.%s failed", domain, name)
+            self._last_result = f"sent OK via {domain}.{name}\npayload={payload}"
+        except Exception as err:  # noqa: BLE001 — don't let a notify failure crash the loop
+            _LOGGER.exception("Charge Assistant: _send_notification FAILED")
+            self._last_result = f"FAILED: {type(err).__name__}: {err}"
 
     # ---- "Start now" button ----
 
