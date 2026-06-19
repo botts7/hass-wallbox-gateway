@@ -29,6 +29,11 @@ MODE_PROMPT = "prompt"        # future phases
 # required), CA_CHARGE_SWITCH (auto-resolved), CA_NOTIFY_SERVICE (optional).
 CA_TARGET_PCT = "target_soc_pct"          # stop charging at/above this %
 CA_TARGET_AUTOSTART = "target_autostart"  # also START when below target + plugged in
+# Phase 2b — departure-time targeting ("ready by HH:MM"). When set, charging
+# starts just-in-time: now >= departure - (target-soc)% * battery / power.
+CA_DEPARTURE = "departure_time"           # local "HH:MM"
+CA_BATTERY_KWH = "battery_kwh"            # capacity, for the duration estimate
+CA_CHARGE_POWER_KW = "charge_power_kw"    # typical charge power, for the estimate
 
 # Solar-surplus mode fields. Start when surplus >= start for `debounce`
 # minutes; stop when surplus <= stop for `debounce` minutes (hysteresis +

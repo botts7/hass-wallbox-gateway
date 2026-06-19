@@ -91,11 +91,14 @@
       },
       "target": {
         "title": "Smart charge — charge to a target",
-        "description": "Stops charging once the car reaches your target. Optionally also starts it. Auto-start is off by default so it won't charge (cost money) until you choose.",
+        "description": "Stops charging once the car reaches your target. Optionally also starts it. Auto-start is off by default so it won't charge (cost money) until you choose. Set a departure time to charge just-in-time so it's ready by then (needs battery size + charge power).",
         "data": {
           "soc_entity": "Car battery level sensor (required)",
           "target_soc_pct": "Target charge level (%)",
           "target_autostart": "Also start charging when below target (and plugged in)",
+          "departure_time": "Ready-by time (optional — charge just-in-time)",
+          "battery_kwh": "Battery capacity (kWh) — for the ready-by estimate",
+          "charge_power_kw": "Typical charge power (kW) — for the ready-by estimate",
           "notify_service": "Notify me when it starts/stops (optional)"
         }
       },

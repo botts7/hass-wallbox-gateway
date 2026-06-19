@@ -43,6 +43,9 @@ from .const import (
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
     CA_TAP_PATH,
+    CA_BATTERY_KWH,
+    CA_CHARGE_POWER_KW,
+    CA_DEPARTURE,
     CA_SURPLUS_DEBOUNCE,
     CA_SURPLUS_ENTITY,
     CA_SURPLUS_START,
@@ -422,6 +425,25 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CA_TARGET_AUTOSTART, default=cur.get(CA_TARGET_AUTOSTART, False)
                 ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_DEPARTURE, default=cur.get(CA_DEPARTURE, vol.UNDEFINED)
+                ): selector.TimeSelector(),
+                vol.Optional(
+                    CA_BATTERY_KWH, default=cur.get(CA_BATTERY_KWH, vol.UNDEFINED)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=200, step=0.1, unit_of_measurement="kWh",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_CHARGE_POWER_KW, default=cur.get(CA_CHARGE_POWER_KW, 7.4)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=50, step=0.1, unit_of_measurement="kW",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
                 vol.Optional(
                     CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
                 ): selector.SelectSelector(

@@ -59,6 +59,9 @@ from .const import (
     CA_SNOOZE_ACTION,
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
+    CA_BATTERY_KWH,
+    CA_CHARGE_POWER_KW,
+    CA_DEPARTURE,
     CA_START_ACTION,
     CA_SURPLUS_DEBOUNCE,
     CA_SURPLUS_ENTITY,
@@ -290,14 +293,68 @@ class ChargeAssistant:
         self._unsubs.append(
             async_track_state_change_event(self.hass, watch, self._on_target_change)
         )
+        # Departure targeting is time-driven (not just SOC-driven), so poll too.
+        if self._departure_active():
+            self._unsubs.append(
+                async_track_time_interval(self.hass, self._on_target_tick, timedelta(minutes=5))
+            )
         _LOGGER.info(
-            "Charge Assistant: target mode active — cap %s%% on %s (autostart=%s)",
+            "Charge Assistant: target mode active — cap %s%% on %s (autostart=%s, departure=%s)",
             self._opts.get(CA_TARGET_PCT, 80),
             soc_entity,
             bool(self._opts.get(CA_TARGET_AUTOSTART)),
+            self._opts.get(CA_DEPARTURE) or "off",
         )
         # Evaluate once at startup in case we're already at/over target.
         self._eval_target()
+
+    @callback
+    def _on_target_tick(self, now: datetime) -> None:
+        self._eval_target()
+
+    def _departure_active(self) -> bool:
+        """True when a valid departure target is configured."""
+        if not self._opts.get(CA_DEPARTURE):
+            return False
+        try:
+            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and float(
+                self._opts.get(CA_CHARGE_POWER_KW) or 0
+            ) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _next_departure(self) -> datetime | None:
+        """Next occurrence of the local departure time, as UTC."""
+        val = self._opts.get(CA_DEPARTURE)
+        if not val:
+            return None
+        try:
+            parts = str(val).split(":")
+            h, m = int(parts[0]), int(parts[1])
+        except (TypeError, ValueError):
+            return None
+        now_local = dt_util.now()
+        dep = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
+        if dep <= now_local:
+            dep = dep + timedelta(days=1)
+        return dt_util.as_utc(dep)
+
+    def _jit_should_start(self, soc: float, target: float) -> bool:
+        """True once it's late enough that charging must start to hit target by departure."""
+        dep = self._next_departure()
+        if dep is None:
+            return False
+        try:
+            batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
+            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+        except (TypeError, ValueError):
+            return False
+        if batt <= 0 or power <= 0:
+            return False
+        needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
+        duration = timedelta(hours=needed_kwh / power)
+        latest_start = dep - duration - timedelta(minutes=10)  # 10-min safety buffer
+        return dt_util.utcnow() >= latest_start
 
     @callback
     def _on_target_change(self, event: Event) -> None:
@@ -322,17 +379,29 @@ class ChargeAssistant:
                         f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
                     ))
                 )
-        elif self._opts.get(CA_TARGET_AUTOSTART):
-            # Below target: optionally (re)start when plugged in. The deadband
-            # stops us re-starting the instant SOC dips just under the cap.
-            if self._plugged_in() is True and not charging and soc <= target - _TARGET_DEADBAND:
-                _LOGGER.info("Charge Assistant: SOC %.0f%% below target %.0f%% — starting charge", soc, target)
+            return
+        # Below target — only consider starting when plugged in and idle.
+        if charging or self._plugged_in() is not True:
+            return
+        if self._departure_active():
+            # Just-in-time: start only once it's late enough to finish by departure.
+            if self._jit_should_start(soc, target):
+                _LOGGER.info("Charge Assistant: departure just-in-time — starting at SOC %.0f%%", soc)
                 self._set_charging(True)
                 self.hass.async_create_task(
                     self._send_notification("target", message_override=(
-                        f"Charging started — {soc:.0f}% (target {target:.0f}%)."
+                        f"Charging started for your {self._opts.get(CA_DEPARTURE)} departure — {soc:.0f}% to {target:.0f}%."
                     ))
                 )
+        elif self._opts.get(CA_TARGET_AUTOSTART) and soc <= target - _TARGET_DEADBAND:
+            # Immediate auto-start (deadband stops flapping at the cap).
+            _LOGGER.info("Charge Assistant: SOC %.0f%% below target %.0f%% — starting charge", soc, target)
+            self._set_charging(True)
+            self.hass.async_create_task(
+                self._send_notification("target", message_override=(
+                    f"Charging started — {soc:.0f}% (target {target:.0f}%)."
+                ))
+            )
 
     def _is_charging(self) -> bool:
         """True if the charger reports it's actively charging."""
