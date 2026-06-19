@@ -21,6 +21,7 @@ CA_MODE = "mode"
 MODE_OFF = "off"
 MODE_REMINDER = "reminder"
 MODE_TARGET = "target_soc"    # Phase 2: charge to a target % then stop
+MODE_SOLAR = "solar"          # Phase 3: charge from excess solar (surplus follow)
 MODE_SCHEDULED = "scheduled"  # future phases
 MODE_PROMPT = "prompt"        # future phases
 
@@ -28,6 +29,15 @@ MODE_PROMPT = "prompt"        # future phases
 # required), CA_CHARGE_SWITCH (auto-resolved), CA_NOTIFY_SERVICE (optional).
 CA_TARGET_PCT = "target_soc_pct"          # stop charging at/above this %
 CA_TARGET_AUTOSTART = "target_autostart"  # also START when below target + plugged in
+
+# Solar-surplus mode fields. Start when surplus >= start for `debounce`
+# minutes; stop when surplus <= stop for `debounce` minutes (hysteresis +
+# debounce ride out passing clouds). Thresholds are in the surplus sensor's
+# own units (kW or W). Reuses CA_NOTIFY_SERVICE (optional).
+CA_SURPLUS_ENTITY = "surplus_entity"
+CA_SURPLUS_START = "surplus_start"          # start charging at/above this
+CA_SURPLUS_STOP = "surplus_stop"            # stop charging at/below this
+CA_SURPLUS_DEBOUNCE = "surplus_debounce_min"  # must hold this long before acting
 # mobile_app notification action ids
 CA_START_ACTION = "WB_CA_START"
 CA_SNOOZE_ACTION = "WB_CA_SNOOZE"

@@ -43,6 +43,10 @@ from .const import (
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
     CA_TAP_PATH,
+    CA_SURPLUS_DEBOUNCE,
+    CA_SURPLUS_ENTITY,
+    CA_SURPLUS_START,
+    CA_SURPLUS_STOP,
     CA_TARGET_AUTOSTART,
     CA_TARGET_PCT,
     CA_TARIFF_BELOW,
@@ -55,6 +59,7 @@ from .const import (
     DOMAIN,
     MODE_OFF,
     MODE_REMINDER,
+    MODE_SOLAR,
     MODE_TARGET,
     TRIG_ARRIVAL,
     TRIG_LEAD,
@@ -307,6 +312,9 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             if mode == MODE_TARGET:
                 self._ca = {CA_MODE: MODE_TARGET}
                 return await self.async_step_target()
+            if mode == MODE_SOLAR:
+                self._ca = {CA_MODE: MODE_SOLAR}
+                return await self.async_step_solar()
             # "Off" (and not-yet-built modes) — store mode only.
             return self.async_create_entry(title="", data={CA_KEY: {CA_MODE: mode}})
 
@@ -324,6 +332,10 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                                 "value": MODE_TARGET,
                                 "label": "Smart charge — charge to a target % then stop",
                             },
+                            {
+                                "value": MODE_SOLAR,
+                                "label": "Solar charge — charge from excess solar",
+                            },
                         ],
                         mode=selector.SelectSelectorMode.LIST,
                     )
@@ -331,6 +343,55 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
+
+    # ---- Solar-surplus ----
+    async def async_step_solar(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            self._ca.update(user_input)
+            return self.async_create_entry(title="", data={CA_KEY: self._ca})
+
+        cur = self._cur()
+        notify_opts = [
+            f"notify.{name}"
+            for name in sorted(self.hass.services.async_services().get("notify", {}))
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CA_SURPLUS_ENTITY, default=cur.get(CA_SURPLUS_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Required(CA_SURPLUS_START, default=cur.get(CA_SURPLUS_START, 1.4)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=100000, step=0.1, mode=selector.NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Required(CA_SURPLUS_STOP, default=cur.get(CA_SURPLUS_STOP, 0)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=100000, step=0.1, mode=selector.NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(CA_SURPLUS_DEBOUNCE, default=cur.get(CA_SURPLUS_DEBOUNCE, 3)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=30, unit_of_measurement="min",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=notify_opts,
+                        custom_value=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="solar", data_schema=schema)
 
     # ---- Smart charge (target-SOC) ----
     async def async_step_target(

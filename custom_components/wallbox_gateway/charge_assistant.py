@@ -35,6 +35,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_state_change_event,
     async_track_time_change,
+    async_track_time_interval,
 )
 from homeassistant.util import dt as dt_util
 
@@ -59,6 +60,10 @@ from .const import (
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
     CA_START_ACTION,
+    CA_SURPLUS_DEBOUNCE,
+    CA_SURPLUS_ENTITY,
+    CA_SURPLUS_START,
+    CA_SURPLUS_STOP,
     CA_TAP_PATH,
     CA_TARGET_AUTOSTART,
     CA_TARGET_PCT,
@@ -67,6 +72,7 @@ from .const import (
     CA_TITLE,
     CA_TRIGGERS,
     MODE_REMINDER,
+    MODE_SOLAR,
     MODE_TARGET,
     TRIG_ARRIVAL,
     TRIG_LEAD,
@@ -98,6 +104,9 @@ class ChargeAssistant:
         self._next_charge: str | None = None
         self._connected_entity: str | None = None
         self._charging_sensor: str | None = None
+        # Solar-surplus debounce timestamps.
+        self._surplus_since: datetime | None = None
+        self._deficit_since: datetime | None = None
         # Suppression windows set by the Snooze / Skip notification actions.
         self._suppress_until: datetime | None = None
         self._escalations_left = 0
@@ -137,6 +146,8 @@ class ChargeAssistant:
             await self._start_reminder()
         elif mode == MODE_TARGET:
             await self._start_target()
+        elif mode == MODE_SOLAR:
+            await self._start_solar()
 
     async def _start_reminder(self) -> None:
         triggers = self._opts.get(CA_TRIGGERS) or []
@@ -353,6 +364,75 @@ class ChargeAssistant:
             return float(st.state)
         except (TypeError, ValueError):
             return None
+
+    # ------------------------------------------------------------------
+    # Solar-surplus mode
+    # ------------------------------------------------------------------
+    async def _start_solar(self) -> None:
+        surplus = self._opts.get(CA_SURPLUS_ENTITY)
+        if not surplus:
+            _LOGGER.warning("Charge Assistant: solar mode needs a surplus power sensor")
+            return
+        if not self._charge_switch:
+            _LOGGER.warning("Charge Assistant: solar mode couldn't find the charging switch")
+            return
+        self._charging_sensor = self._own_entity("charging", "binary_sensor")
+        # Debounced poll: solar is noisy, so evaluate on a steady cadence and
+        # require the condition to hold `debounce` minutes before acting.
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._on_solar_tick, timedelta(seconds=60))
+        )
+        _LOGGER.info(
+            "Charge Assistant: solar mode active — start>=%s stop<=%s on %s (debounce %s min)",
+            self._opts.get(CA_SURPLUS_START), self._opts.get(CA_SURPLUS_STOP),
+            surplus, self._opts.get(CA_SURPLUS_DEBOUNCE, 3),
+        )
+        self._eval_solar()
+
+    @callback
+    def _on_solar_tick(self, now: datetime) -> None:
+        self._eval_solar()
+
+    def _eval_solar(self) -> None:
+        surplus = self._read_float(self._opts.get(CA_SURPLUS_ENTITY))
+        if surplus is None:
+            return
+        try:
+            start_at = float(self._opts.get(CA_SURPLUS_START, 1.4) or 0)
+            stop_at = float(self._opts.get(CA_SURPLUS_STOP, 0) or 0)
+            debounce = float(self._opts.get(CA_SURPLUS_DEBOUNCE, 3) or 0)
+        except (TypeError, ValueError):
+            return
+        now = dt_util.utcnow()
+        charging = self._is_charging()
+        held = lambda since: since is not None and (now - since).total_seconds() >= debounce * 60
+
+        if surplus >= start_at:
+            self._deficit_since = None
+            if self._surplus_since is None:
+                self._surplus_since = now
+            if not charging and held(self._surplus_since) and self._plugged_in() is True:
+                _LOGGER.info("Charge Assistant: solar surplus %.2f held >= %.2f — starting", surplus, start_at)
+                self._set_charging(True)
+                self._surplus_since = None
+                self.hass.async_create_task(self._send_notification("solar", message_override=(
+                    f"Solar charging started — surplus {surplus:.2f}."
+                )))
+        elif surplus <= stop_at:
+            self._surplus_since = None
+            if self._deficit_since is None:
+                self._deficit_since = now
+            if charging and held(self._deficit_since):
+                _LOGGER.info("Charge Assistant: solar surplus %.2f below %.2f — stopping", surplus, stop_at)
+                self._set_charging(False)
+                self._deficit_since = None
+                self.hass.async_create_task(self._send_notification("solar", message_override=(
+                    f"Solar charging paused — surplus dropped to {surplus:.2f}."
+                )))
+        else:
+            # Hysteresis band — hold current state, reset both timers.
+            self._surplus_since = None
+            self._deficit_since = None
 
     # ------------------------------------------------------------------
     # Decision + notification

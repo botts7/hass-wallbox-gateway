@@ -98,6 +98,17 @@
           "target_autostart": "Also start charging when below target (and plugged in)",
           "notify_service": "Notify me when it starts/stops (optional)"
         }
+      },
+      "solar": {
+        "title": "Solar charge — charge from excess solar",
+        "description": "Starts charging when your solar surplus stays above the start level, and stops when it drops below the stop level. Thresholds are in your surplus sensor's own units (kW or W). For finer current-following, the charger's native Eco-Smart 'Full green' mode is an alternative.",
+        "data": {
+          "surplus_entity": "Solar surplus power sensor (required)",
+          "surplus_start": "Start charging at/above (surplus)",
+          "surplus_stop": "Stop charging at/below (surplus)",
+          "surplus_debounce_min": "Must hold this long before acting (min)",
+          "notify_service": "Notify me when it starts/stops (optional)"
+        }
       }
     }
   },
