@@ -55,12 +55,24 @@ def _plug_reminder(entity: GatewayEntity) -> bool | None:
     return bool(val) if val is not None else None
 
 
+# Charger status codes that mean a vehicle is plugged in. Mirrors the
+# firmware's WallboxBLE::carConnected() r_dat.st set (+ 19 = locked-with-car
+# from r_sta). NB: /api/status "sta_connected" is the gateway's WiFi station
+# state, NOT the car — do not use it here.
+_CAR_CONNECTED_CODES = frozenset({1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 18, 19})
+
+
 def _car_connected(entity: GatewayEntity) -> bool | None:
-    # sta_connected from /api/status: the car cable is plugged in (whether
-    # or not it's actively charging). The Charge Assistant uses this to
-    # decide whether a "plug in" reminder is still relevant.
-    val = entity._status().get("sta_connected")
-    return bool(val) if val is not None else None
+    # Prefer the gateway's own flag if a firmware build exposes it on
+    # /api/status; otherwise derive from the live charger status code.
+    val = entity._status().get("car_connected")
+    if isinstance(val, bool):
+        return val
+    code = entity._realtime().get("charger_status")
+    try:
+        return int(code) in _CAR_CONNECTED_CODES
+    except (TypeError, ValueError):
+        return None
 
 
 BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
