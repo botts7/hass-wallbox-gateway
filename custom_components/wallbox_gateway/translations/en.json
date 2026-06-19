@@ -9,15 +9,36 @@
           "poll_interval": "Poll interval (seconds)"
         },
         "description": "Enter the local IP or mDNS name of your Wallbox Gateway. Username + password are only required if you enabled web auth on the gateway's /config page."
+      },
+      "reconfigure": {
+        "title": "Reconfigure Wallbox Gateway",
+        "data": {
+          "host": "Gateway host (IP or hostname)",
+          "username": "Username",
+          "password": "Password",
+          "poll_interval": "Poll interval (seconds)"
+        },
+        "description": "Update the gateway address, credentials, or poll interval. Leave the password blank to keep the current one."
+      },
+      "reauth_confirm": {
+        "title": "Wallbox Gateway authentication",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "description": "The gateway at {host} is rejecting the stored credentials. Enter the current web username and password."
       }
     },
     "error": {
       "cannot_connect": "Cannot reach the gateway at that address.",
       "invalid_auth": "Authentication rejected by gateway.",
+      "wrong_device": "That gateway reports a different charger serial than this entry. Point it at the original charger, or add it as a new entry.",
       "unknown": "Unexpected error contacting the gateway."
     },
     "abort": {
-      "already_configured": "This gateway is already configured."
+      "already_configured": "This gateway is already configured.",
+      "reconfigure_successful": "Gateway settings updated.",
+      "reauth_successful": "Credentials updated."
     }
   },
   "options": {

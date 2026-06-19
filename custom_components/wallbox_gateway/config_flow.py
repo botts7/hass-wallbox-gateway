@@ -76,6 +76,28 @@ SCHEMA = vol.Schema(
 )
 
 
+def _conn_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    """Connection form, optionally pre-filled for reconfigure.
+
+    Password is deliberately never pre-filled (it would expose the stored
+    secret in the form); left blank on reconfigure it keeps the stored one.
+    """
+    d = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(CONF_HOST, default=d.get(CONF_HOST, vol.UNDEFINED)): str,
+            vol.Optional(
+                CONF_USERNAME, default=d.get(CONF_USERNAME, DEFAULT_USERNAME)
+            ): str,
+            vol.Optional(CONF_PASSWORD, default=""): str,
+            vol.Optional(
+                CONF_POLL_INTERVAL,
+                default=d.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+            ): vol.All(int, vol.Range(min=5, max=300)),
+        }
+    )
+
+
 class WallboxGatewayConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Single-step config flow: gather connection info + probe."""
 
@@ -128,6 +150,117 @@ class WallboxGatewayConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=SCHEMA,
             errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Change host / credentials / poll interval without re-adding.
+
+        Re-probes the gateway and refuses to point an existing entry at a
+        different charger (unique-id mismatch).
+        """
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # Blank password keeps the stored one.
+            password = user_input.get(CONF_PASSWORD) or entry.data.get(
+                CONF_PASSWORD, ""
+            )
+            username = user_input.get(CONF_USERNAME, DEFAULT_USERNAME)
+            session = async_get_clientsession(self.hass)
+            try:
+                meta = await _probe(
+                    session, user_input[CONF_HOST], username, password
+                )
+            except GatewayUnreachable:
+                errors["base"] = "cannot_connect"
+            except GatewayAuthError:
+                errors["base"] = "invalid_auth"
+            except Exception:  # noqa: BLE001 — config-flow surface
+                _LOGGER.exception("unexpected reconfigure probe failure")
+                errors["base"] = "unknown"
+            else:
+                if (
+                    meta.get("chg_sn")
+                    and entry.unique_id
+                    and meta["chg_sn"] != entry.unique_id
+                ):
+                    errors["base"] = "wrong_device"
+                else:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data={
+                            **entry.data,
+                            CONF_HOST: user_input[CONF_HOST],
+                            CONF_USERNAME: username,
+                            CONF_PASSWORD: password,
+                            CONF_POLL_INTERVAL: user_input.get(
+                                CONF_POLL_INTERVAL,
+                                entry.data.get(
+                                    CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+                                ),
+                            ),
+                        },
+                    )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_conn_schema(entry.data),
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> config_entries.ConfigFlowResult:
+        """Triggered when the gateway starts rejecting our credentials."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Collect new credentials and validate them against the gateway."""
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            username = user_input.get(CONF_USERNAME, DEFAULT_USERNAME)
+            password = user_input.get(CONF_PASSWORD, "")
+            session = async_get_clientsession(self.hass)
+            try:
+                await _probe(session, entry.data[CONF_HOST], username, password)
+            except GatewayUnreachable:
+                errors["base"] = "cannot_connect"
+            except GatewayAuthError:
+                errors["base"] = "invalid_auth"
+            except Exception:  # noqa: BLE001 — config-flow surface
+                _LOGGER.exception("unexpected reauth probe failure")
+                errors["base"] = "unknown"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data={
+                        **entry.data,
+                        CONF_USERNAME: username,
+                        CONF_PASSWORD: password,
+                    },
+                )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_USERNAME,
+                    default=entry.data.get(CONF_USERNAME, DEFAULT_USERNAME),
+                ): str,
+                vol.Optional(CONF_PASSWORD, default=""): str,
+            }
+        )
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"host": entry.data.get(CONF_HOST, "")},
         )
 
 

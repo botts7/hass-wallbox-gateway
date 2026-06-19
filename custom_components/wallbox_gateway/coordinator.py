@@ -14,6 +14,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import GatewayAuthError, GatewayClient, GatewayUnreachable
@@ -70,7 +71,9 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.client.get(ENDPOINT_BOOT, timeout=4),
             )
         except GatewayAuthError as e:
-            raise UpdateFailed(f"auth rejected by gateway: {e}") from e
+            # Surface as auth-failed so HA starts the reauth flow (prompts
+            # the user for new credentials) rather than just retrying.
+            raise ConfigEntryAuthFailed(f"auth rejected by gateway: {e}") from e
         except GatewayUnreachable as e:
             raise UpdateFailed(f"gateway unreachable: {e}") from e
 
