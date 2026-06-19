@@ -47,6 +47,11 @@ class GatewaySensorEntityDescription(SensorEntityDescription):
     """Describes a sensor + a callable that pulls its value from the coordinator data."""
 
     value_fn: Callable[[GatewayEntity], Any]
+    # #129: sensors sourced from the BAPI power meter (r_dca). When the
+    # charger has no Power Boost / Power Meter accessory, /api/status reports
+    # "meter": false and these go unavailable instead of showing 0 — mirrors
+    # the dashboard hiding the voltage / house-power cells.
+    requires_meter: bool = False
 
 
 def _status_label(entity: GatewayEntity) -> str | None:
@@ -138,6 +143,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
         value_fn=_house_power,
+        requires_meter=True,
     ),
     GatewaySensorEntityDescription(
         key="mains_voltage",
@@ -147,6 +153,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         value_fn=_mains_voltage,
+        requires_meter=True,
     ),
     GatewaySensorEntityDescription(
         key="ble_rssi",
@@ -187,6 +194,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda e: e._meter().get("lifetime_kwh"),
+        requires_meter=True,
     ),
     GatewaySensorEntityDescription(
         key="house_current",
@@ -197,6 +205,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         entity_registry_enabled_default=False,
         value_fn=lambda e: e._meter().get("house_current_a"),
+        requires_meter=True,
     ),
     # Live charger status (numeric counterparts of the existing enum)
     GatewaySensorEntityDescription(
@@ -567,6 +576,14 @@ class GatewaySensor(GatewayEntity, SensorEntity):
     ) -> None:
         super().__init__(coordinator, description.key)
         self.entity_description = description
+
+    @property
+    def available(self) -> bool:
+        # #129: hide meter-sourced sensors when the charger has no power meter.
+        # `meter` is absent on older firmware -> treat as present (don't hide).
+        if self.entity_description.requires_meter and self._status().get("meter") is False:
+            return False
+        return super().available
 
     @property
     def native_value(self) -> Any:
