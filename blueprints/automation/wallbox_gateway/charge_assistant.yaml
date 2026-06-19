@@ -281,18 +281,24 @@ action:
   - choose:
       # ---- "Start charging now" button (Reminder / Prompt) ----
       - conditions:
-          - "{{ trigger.id == 'startbtn' }}"
-          - "{{ charge_switch not in [none, ''] }}"
+          - condition: template
+            value_template: "{{ trigger.id == 'startbtn' }}"
+          - condition: template
+            value_template: "{{ charge_switch not in [none, ''] }}"
         sequence:
           - service: switch.turn_on
             target: { entity_id: "{{ charge_switch }}" }
 
       # ---- REMINDER mode ----
       - conditions:
-          - "{{ mode_key == 'reminder' }}"
-          - "{{ trigger.id == 'remind' }}"
-          - "{{ soc_skip_ok }}"
-          - "{{ quiet_ok }}"
+          - condition: template
+            value_template: "{{ mode_key == 'reminder' }}"
+          - condition: template
+            value_template: "{{ trigger.id == 'remind' }}"
+          - condition: template
+            value_template: "{{ soc_skip_ok }}"
+          - condition: template
+            value_template: "{{ quiet_ok }}"
         sequence:
           - domain: mobile_app
             type: notify
@@ -310,12 +316,18 @@ action:
 
       # ---- PROMPT mode ----
       - conditions:
-          - "{{ mode_key == 'prompt' }}"
-          - "{{ trigger.id == 'prompt' }}"
-          - "{{ next_charge_entity in [none,''] or not has_value(next_charge_entity) }}"
-          - "{{ charging_entity in [none,''] or not is_state(charging_entity, 'on') }}"
-          - "{{ soc_skip_ok }}"
-          - "{{ quiet_ok }}"
+          - condition: template
+            value_template: "{{ mode_key == 'prompt' }}"
+          - condition: template
+            value_template: "{{ trigger.id == 'prompt' }}"
+          - condition: template
+            value_template: "{{ next_charge_entity in [none,''] or not has_value(next_charge_entity) }}"
+          - condition: template
+            value_template: "{{ charging_entity in [none,''] or not is_state(charging_entity, 'on') }}"
+          - condition: template
+            value_template: "{{ soc_skip_ok }}"
+          - condition: template
+            value_template: "{{ quiet_ok }}"
         sequence:
           - domain: mobile_app
             type: notify
@@ -332,34 +344,50 @@ action:
 
       # ---- SCHEDULED mode: hard stop time ----
       - conditions:
-          - "{{ mode_key == 'schedule' }}"
-          - "{{ trigger.id == 'stop' }}"
-          - "{{ stop_time not in ['00:00:00', start_time] }}"
-          - "{{ charge_switch not in [none, ''] }}"
+          - condition: template
+            value_template: "{{ mode_key == 'schedule' }}"
+          - condition: template
+            value_template: "{{ trigger.id == 'stop' }}"
+          - condition: template
+            value_template: "{{ stop_time not in ['00:00:00', start_time] }}"
+          - condition: template
+            value_template: "{{ charge_switch not in [none, ''] }}"
         sequence:
           - service: switch.turn_off
             target: { entity_id: "{{ charge_switch }}" }
 
       # ---- SCHEDULED mode: target reached -> stop ----
       - conditions:
-          - "{{ mode_key == 'schedule' }}"
-          - "{{ trigger.id in ['schedstart', 'plugged', 'tick'] }}"
-          - "{{ connected }}"
-          - "{{ in_window }}"
-          - "{{ soc_fresh and soc_now >= (target | float(100)) }}"
-          - "{{ charge_switch not in [none, ''] }}"
+          - condition: template
+            value_template: "{{ mode_key == 'schedule' }}"
+          - condition: template
+            value_template: "{{ trigger.id in ['schedstart', 'plugged', 'tick'] }}"
+          - condition: template
+            value_template: "{{ connected }}"
+          - condition: template
+            value_template: "{{ in_window }}"
+          - condition: template
+            value_template: "{{ soc_fresh and soc_now >= (target | float(100)) }}"
+          - condition: template
+            value_template: "{{ charge_switch not in [none, ''] }}"
         sequence:
           - service: switch.turn_off
             target: { entity_id: "{{ charge_switch }}" }
 
       # ---- SCHEDULED mode: start / continue ----
       - conditions:
-          - "{{ mode_key == 'schedule' }}"
-          - "{{ trigger.id in ['schedstart', 'plugged', 'tick'] }}"
-          - "{{ connected }}"
-          - "{{ in_window }}"
-          - "{{ (not soc_fresh) or (soc_now < (target | float(0))) }}"
-          - "{{ charge_switch not in [none, ''] }}"
+          - condition: template
+            value_template: "{{ mode_key == 'schedule' }}"
+          - condition: template
+            value_template: "{{ trigger.id in ['schedstart', 'plugged', 'tick'] }}"
+          - condition: template
+            value_template: "{{ connected }}"
+          - condition: template
+            value_template: "{{ in_window }}"
+          - condition: template
+            value_template: "{{ (not soc_fresh) or (soc_now < (target | float(0))) }}"
+          - condition: template
+            value_template: "{{ charge_switch not in [none, ''] }}"
         sequence:
           - service: switch.turn_on
             target: { entity_id: "{{ charge_switch }}" }
