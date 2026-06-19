@@ -1,5 +1,12 @@
 # Wallbox Gateway — Charge Assistant blueprint
 
+> ⚠️ **BETA — not yet road-tested.** The notify modes (Reminder / Prompt) are
+> low-risk. The **Scheduled (HA-driven)** mode *actually starts and stops your
+> charge* — try it on a few cycles and keep an eye on it before trusting it
+> unattended. **Please report results** (works / doesn't, your charger + car) at
+> <https://github.com/botts7/hass-wallbox-gateway/issues> — feedback shapes the
+> stable release and the upcoming guided setup.
+
 One blueprint, one automation, a **Mode** dropdown — so charge strategies can't
 conflict. Import `charge_assistant.yaml` and create a single automation.
 

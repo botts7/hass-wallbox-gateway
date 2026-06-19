@@ -1,6 +1,13 @@
 blueprint:
-  name: Wallbox Gateway — Charge Assistant
+  name: Wallbox Gateway — Charge Assistant (BETA)
   description: >
+    ⚠️ BETA — not yet road-tested. The notify modes (Reminder / Prompt) are
+    low-risk; the **Scheduled (HA-driven)** mode actually starts/stops charging,
+    so test it with care and keep an eye on the first few cycles. Please report
+    what works or breaks:
+    https://github.com/botts7/hass-wallbox-gateway/issues
+
+
     One automation for charge automation — pick a Mode so the strategies can't
     conflict (the old separate reminder / planner / prompt blueprints could be
     enabled together and fight). Charger-agnostic; triggers on entities.
