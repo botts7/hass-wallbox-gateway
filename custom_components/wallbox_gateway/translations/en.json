@@ -37,8 +37,6 @@
       "house_power": {"name": "House power"},
       "mains_voltage": {"name": "Mains voltage"},
       "ble_rssi": {"name": "BLE RSSI"},
-      "grid_energy": {"name": "Grid energy (session)"},
-      "green_energy": {"name": "Green energy (session)"},
       "discharge_energy": {"name": "Discharge energy (V2H)"},
       "lifetime_energy": {"name": "Lifetime energy"},
       "house_current": {"name": "House current"},

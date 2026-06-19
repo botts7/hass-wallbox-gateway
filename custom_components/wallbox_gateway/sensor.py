@@ -163,27 +163,11 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
     # v0.3.0 parity additions (task #110). Most are diagnostic and
     # disabled by default; users enable per device if they want them.
     # ------------------------------------------------------------------
-    # Energy split (good for HA Energy dashboard)
-    GatewaySensorEntityDescription(
-        key="grid_energy",
-        translation_key="grid_energy",
-        name="Grid energy (session)",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=2,
-        value_fn=lambda e: _opt_float(e._charger_status().get("grid"), divisor=100),
-    ),
-    GatewaySensorEntityDescription(
-        key="green_energy",
-        translation_key="green_energy",
-        name="Green energy (session)",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=2,
-        value_fn=lambda e: _opt_float(e._charger_status().get("gen"), divisor=100),
-    ),
+    # NOTE: the old grid_energy / green_energy sensors were removed — they
+    # read charger-status gen/grid, but `gen` is the schedule-paused flag
+    # (not energy) so they always read ~0, and they duplicated the names of
+    # the r_lse-backed grid_energy_session / green_energy_session sensors
+    # below. Use those for per-session solar/grid split.
     GatewaySensorEntityDescription(
         key="discharge_energy",
         translation_key="discharge_energy",
