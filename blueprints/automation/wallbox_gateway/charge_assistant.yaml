@@ -18,14 +18,46 @@ blueprint:
       you want to start now.
 
 
-    HA can't hide fields per mode, so every field is shown — each is tagged with
-    the mode(s) that use it. Set the two required gateway sensors regardless of
-    mode (they're on the Wallbox device); fill only the rest your mode needs.
+    HA can't hide fields per mode, so every field is shown — each is tagged
+    (required) / (optional) and with the mode(s) that use it. Fill the required
+    ones for your mode; leave the rest blank.
+
+
+    **What you get, by what you add**
+
+
+    *Reminder mode* — needs **Plug-in reminder sensor** + **Notify device** ->
+    a phone alert when a charge is due but you're not plugged in.
+
+    - add **Battery level sensor** -> skips the alert if already charged enough
+
+    - add **Charging switch** -> a "Start now" button on the alert
+
+    - add **Next-charge sensor** -> shows the scheduled time in the alert
+
+
+    *Scheduled mode* — needs **Car connected** + **Charging switch** +
+    **Start time** -> HA starts charging at that time once plugged in, to the
+    **Target %**.
+
+    - add **Battery level sensor** -> stops exactly at Target % (without it, only
+      the Hard stop time ends the charge)
+
+    - add **Rolling-distance sensor** -> Target auto-adjusts to your driving
+      (otherwise the fixed Target % is used)
+
+
+    *Plugged-in prompt mode* — needs **Car connected** + **Next-charge sensor** +
+    **Notify device** -> asks "start now?" when you plug in with no schedule.
+
+    - add **Charging switch** -> a "Start now" button on the prompt
+
+    - add **Battery level sensor** -> skips the prompt if already charged
   domain: automation
   source_url: https://github.com/botts7/hass-wallbox-gateway/blob/main/blueprints/automation/wallbox_gateway/charge_assistant.yaml
   input:
     assistant_mode:
-      name: Mode
+      name: "Mode — REQUIRED (pick one strategy)"
       description: Which charge strategy this automation runs.
       default: "Reminder (charger schedule)"
       selector:
@@ -36,147 +68,158 @@ blueprint:
             - "Plugged-in prompt (ad-hoc)"
     # ---- Required core signals (from the Wallbox Gateway device) ----
     reminder_entity:
-      name: "[core] Plug-in reminder sensor"
-      description: Wallbox Gateway "Plug-in reminder" binary_sensor. Used by Reminder mode; pick it regardless.
+      name: "Plug-in reminder sensor — REQUIRED"
+      description: >
+        Wallbox Gateway "Plug-in reminder" binary_sensor. Used by Reminder mode;
+        the form requires it for every mode, so pick it even in Scheduled/Prompt.
       selector:
         entity:
           domain: binary_sensor
     connected_entity:
-      name: "[core] Car connected sensor"
-      description: Binary_sensor that's ON when plugged in (Wallbox "Car Connected", or your car's plug sensor). Used by Scheduled / Prompt modes.
+      name: "Car connected sensor — REQUIRED"
+      description: >
+        Binary_sensor that's ON when plugged in (Wallbox "Car Connected", or your
+        car's plug sensor). Used by Scheduled & Prompt; required for every mode.
       selector:
         entity:
           domain: binary_sensor
-    # ---- Shared optional ----
     charge_switch:
-      name: "[shared] Charging switch"
-      description: Wallbox "Charging" switch — ON starts, OFF stops. Needed for HA-driven start and the "Start now" button.
+      name: "Charging switch — required for Scheduled mode & the Start-now button"
+      description: >
+        Wallbox "Charging" switch (ON starts, OFF stops). Scheduled mode can't run
+        without it; in Reminder/Prompt it adds a "Start now" button. Leave blank
+        only for a notify-only reminder.
       default:
       selector:
         entity:
           domain: switch
     soc_entity:
-      name: "[shared] Battery level sensor"
-      description: Your car's battery %. Used for skip-if-charged (Reminder/Prompt) and stop-at-target (Scheduled).
+      name: "Battery level sensor — optional"
+      description: >
+        Your car's battery %. With it: Reminder/Prompt skip when already charged,
+        and Scheduled stops exactly at the target. Without it those fall back to
+        time only. No SOC sensor? See the blueprint README for how to add one.
       default:
       selector:
         entity:
           domain: sensor
           device_class: battery
     notify_device:
-      name: "[Reminder/Prompt] Notify device"
-      description: Mobile device to notify. (Not used in Scheduled mode.)
+      name: "Notify device — required for Reminder & Prompt modes"
+      description: Mobile device (HA app) to notify. Not used in Scheduled mode.
       default:
       selector:
         device:
           integration: mobile_app
     next_charge_entity:
-      name: "[Reminder/Prompt] Next-charge sensor"
-      description: Wallbox "Next scheduled charge". Reminder mode adds it to the message; Prompt mode uses "empty = no schedule".
+      name: "Next-charge sensor — required for Prompt, optional for Reminder"
+      description: >
+        Wallbox "Next scheduled charge". Prompt mode needs it (empty = no schedule
+        -> prompt). Reminder mode only uses it to show the time in the message.
       default:
       selector:
         entity:
           domain: sensor
           device_class: timestamp
     tap_path:
-      name: "[Reminder/Prompt] Open this page when tapped"
+      name: "Open this page when tapped — optional (Reminder/Prompt)"
       description: Lovelace path opened on tap, e.g. /lovelace/wallbox. Blank = just open the app.
       default: ""
       selector:
         text:
     message:
-      name: "[Reminder/Prompt] Notification message"
+      name: "Notification message — optional (Reminder/Prompt)"
       default: "Your car isn't plugged in / has no charge scheduled."
       selector:
         text:
     title:
-      name: "[Reminder/Prompt] Notification title"
+      name: "Notification title — optional (Reminder/Prompt)"
       default: "Wallbox"
       selector:
         text:
     soc_threshold:
-      name: "[Reminder/Prompt] Skip when battery at or above (%)"
+      name: "Skip when battery at or above (%) — optional (needs Battery sensor)"
       default: 80
       selector:
         number: { min: 1, max: 100, unit_of_measurement: "%", mode: slider }
     soc_max_age_min:
-      name: "[shared] Ignore battery level if older than (minutes)"
+      name: "Ignore battery level if older than (min) — optional (needs Battery sensor)"
       description: Stale SOC isn't trusted to suppress a reminder or stop a charge. 0 = never stale.
       default: 60
       selector:
         number: { min: 0, max: 1440, unit_of_measurement: min, mode: box }
     quiet_start:
-      name: "[Reminder/Prompt] Quiet hours start"
+      name: "Quiet hours start — optional (Reminder/Prompt)"
       description: Set start = end to disable.
       default: "00:00:00"
       selector:
         time:
     quiet_end:
-      name: "[Reminder/Prompt] Quiet hours end"
+      name: "Quiet hours end — optional (Reminder/Prompt)"
       default: "00:00:00"
       selector:
         time:
     charging_entity:
-      name: "[Prompt] Charging sensor"
+      name: "Charging sensor — optional (Prompt mode)"
       description: If set, the prompt is suppressed while this shows the car is already charging.
       default:
       selector:
         entity:
           domain: binary_sensor
     prompt_delay:
-      name: "[Prompt] Wait after plugging in before prompting"
+      name: "Wait after plugging in before prompting — optional (Prompt mode)"
       default: { minutes: 2 }
       selector:
         duration:
-    # ---- Scheduled mode ----
     start_time:
-      name: "[Scheduled] Start time"
+      name: "Start time — REQUIRED for Scheduled mode"
+      description: When HA begins charging (if plugged in). Not used by other modes.
       default: "23:00:00"
       selector:
         time:
     stop_time:
-      name: "[Scheduled] Hard stop time"
-      description: Safety cut-off. Leave 00:00:00 to stop only on target.
+      name: "Hard stop time — optional (Scheduled safety cut-off)"
+      description: Charging stops here even if the target isn't reached. Leave 00:00:00 to stop only on target.
       default: "00:00:00"
       selector:
         time:
     target_soc_fixed:
-      name: "[Scheduled] Target battery level (%)"
+      name: "Target battery level (%) — Scheduled mode (used unless a dynamic target is set)"
       default: 80
       selector:
         number: { min: 1, max: 100, unit_of_measurement: "%", mode: slider }
     target_soc_entity:
-      name: "[Scheduled] Dynamic target source (optional)"
-      description: An entity holding the target % (input_number / template). Overrides the fixed value.
+      name: "Dynamic target source — optional (Scheduled mode)"
+      description: >
+        An entity holding the target % — e.g. an input_number helper you set, or
+        a Template helper. Overrides the fixed value above. See the README to add one.
       default:
       selector:
         entity:
           domain: [input_number, sensor, number]
     avg_distance_entity:
-      name: "[Scheduled] Rolling-distance sensor (OPTIONAL — auto target)"
+      name: "Rolling-distance sensor — optional (Scheduled; auto target)"
       description: >
-        Leave blank to just use the fixed Target % above — that's the normal
-        setup. Only fill this if you want the target to auto-adjust to how much
-        you drive: create a Statistics helper on your car's odometer
-        (characteristic "change", over N days) under Settings -> Devices &
-        Services -> Helpers, and select it here. Works with any car that has an
-        odometer.
+        Leave blank to just use the fixed Target % above — the normal setup. Only
+        fill this to auto-adjust the target to how much you drive: create a
+        Statistics helper on your car's odometer (characteristic "change", over N
+        days) under Settings -> Devices & Services -> Helpers, and select it here.
       default:
       selector:
         entity:
           domain: sensor
     window_days:
-      name: "[Scheduled] Days covered by that rolling-distance sensor"
+      name: "Days covered by rolling-distance sensor — only used with that sensor"
       default: 7
       selector:
         number: { min: 1, max: 90, unit_of_measurement: days, mode: box }
     full_range_km:
-      name: "[Scheduled] Range on a full charge (km)"
+      name: "Range on a full charge (km) — only used with rolling-distance sensor"
       default: 400
       selector:
         number: { min: 50, max: 1200, unit_of_measurement: km, mode: box }
     travel_buffer_pct:
-      name: "[Scheduled] Travel target buffer (%)"
+      name: "Travel target buffer (%) — only used with rolling-distance sensor"
       default: 15
       selector:
         number: { min: 0, max: 50, unit_of_measurement: "%", mode: slider }
