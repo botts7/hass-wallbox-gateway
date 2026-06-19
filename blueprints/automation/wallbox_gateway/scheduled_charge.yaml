@@ -63,6 +63,47 @@ blueprint:
           max: 100
           unit_of_measurement: "%"
           mode: slider
+    avg_distance_entity:
+      name: Rolling-distance sensor (optional — travel-based target)
+      description: >
+        A Statistics helper on your car's odometer (characteristic "change",
+        over a fixed window) = distance driven over the last N days. If set
+        (and no dynamic source above), the target is computed from your
+        average daily travel. Create it under Settings -> Devices & Services
+        -> Helpers -> Statistics. Works with any car/odometer.
+      default:
+      selector:
+        entity:
+          domain: sensor
+    window_days:
+      name: Days covered by that rolling-distance sensor
+      default: 7
+      selector:
+        number:
+          min: 1
+          max: 90
+          unit_of_measurement: days
+          mode: box
+    full_range_km:
+      name: Range on a full charge (km)
+      description: Used to convert your average daily km into a target %.
+      default: 400
+      selector:
+        number:
+          min: 50
+          max: 1200
+          unit_of_measurement: km
+          mode: box
+    travel_buffer_pct:
+      name: Travel target buffer (%)
+      description: Extra headroom added on top of the computed daily need.
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 50
+          unit_of_measurement: "%"
+          mode: slider
     soc_max_age_min:
       name: Ignore battery level if older than (minutes)
       description: >
@@ -99,6 +140,10 @@ variables:
   soc_entity: !input soc_entity
   target_soc_entity: !input target_soc_entity
   target_soc_fixed: !input target_soc_fixed
+  avg_distance_entity: !input avg_distance_entity
+  window_days: !input window_days
+  full_range_km: !input full_range_km
+  travel_buffer_pct: !input travel_buffer_pct
   soc_max_age: !input soc_max_age_min
   start_time: !input start_time
   stop_time: !input stop_time
@@ -120,10 +165,18 @@ trigger:
 
 action:
   - variables:
-      # Effective target: dynamic entity if set + readable, else the fixed value.
+      # Effective target %, in priority order:
+      #  1) explicit dynamic source entity, if set + readable;
+      #  2) computed from average daily travel (rolling-distance / days /
+      #     full range + buffer), if a distance sensor is set;
+      #  3) the fixed value.
       target: >
         {% if target_soc_entity not in [none, ''] and has_value(target_soc_entity) %}
           {{ states(target_soc_entity) | float(target_soc_fixed | float(80)) }}
+        {% elif avg_distance_entity not in [none, ''] and has_value(avg_distance_entity) and (full_range_km | float(0)) > 0 %}
+          {% set daily = (states(avg_distance_entity) | float(0)) / (window_days | float(7)) %}
+          {% set need = daily / (full_range_km | float(400)) * 100 %}
+          {{ [ (need + (travel_buffer_pct | float(15))) | round(0), 100 ] | min }}
         {% else %}
           {{ target_soc_fixed | float(80) }}
         {% endif %}
@@ -157,7 +210,7 @@ action:
       # Battery reached target (trust only a fresh reading) -> stop.
       - conditions:
           - "{{ trigger.id == 'soc' }}"
-          - "{{ soc_fresh and soc_now >= target }}"
+          - "{{ soc_fresh and soc_now >= (target | float(100)) }}"
         sequence:
           - service: switch.turn_off
             target:
@@ -169,7 +222,7 @@ action:
           - "{{ trigger.id in ['start', 'plugged', 'soc'] }}"
           - "{{ connected }}"
           - "{{ in_window }}"
-          - "{{ (not soc_fresh) or (soc_now < target) }}"
+          - "{{ (not soc_fresh) or (soc_now < (target | float(0))) }}"
         sequence:
           - service: switch.turn_on
             target:
