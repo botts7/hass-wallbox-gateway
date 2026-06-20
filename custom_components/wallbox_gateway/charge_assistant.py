@@ -74,6 +74,7 @@ from .const import (
     CA_TARIFF_ENTITY,
     CA_TITLE,
     CA_TRIGGERS,
+    DOMAIN,
     MODE_REMINDER,
     MODE_SOLAR,
     MODE_TARGET,
@@ -91,6 +92,13 @@ _SNOOZE_MINUTES = 60
 # Target-SOC auto-start deadband: once stopped at target, don't auto-restart
 # until SOC has fallen this far below target (prevents flapping around the cap).
 _TARGET_DEADBAND = 5
+
+# Charge-control arbitration (see esp32-wallbox docs/control-owner.md). The
+# gateway's control_owner says who may autonomously drive charging; the acting
+# modes run only when it equals our id. After a manual (or other-controller)
+# command we stand down for a cooldown so we never fight the user.
+_OWNER = "integration"
+_MANUAL_OVERRIDE_COOLDOWN_S = 1800  # 30 min
 
 
 class ChargeAssistant:
@@ -114,6 +122,9 @@ class ChargeAssistant:
         self._suppress_until: datetime | None = None
         self._escalations_left = 0
         self._last_result: str = "(not run)"
+        # Most recent reason the acting modes stood down (gateway owner isn't
+        # us / manual override). Surfaced by the diagnostic sensor + Repair.
+        self._standby_reason: str | None = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -130,6 +141,51 @@ class ChargeAssistant:
             if ent.domain == domain and ent.unique_id.endswith(f"_{key}"):
                 return ent.entity_id
         return None
+
+    # ------------------------------------------------------------------
+    # Control arbitration (gateway control_owner + manual override)
+    # ------------------------------------------------------------------
+    def _coordinator(self):
+        return self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id)
+
+    def _status(self) -> dict:
+        coord = self._coordinator()
+        if coord is None or not coord.data:
+            return {}
+        return coord.data.get("raw_status") or {}
+
+    def control_owner(self) -> str:
+        """The gateway's configured charge-control owner ('' if unknown)."""
+        return str(self._status().get("control_owner") or "")
+
+    @property
+    def standby_reason(self) -> str | None:
+        """Why the acting modes are standing down, or None when in control."""
+        return self._standby_reason
+
+    def _may_control(self) -> tuple[bool, str]:
+        """(allowed, reason). We may drive charging only when the gateway owner
+        is us AND there's no recent manual/other-controller command. An empty
+        owner (old firmware / status not yet loaded) is treated as permissive
+        for backward compatibility."""
+        owner = self.control_owner()
+        if owner and owner != _OWNER:
+            return False, f"gateway control owner is '{owner}', not the integration"
+        st = self._status()
+        by = str(st.get("last_command_by") or "")
+        try:
+            age = int(st.get("last_command_age_s"))
+        except (TypeError, ValueError):
+            age = -1
+        if by and by != _OWNER and 0 <= age < _MANUAL_OVERRIDE_COOLDOWN_S:
+            return False, f"manual override {age}s ago (by '{by}') — backing off"
+        return True, ""
+
+    def _note_standby(self, reason: str | None) -> None:
+        if reason != self._standby_reason:
+            if reason:
+                _LOGGER.info("Charge Assistant: standing by — %s", reason)
+            self._standby_reason = reason
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -361,6 +417,11 @@ class ChargeAssistant:
         self._eval_target()
 
     def _eval_target(self) -> None:
+        ok, reason = self._may_control()
+        if not ok:
+            self._note_standby(reason)
+            return
+        self._note_standby(None)
         soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
         if soc is None:
             return
@@ -414,14 +475,27 @@ class ChargeAssistant:
         return False
 
     def _set_charging(self, on: bool) -> None:
-        if not self._charge_switch:
+        """Autonomously start/stop charging — owner-tagged so the gateway
+        records us as the commander (and we don't mistake it for a manual
+        override). Sends straight to the gateway's /api/command rather than
+        the switch entity, so the tag survives. Defensive gate: never act
+        when we're not the owner (the eval already gated, but belt + braces)."""
+        ok, reason = self._may_control()
+        if not ok:
+            self._note_standby(reason)
             return
-        self.hass.async_create_task(
-            self.hass.services.async_call(
-                "switch", "turn_on" if on else "turn_off",
-                {"entity_id": self._charge_switch}, blocking=False,
+        coord = self._coordinator()
+        if coord is None:
+            return
+        self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
+
+    async def _send_command(self, coord, action: str) -> None:
+        try:
+            await coord.client.command(
+                {"action": action, "owner": _OWNER, "wait": "5000"}
             )
-        )
+        except Exception as err:  # noqa: BLE001 — never crash the eval loop
+            _LOGGER.warning("Charge Assistant: %s command failed: %s", action, err)
 
     def _read_float(self, entity_id: str | None) -> float | None:
         if not entity_id:
@@ -463,6 +537,11 @@ class ChargeAssistant:
         self._eval_solar()
 
     def _eval_solar(self) -> None:
+        ok, reason = self._may_control()
+        if not ok:
+            self._note_standby(reason)
+            return
+        self._note_standby(None)
         surplus = self._read_float(self._opts.get(CA_SURPLUS_ENTITY))
         if surplus is None:
             return

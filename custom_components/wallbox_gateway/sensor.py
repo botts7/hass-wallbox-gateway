@@ -95,6 +95,12 @@ def _next_charge(entity: GatewayEntity) -> datetime | None:
     return datetime.fromtimestamp(epoch, tz=timezone.utc)
 
 
+def _control_owner(entity: GatewayEntity) -> str | None:
+    # Charge-control arbitration: who may autonomously drive charging.
+    o = entity._status().get("control_owner")
+    return str(o) if o else None
+
+
 def _house_power(entity: GatewayEntity) -> int | None:
     # p1+p2+p3 summed in the coordinator's _parse_dca. Positive = the
     # house is importing from grid; negative = exporting (typically
@@ -525,6 +531,20 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         name="Next scheduled charge",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_next_charge,
+    ),
+    # ---- Charge-control owner (arbitration) ----------------------------
+    # Who is allowed to autonomously drive charging (set on the gateway's
+    # /config page). Diagnostic so the user can see why the Charge Assistant
+    # is or isn't acting. See esp32-wallbox docs/control-owner.md.
+    GatewaySensorEntityDescription(
+        key="control_owner",
+        translation_key="control_owner",
+        name="Charge control owner",
+        icon="mdi:account-key",
+        device_class=SensorDeviceClass.ENUM,
+        options=["wallbox_schedule", "integration", "addon", "none"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_control_owner,
     ),
 )
 
