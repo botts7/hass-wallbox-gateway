@@ -234,6 +234,29 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         entity_registry_enabled_default=False,
         value_fn=lambda e: _opt_int(e._realtime().get("max_charging_current")),
     ),
+    # Charge-interval capture (#141): the gateway records each real charge
+    # burst (cp>0). last_burst_wh = the most recent completed burst's energy;
+    # charge_log_count = how many bursts are stored. Both from /api/status.
+    GatewaySensorEntityDescription(
+        key="last_burst_energy",
+        translation_key="last_burst_energy",
+        name="Last charge burst",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=3,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_float(e._status().get("last_burst_wh"), divisor=1000),
+    ),
+    GatewaySensorEntityDescription(
+        key="charge_log_count",
+        translation_key="charge_log_count",
+        name="Recorded charge bursts",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda e: _opt_int(e._status().get("charge_log_count")),
+    ),
     GatewaySensorEntityDescription(
         key="ocpp_status",
         translation_key="ocpp_status",

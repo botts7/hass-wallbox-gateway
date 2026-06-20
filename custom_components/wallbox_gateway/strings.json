@@ -138,6 +138,8 @@
       "house_current": {"name": "House current"},
       "max_available_current": {"name": "Max available current"},
       "max_charging_current": {"name": "Max charging current"},
+      "last_burst_energy": {"name": "Last charge burst"},
+      "charge_log_count": {"name": "Recorded charge bursts"},
       "ocpp_status": {"name": "OCPP status"},
       "notification_count": {"name": "Active notifications"},
       "notification_latest": {"name": "Latest notification"},
