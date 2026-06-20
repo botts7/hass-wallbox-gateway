@@ -37,7 +37,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, STATUS_CODES
+from .const import DOMAIN, STATUS_CODES, ZENTRI_STATUS_CODES
 from .coordinator import GatewayCoordinator
 from .entity import GatewayEntity
 
@@ -55,10 +55,13 @@ class GatewaySensorEntityDescription(SensorEntityDescription):
 
 
 def _status_label(entity: GatewayEntity) -> str | None:
-    code = entity._realtime().get("charger_status")
+    code = entity._charger_status_code()
     if code is None:
         return None
-    return STATUS_CODES.get(int(code), f"Code {code}")
+    # Zentri uses a different enum; its labels are reused from STATUS_CODES so
+    # the ENUM `options` list stays valid.
+    table = ZENTRI_STATUS_CODES if entity._is_zentri() else STATUS_CODES
+    return table.get(code, STATUS_CODES.get(code, f"Code {code}"))
 
 
 def _charging_power(entity: GatewayEntity) -> float | None:

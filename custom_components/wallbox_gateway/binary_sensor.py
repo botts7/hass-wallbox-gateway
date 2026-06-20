@@ -30,8 +30,9 @@ def _ble_connected(entity: GatewayEntity) -> bool:
 
 
 def _charging(entity: GatewayEntity) -> bool:
-    # Charger status 1 = Charging per the BAPI enum in const.STATUS_CODES.
-    return entity._realtime().get("charger_status") == 1
+    # Charger status 1 = Charging in both the MAX (r_sta) and Zentri (r_dat.st)
+    # enums; _charger_status_code() picks the right source per charger family.
+    return entity._charger_status_code() == 1
 
 
 def _schedule_paused(entity: GatewayEntity) -> bool:
@@ -68,11 +69,10 @@ def _car_connected(entity: GatewayEntity) -> bool | None:
     val = entity._status().get("car_connected")
     if isinstance(val, bool):
         return val
-    code = entity._realtime().get("charger_status")
-    try:
-        return int(code) in _CAR_CONNECTED_CODES
-    except (TypeError, ValueError):
+    code = entity._charger_status_code()
+    if code is None:
         return None
+    return code in _CAR_CONNECTED_CODES
 
 
 BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (

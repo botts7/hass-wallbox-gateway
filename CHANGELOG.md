@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.2] - 2026-06-21
+
+### Fixed
+- Original/Zentri Pulsar (#12): the **Charger status**, **Charging**, and
+  **Car connected** entities now read `r_dat.st` when the charger doesn't serve
+  `r_sta` (so they work on the original Pulsar, not just Plus/MAX), via a new
+  charger-family-aware status helper. Status labels use a Zentri-specific map
+  (st4 = charge ramp, no longer shown as "Paused"). Charging power already
+  flowed through the firmware's derived `cp` — needs gateway firmware
+  **v3.2.0-beta.2+**.
+
 ## [0.3.1] - 2026-06-12
 
 ### Added

@@ -53,6 +53,28 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
     def _charger_status(self) -> dict[str, Any]:
         return self.coordinator.data.get("charger_status", {}) or {}
 
+    def _is_zentri(self) -> bool:
+        """True for the original (Zentri/TruConnect, pre-BGX) Pulsar (#12)."""
+        return bool(self._status().get("zentri"))
+
+    def _charger_status_code(self) -> int | None:
+        """Live charger status code, charger-family aware.
+
+        The original/Zentri Pulsar doesn't serve r_sta reliably, so its status
+        lives in r_dat.st (the field the firmware itself uses for
+        carConnected()). Everyone else uses r_sta.charger_status.
+        """
+        if self._is_zentri():
+            code = self._charger_status().get("st")
+            if code is None:
+                code = self._realtime().get("charger_status")
+        else:
+            code = self._realtime().get("charger_status")
+        try:
+            return int(code) if code is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _diag(self) -> dict[str, Any]:
         return self.coordinator.data.get("diag", {}) or {}
 
