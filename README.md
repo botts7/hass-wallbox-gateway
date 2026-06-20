@@ -77,6 +77,10 @@ stable unique-id.
 | `sensor.<name>_session_energy`        | kWh (measurement, resets) | energy |
 | `sensor.<name>_house_power`           | W (if MID meter installed) | power |
 | `sensor.<name>_mains_voltage`         | V (L1) | voltage |
+| `sensor.<name>_next_scheduled_charge` | next enabled schedule (timestamp) | timestamp |
+| `binary_sensor.<name>_plug_reminder`  | a charge is due soon and the car isn't plugged in | — |
+| `sensor.<name>_last_burst_energy`     | kWh of the most recent recorded charge burst (fw v3.2+) | energy |
+| `sensor.<name>_charge_log_count`      | recorded charge bursts (diagnostic, fw v3.2+) | — |
 | `sensor.<name>_ble_rssi`              | dBm (disabled by default — diagnostic) | signal_strength |
 | `switch.<name>_charging`              | start / stop charging | switch |
 | `switch.<name>_lock`                  | lock / unlock charger | switch |
@@ -89,7 +93,8 @@ stable unique-id.
 
 - Home Assistant **2024.12** or newer
 - Gateway firmware **v3.0.0** or newer (`/api/health` + the diagnostic
-  endpoints landed in 3.0)
+  endpoints landed in 3.0). The `last_burst_energy` / `charge_log_count`
+  sensors need **v3.2.0+** (the charge-interval capture).
 
 ## License
 
