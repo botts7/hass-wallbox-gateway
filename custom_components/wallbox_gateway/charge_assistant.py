@@ -83,6 +83,7 @@ from .const import (
     TRIG_NIGHTLY,
     TRIG_TARIFF,
 )
+from .schedule_arbiter import NativeScheduleArbiter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,6 +126,9 @@ class ChargeAssistant:
         # Most recent reason the acting modes stood down (gateway owner isn't
         # us / manual override). Surfaced by the diagnostic sensor + Repair.
         self._standby_reason: str | None = None
+        # Native-schedule arbiter + last-known "should we control" state.
+        self._arbiter: NativeScheduleArbiter | None = None
+        self._last_should_control: bool | None = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -208,6 +212,62 @@ class ChargeAssistant:
         elif mode == MODE_SOLAR:
             await self._start_solar()
 
+        # Native-schedule arbiter: while we actively control charging, the
+        # charger's own schedules are disabled (and restored when we hand back).
+        # Driven by ownership changes via a coordinator listener.
+        coord = self._coordinator()
+        if coord is not None:
+            self._arbiter = NativeScheduleArbiter(self.hass, self.entry, coord.client)
+            self._unsubs.append(coord.async_add_listener(self._on_coord_update))
+            self._update_repair()
+            await self._reconcile_schedules()
+
+    # ------------------------------------------------------------------
+    # Native-schedule arbitration + ownership reactions
+    # ------------------------------------------------------------------
+    def _should_control(self) -> bool:
+        """True when we're the gateway owner AND in an acting (start/stop) mode."""
+        if self._opts.get(CA_MODE) not in (MODE_TARGET, MODE_SOLAR):
+            return False
+        return self.control_owner() == _OWNER
+
+    async def _reconcile_schedules(self) -> None:
+        if self._arbiter is None:
+            return
+        self._last_should_control = self._should_control()
+        await self._arbiter.async_reconcile(self._last_should_control)
+
+    @callback
+    def _on_coord_update(self) -> None:
+        """Coordinator tick — react only when our control state actually flips."""
+        if self._arbiter is None:
+            return
+        self._update_repair()
+        sc = self._should_control()
+        if sc != self._last_should_control:
+            self._last_should_control = sc
+            _LOGGER.info("Charge Assistant: control state -> %s (owner=%s)", sc, self.control_owner())
+            self.hass.async_create_task(self._arbiter.async_reconcile(sc))
+
+    def _update_repair(self) -> None:
+        """Raise/clear an HA Repair when an acting mode is set but we aren't the
+        gateway's control owner (so it's obvious why nothing is happening)."""
+        from homeassistant.helpers import issue_registry as ir
+
+        acting = self._opts.get(CA_MODE) in (MODE_TARGET, MODE_SOLAR)
+        owner = self.control_owner()
+        issue_id = f"not_control_owner_{self.entry.entry_id}"
+        if acting and owner and owner != _OWNER:
+            ir.async_create_issue(
+                self.hass, DOMAIN, issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="not_control_owner",
+                translation_placeholders={"owner": owner},
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
     async def _start_reminder(self) -> None:
         triggers = self._opts.get(CA_TRIGGERS) or []
         if not triggers:
@@ -256,6 +316,16 @@ class ChargeAssistant:
                 handle()
         self._lead_unsub = None
         self._escalate_unsub = None
+        # Hand control back to the charger's own schedules on teardown (reload
+        # or removal) so we never leave a native schedule disabled. async_start
+        # re-takes control afterwards if we're still the owner.
+        if self._arbiter is not None:
+            try:
+                await self._arbiter.async_reconcile(False)
+            except Exception:  # noqa: BLE001 — teardown must not raise
+                _LOGGER.exception("Charge Assistant: schedule restore on stop failed")
+        from homeassistant.helpers import issue_registry as ir
+        ir.async_delete_issue(self.hass, DOMAIN, f"not_control_owner_{self.entry.entry_id}")
 
     # ------------------------------------------------------------------
     # Triggers
