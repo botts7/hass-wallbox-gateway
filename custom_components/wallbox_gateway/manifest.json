@@ -1,4 +1,4 @@
-﻿{
+{
   "domain": "wallbox_gateway",
   "name": "Wallbox BLE Gateway",
   "codeowners": ["@botts7"],
