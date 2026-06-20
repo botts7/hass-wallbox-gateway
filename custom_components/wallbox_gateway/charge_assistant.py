@@ -126,9 +126,13 @@ class ChargeAssistant:
         # Most recent reason the acting modes stood down (gateway owner isn't
         # us / manual override). Surfaced by the diagnostic sensor + Repair.
         self._standby_reason: str | None = None
-        # Native-schedule arbiter + last-known "should we control" state.
+        # Native-schedule arbiter + the last SUCCESSFULLY-applied control state.
+        # We retry until the gateway actually reflects what we want (BLE may be
+        # busy right after an owner change / reboot), so this tracks "applied",
+        # not just "intended".
         self._arbiter: NativeScheduleArbiter | None = None
-        self._last_should_control: bool | None = None
+        self._applied_sc: bool | None = None
+        self._applying = False
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -232,22 +236,37 @@ class ChargeAssistant:
         return self.control_owner() == _OWNER
 
     async def _reconcile_schedules(self) -> None:
-        if self._arbiter is None:
+        await self._apply_control(self._should_control())
+
+    async def _apply_control(self, sc: bool) -> None:
+        """Drive the arbiter toward the desired control state, retrying until
+        the gateway actually applies it (BLE can be busy after an owner change
+        / reboot, so a single attempt isn't enough)."""
+        if self._arbiter is None or self._applying:
             return
-        self._last_should_control = self._should_control()
-        await self._arbiter.async_reconcile(self._last_should_control)
+        self._applying = True
+        try:
+            ok = await self._arbiter.async_reconcile(sc)
+            if ok:
+                if sc != self._applied_sc:
+                    _LOGGER.info(
+                        "Charge Assistant: schedule control applied -> %s (owner=%s)",
+                        sc, self.control_owner(),
+                    )
+                self._applied_sc = sc
+        finally:
+            self._applying = False
 
     @callback
     def _on_coord_update(self) -> None:
-        """Coordinator tick — react only when our control state actually flips."""
+        """Coordinator tick — reconcile whenever the gateway's applied state
+        doesn't yet match what we want (covers post-reboot retries)."""
         if self._arbiter is None:
             return
         self._update_repair()
         sc = self._should_control()
-        if sc != self._last_should_control:
-            self._last_should_control = sc
-            _LOGGER.info("Charge Assistant: control state -> %s (owner=%s)", sc, self.control_owner())
-            self.hass.async_create_task(self._arbiter.async_reconcile(sc))
+        if sc != self._applied_sc:
+            self.hass.async_create_task(self._apply_control(sc))
 
     def _update_repair(self) -> None:
         """Raise/clear an HA Repair when an acting mode is set but we aren't the

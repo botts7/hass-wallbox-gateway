@@ -75,19 +75,23 @@ class NativeScheduleArbiter:
     async def _save(self, state: dict) -> None:
         await self._store.async_save(state)
 
-    async def _read_rows(self) -> list:
+    async def _read_rows(self) -> list | None:
+        """Schedule rows, or None when the read FAILED (BLE busy) — distinct
+        from [] which means the charger genuinely has no schedules."""
         try:
             res = await self._client.command(
                 {"action": "bapi", "met": "r_schs", "par": "null", "wait": "6000"}
             )
         except (GatewayError, GatewayUnreachable) as e:
             _LOGGER.warning("Schedule arbiter: couldn't read schedules: %s", e)
-            return []
+            return None
         r = res.get("r") if isinstance(res, dict) else None
         if isinstance(r, dict):
             rows = r.get("schedules")
             return rows if isinstance(rows, list) else []
-        return r if isinstance(r, list) else []
+        if isinstance(r, list):
+            return r
+        return None  # malformed / error reply — treat as a failed read
 
     async def _set_enabled(self, row: dict, enabled: int) -> bool:
         entry = _row_to_entry(row, enabled)
@@ -104,60 +108,76 @@ class NativeScheduleArbiter:
             )
             return False
 
-    async def async_reconcile(self, should_control: bool) -> None:
+    async def async_reconcile(self, should_control: bool) -> bool:
         """Make the charger's native schedules match our control state.
 
         should_control True  -> disable every enabled native schedule (snapshot
                                 first), so the integration owns charging.
         should_control False -> restore the schedules we disabled.
-        Idempotent and safe to call repeatedly.
+
+        Returns True when the desired state is fully applied (so the caller can
+        stop retrying), False when it couldn't be applied yet (BLE busy / a
+        write failed) and should be retried on the next poll. Idempotent.
         """
         if self._busy:
-            return
+            return False
         self._busy = True
         try:
             state = await self._load()
             if should_control:
-                await self._take_control(state)
-            else:
-                await self._release_control(state)
+                return await self._take_control(state)
+            return await self._release_control(state)
         finally:
             self._busy = False
 
-    async def _take_control(self, state: dict) -> None:
+    async def _take_control(self, state: dict) -> bool:
         rows = await self._read_rows()
-        if not rows and not state["controlling"]:
-            # Couldn't read (BLE busy) and we weren't controlling — try later.
-            return
+        if rows is None:
+            # Couldn't read (BLE busy, e.g. just after a gateway reboot). If we
+            # were already controlling, leave it; otherwise report not-applied
+            # so the caller retries next poll. (rows == [] means no schedules —
+            # that IS applied, nothing to disable.)
+            return bool(state["controlling"])
         snapshot = dict(state["snapshot"])
-        changed = False
+        ok = True
         for row in rows:
             if not isinstance(row, dict) or "sid" not in row:
                 continue
             if row.get("enabled"):
                 snapshot.setdefault(str(int(row["sid"])), 1)
                 if await self._set_enabled(row, 0):
-                    changed = True
                     _LOGGER.info(
                         "Schedule arbiter: disabled native schedule #%s (integration controls)",
                         row["sid"],
                     )
-        if changed or not state["controlling"]:
-            await self._save({"controlling": True, "snapshot": snapshot})
+                else:
+                    ok = False  # write failed — retry next poll
+        # Persist what we've snapshotted even on partial success so a later
+        # retry restores everything; only claim "applied" when fully done.
+        await self._save({"controlling": True, "snapshot": snapshot})
+        return ok
 
-    async def _release_control(self, state: dict) -> None:
+    async def _release_control(self, state: dict) -> bool:
         if not state["controlling"]:
-            return
+            return True
         snapshot = state["snapshot"]
+        ok = True
         if snapshot:
-            by_sid = {str(int(r["sid"])): r for r in await self._read_rows()
+            rows = await self._read_rows()
+            if rows is None:
+                return False  # couldn't read to restore — retry next poll
+            by_sid = {str(int(r["sid"])): r for r in rows
                       if isinstance(r, dict) and "sid" in r}
             for sid, prior in snapshot.items():
                 row = by_sid.get(sid)
                 if row is not None and prior:
                     if await self._set_enabled(row, 1):
                         _LOGGER.info("Schedule arbiter: restored native schedule #%s", sid)
-        await self._save({"controlling": False, "snapshot": {}})
+                    else:
+                        ok = False
+        if ok:
+            await self._save({"controlling": False, "snapshot": {}})
+        return ok
 
     async def async_paused_sids(self) -> list[int]:
         """sids we currently have disabled (for surfacing in the UI)."""
