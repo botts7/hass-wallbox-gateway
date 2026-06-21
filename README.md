@@ -15,6 +15,13 @@ The gateway already publishes MQTT discovery topics, so anyone running
 [Mosquitto](https://www.home-assistant.io/integrations/mqtt/) gets HA
 entities automatically. That's fine for most setups.
 
+> **Avoid duplicate entities:** pick **one** entity source — MQTT discovery
+> **or** this integration, not both. If you install this integration, turn
+> **HA MQTT Discovery → Off** on the gateway's Config page (firmware v3.2+);
+> the gateway then removes its MQTT entities so you don't get two of
+> everything. (The HA **Add-on** is just a dashboard panel — it creates
+> **no** entities, so it never duplicates anything.)
+
 This integration is for users who:
 
 - Run HA Container, HA Core, or a venv install (no Add-on store,
