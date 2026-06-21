@@ -4,6 +4,14 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.3] - 2026-06-22
+
+### Added
+- Per-phase grid power **Grid power L1 / L2 / L3** sensors (from the EM340 /
+  3-phase Power Boost `r_dca` reading). Diagnostic, off by default — enable on
+  a 3-phase install. The summed **House power** + **Lifetime energy** sensors
+  were already present.
+
 ## [0.14.2] - 2026-06-21
 
 ### Fixed

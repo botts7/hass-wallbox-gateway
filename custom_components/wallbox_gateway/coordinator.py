@@ -185,6 +185,10 @@ def _parse_dca(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         "voltage_v": int(v1) if isinstance(v1, (int, float)) else None,
         "house_power_w": int(p1) + int(p2) + int(p3),
+        # Per-phase power (EM340 / 3-phase Power Boost). Diagnostic.
+        "power_l1_w": int(p1),
+        "power_l2_w": int(p2),
+        "power_l3_w": int(p3),
         "house_current_a": int(c1) if isinstance(c1, (int, float)) else None,
         # Lifetime energy counter — Wh from charger, exposed as kWh
         "lifetime_kwh": (int(e) / 1000.0) if isinstance(e, (int, float)) else None,
