@@ -4,6 +4,14 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.4] - 2026-06-22
+
+### Fixed
+- **Grid power L1/L2/L3** are now enabled by default (diagnostic category),
+  matching the MQTT discovery entities — they were created but disabled, so
+  they showed in MQTT but not in the integration. Reported by a Pulsar Max +
+  EM340 user.
+
 ## [0.14.3] - 2026-06-22
 
 ### Added

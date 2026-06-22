@@ -216,8 +216,9 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         value_fn=lambda e: e._meter().get("house_current_a"),
         requires_meter=True,
     ),
-    # Per-phase grid power (EM340 / 3-phase Power Boost). Diagnostic, off by
-    # default — enable on a 3-phase install where L2/L3 are non-zero.
+    # Per-phase grid power (EM340 / 3-phase Power Boost). Diagnostic category
+    # but enabled by default to match the MQTT discovery entities (so they
+    # appear in HACS too, not just MQTT). On single-phase, L2/L3 read 0.
     GatewaySensorEntityDescription(
         key="grid_power_l1",
         translation_key="grid_power_l1",
@@ -225,7 +226,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
-        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda e: e._meter().get("power_l1_w"),
         requires_meter=True,
     ),
@@ -236,7 +237,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
-        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda e: e._meter().get("power_l2_w"),
         requires_meter=True,
     ),
@@ -247,7 +248,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
-        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda e: e._meter().get("power_l3_w"),
         requires_meter=True,
     ),
