@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import logging
 
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ClientConfig, GatewayClient
 from .charge_assistant import ChargeAssistant
-from .const import DEFAULT_USERNAME, DOMAIN
+from .const import CA_KEY, CONF_POLL_INTERVAL, DEFAULT_USERNAME, DOMAIN
 from .coordinator import GatewayCoordinator
 from .schedule import async_setup_schedule_services
 
@@ -67,6 +69,77 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Charge-schedule create/update/delete services (idempotent).
     async_setup_schedule_services(hass)
+
+    # Config bridge: lets the Add-on (or any caller) read + write this entry's
+    # options — the Charge Assistant config and other tunables — so the rich
+    # Add-on GUI can be the primary config surface. The native options flow
+    # remains a fallback that writes the same entry.options.
+    if not hass.services.has_service(DOMAIN, "get_config"):
+        def _find_entry(host: str | None) -> ConfigEntry | None:
+            entries = hass.config_entries.async_entries(DOMAIN)
+            if host:
+                for e in entries:
+                    if e.data.get(CONF_HOST) == host:
+                        return e
+                return None
+            return entries[0] if entries else None
+
+        async def _async_get_config(call: ServiceCall) -> dict:
+            entry = _find_entry(call.data.get("host"))
+            if entry is None:
+                return {"found": False, "options": {}}
+            return {
+                "found": True,
+                "host": entry.data.get(CONF_HOST),
+                "options": dict(entry.options),
+            }
+
+        async def _async_set_config(call: ServiceCall) -> None:
+            entry = _find_entry(call.data.get("host"))
+            if entry is None:
+                raise HomeAssistantError("No matching Wallbox Gateway entry")
+            incoming = call.data.get("options") or {}
+            # Allow-list the option keys the GUI may write, so a stray or hostile
+            # service call can't inject arbitrary keys into entry.options (which
+            # is reloaded live) or clobber unrelated settings with junk that then
+            # breaks the coordinator/assistant on reload. Credentials live in
+            # entry.data (not entry.options), so they're never reachable here.
+            clean: dict = {}
+            for key, val in incoming.items():
+                if key == CONF_POLL_INTERVAL:
+                    try:
+                        clean[key] = max(1, min(3600, int(val)))
+                    except (TypeError, ValueError):
+                        _LOGGER.warning("set_config: ignoring non-numeric poll_interval %r", val)
+                elif key in (CA_KEY, "tariff"):
+                    if isinstance(val, dict):
+                        clean[key] = val
+                    else:
+                        _LOGGER.warning("set_config: ignoring %s (expected an object)", key)
+                else:
+                    _LOGGER.warning("set_config: ignoring unknown option key %r", key)
+            if not clean:
+                return
+            # Sub-dicts the caller owns (the whole Charge Assistant config under
+            # CA_KEY, the tariff) are replaced wholesale, exactly as the options
+            # flow does. The add_update_listener (_async_options_updated) then
+            # reloads the entry + restarts the assistant with the new config.
+            new_opts = {**entry.options, **clean}
+            hass.config_entries.async_update_entry(entry, options=new_opts)
+
+        hass.services.async_register(
+            DOMAIN, "get_config", _async_get_config,
+            schema=vol.Schema({vol.Optional("host"): str}),
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, "set_config", _async_set_config,
+            schema=vol.Schema({
+                vol.Required("options"): dict,
+                vol.Optional("host"): str,
+            }),
+        )
+
     return True
 
 

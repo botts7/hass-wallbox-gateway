@@ -46,12 +46,16 @@
       "init": {
         "title": "Charge Assistant",
         "description": "Pick what the assistant should do. Reminder nudges you to plug the car in.",
-        "data": {"mode": "Mode"}
+        "data": {
+          "mode": "Mode"
+        }
       },
       "triggers": {
         "title": "When should I remind you?",
         "description": "Tick any combination. The next step only asks for what these need.",
-        "data": {"triggers": "Triggers"}
+        "data": {
+          "triggers": "Triggers"
+        }
       },
       "setup": {
         "title": "Trigger settings",
@@ -99,6 +103,11 @@
           "departure_time": "Ready-by time (optional — charge just-in-time)",
           "battery_kwh": "Battery capacity (kWh) — for the ready-by estimate",
           "charge_power_kw": "Typical charge power (kW) — for the ready-by estimate",
+          "cheapest_window": "Charge in the cheapest hours (needs a price-forecast sensor)",
+          "price_entity": "Electricity price sensor with a forecast (Amber / Nord Pool / Tibber)",
+          "trip_target_pct": "Trip target charge level (%) — for an upcoming trip",
+          "trip_until": "Trip target applies until (then reverts to the everyday target)",
+          "price_cap": "Never charge above this price (your departure time still wins)",
           "notify_service": "Notify me when it starts/stops (optional)"
         }
       },
@@ -110,6 +119,18 @@
           "surplus_start": "Start charging at/above (surplus)",
           "surplus_stop": "Stop charging at/below (surplus)",
           "surplus_debounce_min": "Must hold this long before acting (min)",
+          "surplus_source": "Surplus source (a sensor, or derive from grid / solar−load)",
+          "grid_entity": "Grid power sensor (for 'Compute from grid power')",
+          "grid_export_negative": "Grid reads negative when exporting",
+          "solar_entity": "Solar production sensor (for 'solar − house load')",
+          "load_entity": "House load sensor (for 'solar − house load')",
+          "solar_dynamic": "Follow surplus by adjusting charge current (advanced/experimental)",
+          "min_current_a": "Minimum charge current (A)",
+          "max_current_a": "Maximum charge current (A)",
+          "supply_voltage": "Supply voltage (V)",
+          "supply_phases": "Supply phases",
+          "load_limit_w": "House load limit (W, 0 = off)",
+          "load_power_entity": "House/grid power sensor (for the load limit)",
           "notify_service": "Notify me when it starts/stops (optional)"
         }
       }
@@ -117,75 +138,207 @@
   },
   "entity": {
     "binary_sensor": {
-      "ble_connected": {"name": "BLE connected"},
-      "charging": {"name": "Charging"},
-      "schedule_paused": {"name": "Schedule paused"},
-      "power_sharing": {"name": "Dynamic power sharing"},
-      "phase_switch": {"name": "Phase switch"},
-      "ble_paused": {"name": "BLE paused"},
-      "plug_reminder": {"name": "Plug-in reminder"},
-      "car_connected": {"name": "Car connected"}
+      "ble_connected": {
+        "name": "BLE connected"
+      },
+      "charging": {
+        "name": "Charging"
+      },
+      "schedule_paused": {
+        "name": "Schedule paused"
+      },
+      "power_sharing": {
+        "name": "Dynamic power sharing"
+      },
+      "phase_switch": {
+        "name": "Phase switch"
+      },
+      "ble_paused": {
+        "name": "BLE paused"
+      },
+      "plug_reminder": {
+        "name": "Plug-in reminder"
+      },
+      "car_connected": {
+        "name": "Car connected"
+      }
     },
     "sensor": {
-      "charger_status": {"name": "Charger status"},
-      "charging_power": {"name": "Charging power"},
-      "session_energy": {"name": "Session energy"},
-      "house_power": {"name": "House power"},
-      "mains_voltage": {"name": "Mains voltage"},
-      "ble_rssi": {"name": "BLE RSSI"},
-      "discharge_energy": {"name": "Discharge energy (V2H)"},
-      "lifetime_energy": {"name": "Lifetime energy"},
-      "house_current": {"name": "House current"},
-      "grid_power_l1": {"name": "Grid power L1"},
-      "grid_power_l2": {"name": "Grid power L2"},
-      "grid_power_l3": {"name": "Grid power L3"},
-      "max_available_current": {"name": "Max available current"},
-      "max_charging_current": {"name": "Max charging current"},
-      "last_burst_energy": {"name": "Last charge burst"},
-      "charge_log_count": {"name": "Recorded charge bursts"},
-      "ocpp_status": {"name": "OCPP status"},
-      "notification_count": {"name": "Active notifications"},
-      "notification_latest": {"name": "Latest notification"},
-      "chg_app_fw": {"name": "Charger firmware"},
-      "chg_project": {"name": "Charger project"},
-      "chg_sessions": {"name": "Total charging sessions"},
-      "chg_power_boost": {"name": "Power Boost limit"},
-      "chg_lock_state": {"name": "Lock state"},
-      "chg_net_ssid": {"name": "Charger WiFi SSID"},
-      "chg_net_ip": {"name": "Charger IP"},
-      "chg_net_signal": {"name": "Charger WiFi signal"},
-      "chg_grounding": {"name": "Charger grounding"},
-      "gateway_ip": {"name": "Gateway IP"},
-      "gateway_fw": {"name": "Gateway firmware"},
-      "dev_name": {"name": "Charger name"},
-      "dev_mfg": {"name": "Charger manufacturer"},
-      "dev_model": {"name": "BLE radio model"},
-      "dev_fw": {"name": "BLE module FW"},
-      "timezone": {"name": "Timezone"},
-      "boot_reason": {"name": "Last boot reason"},
-      "max_reentry": {"name": "Reentry tripwire"},
-      "tokens": {"name": "Rate-limit tokens"},
-      "loop_max_ms": {"name": "Loop max ms"},
-      "heap_min_ever": {"name": "Heap min watermark"},
-      "heap_free": {"name": "Heap free"},
-      "gw_uptime": {"name": "Gateway uptime"},
-      "wifi_rssi": {"name": "WiFi signal"},
-      "green_energy_session": {"name": "Green energy (session)"},
-      "grid_energy_session": {"name": "Grid energy (session)"},
-      "surplus_power": {"name": "Solar surplus power"},
-      "active_feature": {"name": "Active feature"},
-      "control_mode": {"name": "Control mode"},
-      "next_scheduled_charge": {"name": "Next scheduled charge"}
+      "charger_status": {
+        "name": "Charger status"
+      },
+      "charging_power": {
+        "name": "Charging power"
+      },
+      "session_energy": {
+        "name": "Session energy"
+      },
+      "house_power": {
+        "name": "House power"
+      },
+      "mains_voltage": {
+        "name": "Mains voltage"
+      },
+      "ble_rssi": {
+        "name": "BLE RSSI"
+      },
+      "discharge_energy": {
+        "name": "Discharge energy (V2H)"
+      },
+      "lifetime_energy": {
+        "name": "Lifetime energy"
+      },
+      "house_current": {
+        "name": "House current"
+      },
+      "grid_power_l1": {
+        "name": "Grid power L1"
+      },
+      "grid_power_l2": {
+        "name": "Grid power L2"
+      },
+      "grid_power_l3": {
+        "name": "Grid power L3"
+      },
+      "max_available_current": {
+        "name": "Max available current"
+      },
+      "max_charging_current": {
+        "name": "Max charging current"
+      },
+      "last_burst_energy": {
+        "name": "Last charge burst"
+      },
+      "charge_log_count": {
+        "name": "Recorded charge bursts"
+      },
+      "ocpp_status": {
+        "name": "OCPP status"
+      },
+      "notification_count": {
+        "name": "Active notifications"
+      },
+      "notification_latest": {
+        "name": "Latest notification"
+      },
+      "chg_app_fw": {
+        "name": "Charger firmware"
+      },
+      "chg_project": {
+        "name": "Charger project"
+      },
+      "chg_sessions": {
+        "name": "Total charging sessions"
+      },
+      "chg_power_boost": {
+        "name": "Power Boost limit"
+      },
+      "chg_lock_state": {
+        "name": "Lock state"
+      },
+      "chg_net_ssid": {
+        "name": "Charger WiFi SSID"
+      },
+      "chg_net_ip": {
+        "name": "Charger IP"
+      },
+      "chg_net_signal": {
+        "name": "Charger WiFi signal"
+      },
+      "chg_grounding": {
+        "name": "Charger grounding"
+      },
+      "gateway_ip": {
+        "name": "Gateway IP"
+      },
+      "gateway_fw": {
+        "name": "Gateway firmware"
+      },
+      "dev_name": {
+        "name": "Charger name"
+      },
+      "dev_mfg": {
+        "name": "Charger manufacturer"
+      },
+      "dev_model": {
+        "name": "BLE radio model"
+      },
+      "dev_fw": {
+        "name": "BLE module FW"
+      },
+      "timezone": {
+        "name": "Timezone"
+      },
+      "boot_reason": {
+        "name": "Last boot reason"
+      },
+      "max_reentry": {
+        "name": "Reentry tripwire"
+      },
+      "tokens": {
+        "name": "Rate-limit tokens"
+      },
+      "loop_max_ms": {
+        "name": "Loop max ms"
+      },
+      "heap_min_ever": {
+        "name": "Heap min watermark"
+      },
+      "heap_free": {
+        "name": "Heap free"
+      },
+      "gw_uptime": {
+        "name": "Gateway uptime"
+      },
+      "wifi_rssi": {
+        "name": "WiFi signal"
+      },
+      "green_energy_session": {
+        "name": "Green energy (session)"
+      },
+      "grid_energy_session": {
+        "name": "Grid energy (session)"
+      },
+      "surplus_power": {
+        "name": "Solar surplus power"
+      },
+      "active_feature": {
+        "name": "Active feature"
+      },
+      "control_mode": {
+        "name": "Control mode"
+      },
+      "next_scheduled_charge": {
+        "name": "Next scheduled charge"
+      },
+      "cost_week": {
+        "name": "Charging cost (7 days)"
+      },
+      "cost_month": {
+        "name": "Charging cost (this month)"
+      }
     },
     "switch": {
-      "charging": {"name": "Charging"},
-      "lock": {"name": "Lock"},
-      "auto_lock_enabled": {"name": "Auto lock"}
+      "charging": {
+        "name": "Charging"
+      },
+      "lock": {
+        "name": "Lock"
+      },
+      "auto_lock_enabled": {
+        "name": "Auto lock"
+      }
     },
     "number": {
-      "max_current": {"name": "Max current"},
-      "autolock_time": {"name": "Auto lock timeout"},
-      "eco_smart_solar_target": {"name": "Eco Smart solar %"}
+      "max_current": {
+        "name": "Max current"
+      },
+      "autolock_time": {
+        "name": "Auto lock timeout"
+      },
+      "eco_smart_solar_target": {
+        "name": "Eco Smart solar %"
+      }
     },
     "select": {
       "eco_smart_mode": {
@@ -198,9 +351,15 @@
       }
     },
     "button": {
-      "refresh_now": {"name": "Refresh now"},
-      "resume_schedule": {"name": "Resume schedule"},
-      "reboot_charger": {"name": "Reboot charger"}
+      "refresh_now": {
+        "name": "Refresh now"
+      },
+      "resume_schedule": {
+        "name": "Resume schedule"
+      },
+      "reboot_charger": {
+        "name": "Reboot charger"
+      }
     }
   },
   "issues": {

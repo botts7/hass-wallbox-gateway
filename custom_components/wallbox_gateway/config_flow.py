@@ -45,11 +45,28 @@ from .const import (
     CA_TAP_PATH,
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
+    CA_CHEAPEST,
     CA_DEPARTURE,
+    CA_GRID_ENTITY,
+    CA_GRID_EXPORT_NEGATIVE,
+    CA_LOAD_ENTITY,
+    CA_LOAD_LIMIT_W,
+    CA_LOAD_POWER_ENTITY,
+    CA_MAX_CURRENT,
+    CA_MIN_CURRENT,
+    CA_PRICE_CAP,
+    CA_PRICE_ENTITY,
+    CA_SOLAR_DYNAMIC,
+    CA_SOLAR_ENTITY,
+    CA_SURPLUS_SOURCE,
+    CA_SUPPLY_PHASES,
+    CA_SUPPLY_VOLTAGE,
     CA_SURPLUS_DEBOUNCE,
     CA_SURPLUS_ENTITY,
     CA_SURPLUS_START,
     CA_SURPLUS_STOP,
+    CA_TRIP_TARGET,
+    CA_TRIP_UNTIL,
     CA_TARGET_AUTOSTART,
     CA_TARGET_PCT,
     CA_TARIFF_BELOW,
@@ -319,7 +336,13 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 self._ca = {CA_MODE: MODE_SOLAR}
                 return await self.async_step_solar()
             # "Off" (and not-yet-built modes) — store mode only.
-            return self.async_create_entry(title="", data={CA_KEY: {CA_MODE: mode}})
+            # Merge into existing options (don't replace the whole dict) so the
+            # native flow doesn't wipe poll_interval / tariff / other keys the
+            # Add-on set. async_create_entry(data=…) replaces entry.options
+            # wholesale, so we spread the current options in first.
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, CA_KEY: {CA_MODE: mode}}
+            )
 
         schema = vol.Schema(
             {
@@ -353,7 +376,9 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
             self._ca.update(user_input)
-            return self.async_create_entry(title="", data={CA_KEY: self._ca})
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, CA_KEY: self._ca}
+            )
 
         cur = self._cur()
         notify_opts = [
@@ -362,8 +387,39 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         ]
         schema = vol.Schema(
             {
-                vol.Required(
+                # Surplus source — direct sensor, or derive from grid / solar+load.
+                vol.Optional(
+                    CA_SURPLUS_SOURCE, default=cur.get(CA_SURPLUS_SOURCE, "entity")
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "entity", "label": "I have a surplus sensor"},
+                            {"value": "grid", "label": "Compute from grid power"},
+                            {"value": "solar_load", "label": "Compute from solar − house load"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
                     CA_SURPLUS_ENTITY, default=cur.get(CA_SURPLUS_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Optional(
+                    CA_GRID_ENTITY, default=cur.get(CA_GRID_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Optional(
+                    CA_GRID_EXPORT_NEGATIVE, default=cur.get(CA_GRID_EXPORT_NEGATIVE, True)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_SOLAR_ENTITY, default=cur.get(CA_SOLAR_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Optional(
+                    CA_LOAD_ENTITY, default=cur.get(CA_LOAD_ENTITY, vol.UNDEFINED)
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="power")
                 ),
@@ -382,6 +438,46 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         min=0, max=30, unit_of_measurement="min",
                         mode=selector.NumberSelectorMode.BOX,
                     )
+                ),
+                # Phase 2 — dynamic current follow + house-load limit (advanced;
+                # the gateway clamps to 6-32 A and ignores live current on the
+                # original Pulsar).
+                vol.Optional(
+                    CA_SOLAR_DYNAMIC, default=cur.get(CA_SOLAR_DYNAMIC, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(CA_MIN_CURRENT, default=cur.get(CA_MIN_CURRENT, 6)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=6, max=32, unit_of_measurement="A",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(CA_MAX_CURRENT, default=cur.get(CA_MAX_CURRENT, 32)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=6, max=32, unit_of_measurement="A",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(CA_SUPPLY_VOLTAGE, default=cur.get(CA_SUPPLY_VOLTAGE, 230)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=100, max=500, unit_of_measurement="V",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(CA_SUPPLY_PHASES, default=cur.get(CA_SUPPLY_PHASES, 1)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=3, mode=selector.NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(CA_LOAD_LIMIT_W, default=cur.get(CA_LOAD_LIMIT_W, 0)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=30000, step=100, unit_of_measurement="W",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_LOAD_POWER_ENTITY, default=cur.get(CA_LOAD_POWER_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
                 ),
                 vol.Optional(
                     CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
@@ -402,7 +498,9 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
             self._ca.update(user_input)
-            return self.async_create_entry(title="", data={CA_KEY: self._ca})
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, CA_KEY: self._ca}
+            )
 
         cur = self._cur()
         notify_opts = [
@@ -442,6 +540,34 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                     selector.NumberSelectorConfig(
                         min=1, max=50, step=0.1, unit_of_measurement="kW",
                         mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                # Phase 3 — cheapest-window (needs a forecast-capable price entity).
+                vol.Optional(
+                    CA_CHEAPEST, default=cur.get(CA_CHEAPEST, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_PRICE_ENTITY, default=cur.get(CA_PRICE_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                # Phase 4 — battery care (trip target until a deadline) + price cap.
+                vol.Optional(
+                    CA_TRIP_TARGET, default=cur.get(CA_TRIP_TARGET, vol.UNDEFINED)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=100, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_TRIP_UNTIL, default=cur.get(CA_TRIP_UNTIL, vol.UNDEFINED)
+                ): selector.DateTimeSelector(),
+                vol.Optional(
+                    CA_PRICE_CAP, default=cur.get(CA_PRICE_CAP, vol.UNDEFINED)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, step=0.01, mode=selector.NumberSelectorMode.BOX
                     )
                 ),
                 vol.Optional(
@@ -585,7 +711,9 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
             self._ca.update(user_input)
-            return self.async_create_entry(title="", data={CA_KEY: self._ca})
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, CA_KEY: self._ca}
+            )
 
         cur = self._cur()
         notify_opts = [

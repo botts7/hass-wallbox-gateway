@@ -4,6 +4,66 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.15.0] - 2026-06-22
+
+### Added
+- **Config bridge services** `wallbox_gateway.get_config` and
+  `wallbox_gateway.set_config`. `get_config` returns the entry's current
+  options (Charge Assistant + tunables) as service response data;
+  `set_config` shallow-merges an options object into the entry and reloads
+  (restarting the Charge Assistant with the new config). These let the
+  companion Add-on host a rich Charge Assistant configuration GUI without the
+  native options-flow wizard. Both match the entry by gateway `host` (or the
+  only entry if omitted). The options flow remains a fully-functional
+  fallback writing the same `entry.options`.
+- **Dynamic current control** in Solar mode — the assistant can now command
+  the charge current (not just start/stop), modulating it to follow solar
+  surplus within configurable min/max amps (supply voltage + phases convert
+  power to current). An optional **house-load limit** trims charge current so
+  total house draw stays under a cap, read from a user-chosen grid-power
+  entity (works without the charger's Power Boost meter) or the charger's own
+  meter. New options: `min_current_a`, `max_current_a`, `solar_dynamic`,
+  `supply_voltage`, `supply_phases`, `load_limit_w`, `load_power_entity`.
+- **Cheapest-window charging** (sub-option of Smart-charge) — charge only during
+  the cheapest forecast hours that still reach target by departure. Reads a
+  price entity's forecast (Nord Pool `raw_today`/`raw_tomorrow`, Amber
+  `forecasts`, Tibber, generic). Safety nets: the departure just-in-time floor
+  forces charging if cheap hours run short (car always ready in time), and it
+  only ever *stops* a charge it started itself — never a manual one. Falls back
+  to plain just-in-time when the price entity has no forecast. New pure,
+  unit-tested planner (`price_planner.py`); new options `cheapest_window`,
+  `price_entity`.
+- **Battery care + cost cap** (smart-charge). A daily target is your everyday
+  ceiling; an optional **trip target** raises it only until a deadline
+  (`trip_until`) then auto-reverts by time — no one-shot state. A **price cap**
+  (`price_cap`) is a hard ceiling that never charges above a price (your
+  departure floor still overrides so the car is ready in time). Pure,
+  unit-tested guards (`charge_guards.py`); new options `trip_target_pct`,
+  `trip_until`, `price_cap`.
+- **Charger-control adapter** (`charger_control.py`) — all charge commands now
+  go through a `ChargerControl` interface (Wallbox adapter today), so other
+  chargers can be added without touching the modes/planner/GUI.
+- **Native options flow parity** — the dynamic-current, cheapest-window and
+  battery-care/price-cap settings are now in the native options flow too, so
+  Container/Core users (no Add-on) can configure them.
+- **Surplus source** for solar mode — works without a ready-made "surplus"
+  sensor: derive it from a **grid-power** sensor (export = surplus; configurable
+  sign) or from **solar production − house load**. New options `surplus_source`,
+  `grid_entity`, `grid_export_negative`, `solar_entity`, `load_entity` (pure,
+  unit-tested derivation in `charge_guards.py`).
+- **Charging cost sensors** — `Charging cost (7 days)` and `(this month)`,
+  computed natively from the firmware charge-log + your tariff (each burst
+  billed at the rate of the hours it ran in; solar is free). Real HA entities
+  with long-term statistics. The tariff is mirrored from the Add-on into the
+  config entry (`entry.options['tariff']`) via the existing config bridge —
+  set it once in the Add-on's tariff editor. New pure cost engine
+  (`cost_engine.py`), a Python port of the Add-on's `cost.js` proven equivalent
+  by shared-scenario tests.
+- **Unit-test suite** (`tests/`, 48 cases) — pure-logic tests for the planner,
+  charger adapter, and guards, plus controller-decision (glue) tests with a
+  fake hass (effective target, price-cap gating, trip target, surplus
+  derivation). Run with `py tests/run_all.py`.
+
 ## [0.14.4] - 2026-06-22
 
 ### Fixed

@@ -46,7 +46,11 @@ from .const import (
     CA_ESCALATE_MIN,
     CA_KEY,
     CA_LEAD_HOURS,
+    CA_LOAD_LIMIT_W,
+    CA_LOAD_POWER_ENTITY,
+    CA_MAX_CURRENT,
     CA_MESSAGE,
+    CA_MIN_CURRENT,
     CA_MODE,
     CA_NIGHTLY_TIME,
     CA_NOTIFY_SERVICE,
@@ -61,10 +65,23 @@ from .const import (
     CA_SOC_MAX_AGE,
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
+    CA_CHEAPEST,
     CA_DEPARTURE,
+    CA_PRICE_CAP,
+    CA_PRICE_ENTITY,
+    CA_TRIP_TARGET,
+    CA_TRIP_UNTIL,
     CA_START_ACTION,
+    CA_SOLAR_DYNAMIC,
+    CA_SUPPLY_PHASES,
+    CA_SUPPLY_VOLTAGE,
+    CA_GRID_ENTITY,
+    CA_GRID_EXPORT_NEGATIVE,
+    CA_LOAD_ENTITY,
+    CA_SOLAR_ENTITY,
     CA_SURPLUS_DEBOUNCE,
     CA_SURPLUS_ENTITY,
+    CA_SURPLUS_SOURCE,
     CA_SURPLUS_START,
     CA_SURPLUS_STOP,
     CA_TAP_PATH,
@@ -75,6 +92,8 @@ from .const import (
     CA_TITLE,
     CA_TRIGGERS,
     DOMAIN,
+    MAX_CURRENT_A,
+    MIN_CURRENT_A,
     MODE_REMINDER,
     MODE_SOLAR,
     MODE_TARGET,
@@ -83,6 +102,9 @@ from .const import (
     TRIG_NIGHTLY,
     TRIG_TARIFF,
 )
+from . import price_planner
+from .charge_guards import derive_surplus, effective_target, price_allows_charge
+from .charger_control import WallboxGatewayCharger
 from .schedule_arbiter import NativeScheduleArbiter
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +155,12 @@ class ChargeAssistant:
         self._arbiter: NativeScheduleArbiter | None = None
         self._applied_sc: bool | None = None
         self._applying = False
+        # Last charge current (A) we commanded — so dynamic control only writes
+        # to the charger when the target actually changes (BLE writes are dear).
+        self._applied_current: int | None = None
+        # Did *we* start the current charge? Cheapest-window only ever stops a
+        # charge it started itself — never a manual / app-initiated one.
+        self._we_started = False
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -438,8 +466,17 @@ class ChargeAssistant:
         self._unsubs.append(
             async_track_state_change_event(self.hass, watch, self._on_target_change)
         )
-        # Departure targeting is time-driven (not just SOC-driven), so poll too.
-        if self._departure_active():
+        cheapest = self._cheapest_active()
+        if cheapest:
+            # Re-plan when the price forecast updates.
+            self._unsubs.append(
+                async_track_state_change_event(
+                    self.hass, [self._opts.get(CA_PRICE_ENTITY)], self._on_target_change
+                )
+            )
+        # Departure targeting and cheapest-window are both time-driven (not just
+        # SOC-driven), so poll on a steady cadence too.
+        if self._departure_active() or cheapest:
             self._unsubs.append(
                 async_track_time_interval(self.hass, self._on_target_tick, timedelta(minutes=5))
             )
@@ -514,11 +551,11 @@ class ChargeAssistant:
         soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
         if soc is None:
             return
-        try:
-            target = float(self._opts.get(CA_TARGET_PCT, 80) or 80)
-        except (TypeError, ValueError):
-            return
+        target = self._target_pct()
         charging = self._is_charging()
+        if self._cheapest_active():
+            self._eval_cheapest(soc, target, charging)
+            return
         if soc >= target:
             # Charge cap reached — stop if we're charging.
             if charging:
@@ -544,6 +581,9 @@ class ChargeAssistant:
                     ))
                 )
         elif self._opts.get(CA_TARGET_AUTOSTART) and soc <= target - _TARGET_DEADBAND:
+            if self._price_blocks():
+                self._note_standby(None)
+                return  # above the price cap — wait for a cheaper price
             # Immediate auto-start (deadband stops flapping at the cap).
             _LOGGER.info("Charge Assistant: SOC %.0f%% below target %.0f%% — starting charge", soc, target)
             self._set_charging(True)
@@ -552,6 +592,136 @@ class ChargeAssistant:
                     f"Charging started — {soc:.0f}% (target {target:.0f}%)."
                 ))
             )
+
+    # ------------------------------------------------------------------
+    # Cheapest-window planning (Phase 3) — a sub-mode of target charging
+    # ------------------------------------------------------------------
+    def _cheapest_active(self) -> bool:
+        """True when cheapest-window is enabled with the inputs it needs (price
+        entity + a battery/power model to size the energy required)."""
+        if not self._opts.get(CA_CHEAPEST) or not self._opts.get(CA_PRICE_ENTITY):
+            return False
+        try:
+            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and float(
+                self._opts.get(CA_CHARGE_POWER_KW) or 0
+            ) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _parse_dt(self, v):
+        """Parse a forecast timestamp (ISO str or datetime) to aware UTC."""
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return dt_util.as_utc(v)
+        d = dt_util.parse_datetime(str(v))
+        return dt_util.as_utc(d) if d else None
+
+    def _parse_dt_local(self, v):
+        """Parse a naive local datetime string (trip deadline) to aware UTC."""
+        if not v:
+            return None
+        d = dt_util.parse_datetime(str(v))
+        if d is None:
+            return None
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return dt_util.as_utc(d)
+
+    # ------------------------------------------------------------------
+    # Battery care + cost cap (Phase 4)
+    # ------------------------------------------------------------------
+    def _target_pct(self) -> float:
+        """The active SOC target: the everyday care target, raised to the trip
+        target only until the trip deadline (auto-reverts by time)."""
+        return effective_target(
+            self._opts.get(CA_TARGET_PCT, 80),
+            self._opts.get(CA_TRIP_TARGET),
+            self._parse_dt_local(self._opts.get(CA_TRIP_UNTIL)),
+            dt_util.utcnow(),
+        )
+
+    def _price_blocks(self) -> bool:
+        """True when a price cap is set and the current price exceeds it. The
+        caller's departure floor overrides this so the car is still ready."""
+        cap = self._opts.get(CA_PRICE_CAP)
+        if cap in (None, ""):
+            return False
+        price = self._read_float(self._opts.get(CA_PRICE_ENTITY))
+        return not price_allows_charge(price, cap)
+
+    def _eval_cheapest(self, soc: float, target: float, charging: bool) -> None:
+        """Charge only during the cheapest forecast hours that still reach
+        target by departure. Safety nets: (1) the departure just-in-time floor
+        forces charging if cheap hours run short, so the car is always ready;
+        (2) we only ever STOP a charge we started ourselves — never a manual
+        one; (3) if the price entity has no usable forecast we fall back to the
+        plain target/JIT behaviour."""
+        # Cap reached — stop only our own charge.
+        if soc >= target:
+            if charging and self._we_started:
+                _LOGGER.info("Charge Assistant: cheapest — reached target %.0f%%, stopping", target)
+                self._set_charging(False)
+                self.hass.async_create_task(self._send_notification("target", message_override=(
+                    f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
+                )))
+            return
+
+        now = dt_util.utcnow()
+        dep = self._next_departure()
+        deadline = dep if dep is not None else now + timedelta(hours=24)
+        try:
+            batt = float(self._opts.get(CA_BATTERY_KWH))
+            power = float(self._opts.get(CA_CHARGE_POWER_KW))
+        except (TypeError, ValueError):
+            return
+        energy = max(0.0, (target - soc) / 100.0 * batt)
+
+        pe = self._opts.get(CA_PRICE_ENTITY)
+        st = self.hass.states.get(pe) if pe else None
+        attrs = dict(st.attributes) if st else {}
+        slots = price_planner.parse_forecast(attrs, self._parse_dt, now)
+        if not slots:
+            # No forecast available — can't optimise on price. Fall back to the
+            # departure floor (or autostart) so we still hit target in time.
+            self._target_fallback(soc, target, charging, dep is not None)
+            return
+
+        plan = price_planner.plan_cheapest(slots, energy, power, now, deadline)
+        want = price_planner.is_charge_now(plan, now)
+        # Departure floor: if it's now too late to reach target by leaving time,
+        # charge regardless of price/window.
+        floor = dep is not None and self._jit_should_start(soc, target)
+        if floor:
+            want = True
+        elif want and self._price_blocks():
+            want = False    # in a cheap window, but still above the hard price cap
+
+        if want:
+            if not charging and self._plugged_in() is True:
+                _LOGGER.info("Charge Assistant: cheapest — in a cheap window, starting at %.0f%%", soc)
+                self._set_charging(True)
+                self.hass.async_create_task(self._send_notification("target", message_override=(
+                    f"Charging now — cheap-rate window ({soc:.0f}% → {target:.0f}%)."
+                )))
+        elif charging and self._we_started:
+            # Outside a cheap window — pause, but only our own charge.
+            _LOGGER.info("Charge Assistant: cheapest — outside cheap window, pausing")
+            self._set_charging(False)
+            self.hass.async_create_task(self._send_notification("target", message_override=(
+                "Charging paused — waiting for a cheaper window."
+            )))
+
+    def _target_fallback(self, soc: float, target: float, charging: bool, has_departure: bool) -> None:
+        """Plain target behaviour (JIT if a departure is set, else autostart) —
+        used when cheapest-window is on but no forecast is available."""
+        if charging or self._plugged_in() is not True:
+            return
+        if has_departure:
+            if self._jit_should_start(soc, target):
+                self._set_charging(True)
+        elif self._opts.get(CA_TARGET_AUTOSTART) and soc <= target - _TARGET_DEADBAND:
+            self._set_charging(True)
 
     def _is_charging(self) -> bool:
         """True if the charger reports it's actively charging."""
@@ -576,15 +746,190 @@ class ChargeAssistant:
         coord = self._coordinator()
         if coord is None:
             return
+        if not on:
+            # Next start should re-assert the current from scratch.
+            self._applied_current = None
+            self._we_started = False
+        else:
+            self._we_started = True
         self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
 
-    async def _send_command(self, coord, action: str) -> None:
+    async def _send_command(self, coord, action: str, value=None) -> None:
+        # All charge control goes through the ChargerControl adapter — the seam
+        # for supporting non-Wallbox chargers (see charger_control.py).
+        charger = WallboxGatewayCharger(coord)
         try:
-            await coord.client.command(
-                {"action": action, "owner": _OWNER, "wait": "5000"}
-            )
+            if action == "start":
+                await charger.start()
+            elif action == "stop":
+                await charger.stop()
+            elif action == "current":
+                await charger.set_current(int(value))
+            else:
+                _LOGGER.warning("Charge Assistant: unknown charger action %s", action)
         except Exception as err:  # noqa: BLE001 — never crash the eval loop
             _LOGGER.warning("Charge Assistant: %s command failed: %s", action, err)
+
+    # ------------------------------------------------------------------
+    # Dynamic current control (Phase 2)
+    # ------------------------------------------------------------------
+    def _current_bounds(self) -> tuple[int, int]:
+        """(min, max) charge current the assistant may command, clamped to the
+        charger's hardware range. User can narrow but never exceed it."""
+        try:
+            lo = int(self._opts.get(CA_MIN_CURRENT, MIN_CURRENT_A) or MIN_CURRENT_A)
+        except (TypeError, ValueError):
+            lo = MIN_CURRENT_A
+        try:
+            hi = int(self._opts.get(CA_MAX_CURRENT, MAX_CURRENT_A) or MAX_CURRENT_A)
+        except (TypeError, ValueError):
+            hi = MAX_CURRENT_A
+        lo = max(MIN_CURRENT_A, min(lo, MAX_CURRENT_A))
+        hi = max(MIN_CURRENT_A, min(hi, MAX_CURRENT_A))
+        if lo > hi:
+            lo, hi = hi, lo
+        return lo, hi
+
+    def _power_to_amps(self, power_w: float) -> float:
+        """Convert an available *power* (W) to a per-phase current using the
+        configured supply geometry."""
+        try:
+            volts = float(self._opts.get(CA_SUPPLY_VOLTAGE, 230) or 230)
+            phases = float(self._opts.get(CA_SUPPLY_PHASES, 1) or 1)
+        except (TypeError, ValueError):
+            volts, phases = 230.0, 1.0
+        denom = volts * max(phases, 1.0)
+        return power_w / denom if denom > 0 else 0.0
+
+    def _set_current(self, amps: float) -> None:
+        """Command a charge current (A), clamped to the configured bounds and
+        owner-tagged. No-op if it equals the last value we set (avoid needless
+        BLE writes) or if we're not allowed to control right now."""
+        ok, reason = self._may_control()
+        if not ok:
+            self._note_standby(reason)
+            return
+        lo, hi = self._current_bounds()
+        target = int(round(max(lo, min(amps, hi))))
+        if target == self._applied_current:
+            return
+        coord = self._coordinator()
+        if coord is None:
+            return
+        _LOGGER.info("Charge Assistant: setting charge current to %d A", target)
+        self._applied_current = target
+        self.hass.async_create_task(self._send_command(coord, "current", value=target))
+
+    # ------------------------------------------------------------------
+    # Surplus source (wizard) — derive surplus from whatever sensors exist
+    # ------------------------------------------------------------------
+    def _surplus_source(self) -> str:
+        return str(self._opts.get(CA_SURPLUS_SOURCE) or "entity")
+
+    def _surplus_value(self) -> float | None:
+        """Available solar surplus, per the configured source (direct sensor,
+        grid export, or solar − load)."""
+        src = self._surplus_source()
+        return derive_surplus(
+            src,
+            surplus=self._read_float(self._opts.get(CA_SURPLUS_ENTITY)),
+            grid=self._read_float(self._opts.get(CA_GRID_ENTITY)),
+            solar=self._read_float(self._opts.get(CA_SOLAR_ENTITY)),
+            load=self._read_float(self._opts.get(CA_LOAD_ENTITY)),
+            grid_export_negative=bool(self._opts.get(CA_GRID_EXPORT_NEGATIVE, True)),
+        )
+
+    def _surplus_unit_entity(self) -> str | None:
+        """Which entity's unit represents the surplus value (for W conversion)."""
+        src = self._surplus_source()
+        if src == "grid":
+            return self._opts.get(CA_GRID_ENTITY)
+        if src == "solar_load":
+            return self._opts.get(CA_SOLAR_ENTITY)
+        return self._opts.get(CA_SURPLUS_ENTITY)
+
+    def _surplus_configured(self) -> bool:
+        src = self._surplus_source()
+        if src == "grid":
+            return bool(self._opts.get(CA_GRID_ENTITY))
+        if src == "solar_load":
+            return bool(self._opts.get(CA_SOLAR_ENTITY) and self._opts.get(CA_LOAD_ENTITY))
+        return bool(self._opts.get(CA_SURPLUS_ENTITY))
+
+    def _to_watts(self, value: float | None) -> float | None:
+        """Normalise a value in the surplus source's units to watts. Uses the
+        source sensor's unit_of_measurement; falls back to a magnitude heuristic
+        (bare numbers below 100 look like kW) only when no unit is published."""
+        if value is None:
+            return None
+        eid = self._surplus_unit_entity()
+        st = self.hass.states.get(eid) if eid else None
+        unit = ((st.attributes.get("unit_of_measurement") if st else "") or "").lower()
+        if "kw" in unit:
+            return value * 1000.0
+        if "w" in unit:
+            return value
+        return value * 1000.0 if abs(value) < 100 else value
+
+    def _eval_dynamic_current(self, charging: bool) -> None:
+        """Solar-follow current modulation + house-load shedding. Runs on the
+        solar tick while charging. Incremental controller: nudge the commanded
+        current toward the available surplus (keeping a margin so we don't pull
+        from the grid), then clamp it so total house draw stays under the load
+        limit. Both are opt-in."""
+        dynamic = bool(self._opts.get(CA_SOLAR_DYNAMIC))
+        try:
+            load_limit = float(self._opts.get(CA_LOAD_LIMIT_W) or 0)
+        except (TypeError, ValueError):
+            load_limit = 0.0
+        if not charging or (not dynamic and load_limit <= 0):
+            return
+        lo, hi = self._current_bounds()
+        base = self._applied_current if self._applied_current is not None else lo
+        target = float(base)
+
+        if dynamic:
+            surplus_w = self._to_watts(self._surplus_value())
+            if surplus_w is not None:
+                # Keep a margin equal to the start threshold so steady state
+                # sits at "comfortably exporting", not flickering at the edge.
+                margin_w = self._to_watts(self._read_float_opt(CA_SURPLUS_START)) or 0.0
+                target = base + self._power_to_amps(surplus_w - margin_w)
+
+        if load_limit > 0:
+            house_w = self._house_power_w()
+            if house_w is not None:
+                over_w = house_w - load_limit
+                if over_w > 0:
+                    # Over the cap — shed at least this many amps off the base.
+                    target = min(target, base - self._power_to_amps(over_w))
+
+        self._set_current(target)
+
+    def _house_power_w(self) -> float | None:
+        """Total house/grid power in watts for load-balancing. Prefers the
+        user-chosen HA sensor (so it works without the charger's Power Boost
+        accessory); falls back to the charger's own meter reading."""
+        eid = self._opts.get(CA_LOAD_POWER_ENTITY)
+        if eid:
+            val = self._read_float(eid)
+            if val is None:
+                return None
+            st = self.hass.states.get(eid)
+            unit = ((st.attributes.get("unit_of_measurement") if st else "") or "").lower()
+            return val * 1000.0 if "kw" in unit else val
+        coord = self._coordinator()
+        meter = (coord.data.get("meter") if coord and coord.data else {}) or {}
+        house_w = meter.get("house_power_w")
+        return float(house_w) if isinstance(house_w, (int, float)) else None
+
+    def _read_float_opt(self, key: str) -> float | None:
+        """Read a numeric CA option (not an entity) as float, or None."""
+        try:
+            v = self._opts.get(key)
+            return None if v in (None, "") else float(v)
+        except (TypeError, ValueError):
+            return None
 
     def _read_float(self, entity_id: str | None) -> float | None:
         if not entity_id:
@@ -601,9 +946,8 @@ class ChargeAssistant:
     # Solar-surplus mode
     # ------------------------------------------------------------------
     async def _start_solar(self) -> None:
-        surplus = self._opts.get(CA_SURPLUS_ENTITY)
-        if not surplus:
-            _LOGGER.warning("Charge Assistant: solar mode needs a surplus power sensor")
+        if not self._surplus_configured():
+            _LOGGER.warning("Charge Assistant: solar mode needs a surplus source (sensor / grid / solar+load)")
             return
         if not self._charge_switch:
             _LOGGER.warning("Charge Assistant: solar mode couldn't find the charging switch")
@@ -615,9 +959,9 @@ class ChargeAssistant:
             async_track_time_interval(self.hass, self._on_solar_tick, timedelta(seconds=60))
         )
         _LOGGER.info(
-            "Charge Assistant: solar mode active — start>=%s stop<=%s on %s (debounce %s min)",
+            "Charge Assistant: solar mode active — start>=%s stop<=%s source=%s (debounce %s min)",
             self._opts.get(CA_SURPLUS_START), self._opts.get(CA_SURPLUS_STOP),
-            surplus, self._opts.get(CA_SURPLUS_DEBOUNCE, 3),
+            self._surplus_source(), self._opts.get(CA_SURPLUS_DEBOUNCE, 3),
         )
         self._eval_solar()
 
@@ -631,7 +975,7 @@ class ChargeAssistant:
             self._note_standby(reason)
             return
         self._note_standby(None)
-        surplus = self._read_float(self._opts.get(CA_SURPLUS_ENTITY))
+        surplus = self._surplus_value()
         if surplus is None:
             return
         try:
@@ -670,6 +1014,10 @@ class ChargeAssistant:
             # Hysteresis band — hold current state, reset both timers.
             self._surplus_since = None
             self._deficit_since = None
+
+        # Once the start/stop decision is made, modulate the current to follow
+        # surplus (and shed under the house-load limit) while charging.
+        self._eval_dynamic_current(self._is_charging())
 
     # ------------------------------------------------------------------
     # Decision + notification
@@ -719,15 +1067,17 @@ class ChargeAssistant:
 
     async def _send_notification(self, source: str = "reminder", message_override: str | None = None) -> None:
         try:
-            service = self._opts.get(CA_NOTIFY_SERVICE)
-            if not service or "." not in service:
+            raw = self._opts.get(CA_NOTIFY_SERVICE) or ""
+            # One or more notify services, comma-separated (the GUI stores
+            # multiple targets joined by commas).
+            services = [s.strip() for s in str(raw).split(",") if s.strip() and "." in s]
+            if not services:
                 if message_override is not None:
                     return  # target-mode notify is optional — silently skip
-                msg = f"no valid notify service configured (got {service!r})"
+                msg = f"no valid notify service configured (got {raw!r})"
                 _LOGGER.warning("Charge Assistant: %s", msg)
                 self._last_result = msg
                 return
-            domain, name = service.split(".", 1)
             data: dict = {}
             if message_override is not None:
                 # Target-mode status message — informational, no action buttons.
@@ -754,10 +1104,14 @@ class ChargeAssistant:
             payload = {"title": self._opts.get(CA_TITLE) or "Wallbox", "message": message}
             if data:
                 payload["data"] = data
-            _LOGGER.debug("Charge Assistant: calling %s.%s payload=%s", domain, name, payload)
-            await self.hass.services.async_call(domain, name, payload, blocking=True)
-            _LOGGER.info("Charge Assistant: notification sent via %s.%s (trigger=%s)", domain, name, source)
-            self._last_result = f"sent OK via {domain}.{name}\npayload={payload}"
+            sent = []
+            for svc in services:
+                domain, name = svc.split(".", 1)
+                _LOGGER.debug("Charge Assistant: calling %s.%s payload=%s", domain, name, payload)
+                await self.hass.services.async_call(domain, name, payload, blocking=True)
+                sent.append(f"{domain}.{name}")
+            _LOGGER.info("Charge Assistant: notification sent via %s (trigger=%s)", ", ".join(sent), source)
+            self._last_result = f"sent OK via {', '.join(sent)}\npayload={payload}"
         except Exception as err:  # noqa: BLE001 — don't let a notify failure crash the loop
             _LOGGER.exception("Charge Assistant: _send_notification FAILED")
             self._last_result = f"FAILED: {type(err).__name__}: {err}"

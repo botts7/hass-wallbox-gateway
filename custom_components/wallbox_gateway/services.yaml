@@ -5,6 +5,43 @@ test_reminder:
     the schedule/SOC/quiet-hours conditions), so you can confirm the notify
     target and setup are working.
 
+get_config:
+  name: Get gateway config
+  description: >
+    Returns the current options for the integration (Charge Assistant config
+    + tunables). Used by the Add-on's config GUI to pre-fill. Returns response
+    data.
+  fields:
+    host:
+      name: Gateway host
+      description: Match a specific gateway by host/IP. Omit if you have one.
+      required: false
+      example: "192.168.1.42"
+      selector:
+        text:
+
+set_config:
+  name: Set gateway config
+  description: >
+    Merge an options object into the integration's config and reload (restarts
+    the Charge Assistant with the new settings). Sub-objects you provide (e.g.
+    the whole charge_assistant config) replace the existing one wholesale.
+  fields:
+    options:
+      name: Options
+      description: A partial options object to merge into the entry options.
+      required: true
+      example: '{"charge_assistant": {"mode": "target_soc", "target_soc_pct": 80}}'
+      selector:
+        object:
+    host:
+      name: Gateway host
+      description: Match a specific gateway by host/IP. Omit if you have one.
+      required: false
+      example: "192.168.1.42"
+      selector:
+        text:
+
 set_schedule:
   name: Set charge schedule
   description: >

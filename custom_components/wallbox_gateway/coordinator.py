@@ -23,6 +23,7 @@ from .const import (
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     ENDPOINT_BOOT,
+    ENDPOINT_CHARGE_LOG,
     ENDPOINT_CHARGER,
     ENDPOINT_DIAG,
     ENDPOINT_HEALTH,
@@ -63,12 +64,13 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # with return_exceptions=True and silently fall back to the
         # previously-cached value when they fail.
         try:
-            status, charger, diag, health, boot = await asyncio.gather(
+            status, charger, diag, health, boot, charge_log = await asyncio.gather(
                 self.client.get(ENDPOINT_STATUS, timeout=4),
                 self.client.get(ENDPOINT_CHARGER, timeout=4),
                 self.client.get(ENDPOINT_DIAG, timeout=4),
                 self.client.get(ENDPOINT_HEALTH, timeout=4),
                 self.client.get(ENDPOINT_BOOT, timeout=4),
+                self.client.get(ENDPOINT_CHARGE_LOG, timeout=4),
             )
         except GatewayAuthError as e:
             # Surface as auth-failed so HA starts the reauth flow (prompts
@@ -119,6 +121,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "diag": diag or {},
             "health": health or {},
             "boot": boot or {},
+            "charge_log": (charge_log or {}).get("intervals", []) or prior.get("charge_log", []),
             "autolock": _parse_autolock(autolock_raw, prior.get("autolock")),
             "eco_smart": _parse_ecos(ecos_raw, prior.get("eco_smart")),
             "meter": _parse_dca(dca_raw, prior.get("meter")),

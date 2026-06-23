@@ -37,6 +37,9 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+import time
+
+from . import cost_engine
 from .const import DOMAIN, STATUS_CODES, ZENTRI_STATUS_CODES
 from .coordinator import GatewayCoordinator
 from .entity import GatewayEntity
@@ -110,6 +113,28 @@ def _house_power(entity: GatewayEntity) -> int | None:
     # solar overproduction).
     p = entity._meter().get("house_power_w")
     return int(p) if isinstance(p, (int, float)) else None
+
+
+def _cost_summary(entity: GatewayEntity) -> dict[str, Any] | None:
+    """Week/month charging cost from the firmware charge-log + the tariff the
+    add-on mirrors into entry.options['tariff']. None until a tariff is set."""
+    coord = entity.coordinator
+    tariff = (coord.entry.options or {}).get("tariff")
+    if not tariff:
+        return None
+    intervals = (coord.data or {}).get("charge_log") or []
+    tz = entity.hass.config.time_zone or "UTC"
+    return cost_engine.summarize_cost(tariff, intervals, tz, time.time())
+
+
+def _week_cost(entity: GatewayEntity) -> float | None:
+    s = _cost_summary(entity)
+    return round(s["week_cost"], 2) if s else None
+
+
+def _month_cost(entity: GatewayEntity) -> float | None:
+    s = _cost_summary(entity)
+    return round(s["month_cost"], 2) if s else None
 
 
 SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
@@ -607,6 +632,27 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         options=["wallbox_schedule", "integration", "addon", "none"],
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_control_owner,
+    ),
+    # ---- Charging cost (computed from the charge-log + the add-on tariff) ----
+    # Only populated once a tariff is set (in the add-on); None/unknown until
+    # then. MEASUREMENT so HA records long-term statistics it can graph.
+    GatewaySensorEntityDescription(
+        key="cost_week",
+        translation_key="cost_week",
+        name="Charging cost (7 days)",
+        icon="mdi:cash-clock",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_week_cost,
+    ),
+    GatewaySensorEntityDescription(
+        key="cost_month",
+        translation_key="cost_month",
+        name="Charging cost (this month)",
+        icon="mdi:cash-multiple",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_month_cost,
     ),
 )
 
