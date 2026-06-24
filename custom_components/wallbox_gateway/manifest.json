@@ -1,11 +1,13 @@
 {
   "domain": "wallbox_gateway",
   "name": "Wallbox BLE Gateway",
-  "codeowners": ["@botts7"],
+  "codeowners": [
+    "@botts7"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/botts7/hass-wallbox-gateway",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/botts7/hass-wallbox-gateway/issues",
   "requirements": [],
-  "version": "0.17.0"
+  "version": "0.17.0b1"
 }
