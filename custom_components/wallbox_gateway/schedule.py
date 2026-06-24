@@ -24,18 +24,19 @@ import logging
 
 import voluptuous as vol
 
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.util import dt as dt_util
 
 from .api import GatewayClient, GatewayError, GatewayUnreachable
-from .const import DOMAIN
+from .const import CA_IMPORTED_SCHEDULES, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_SET = "set_schedule"
 SERVICE_DELETE = "delete_schedule"
+SERVICE_IMPORT = "import_native_schedules"
 
 # Mon-first order — matches the dashboard's day bit-array (bit0=Mon..bit6=Sun).
 _DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -79,6 +80,73 @@ def _days_array(days: list[str]) -> list[int]:
     """['mon','wed'] -> [1,0,1,0,0,0,0] (Mon..Sun)."""
     chosen = {d.lower() for d in days}
     return [1 if d in chosen else 0 for d in _DAY_ORDER]
+
+
+def _utc_int_to_local_hhmm(value: object) -> str | None:
+    """UTC HHMM integer (e.g. 1400) -> local 'HH:MM' (reverse of the setter)."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    h, m = divmod(v, 100)
+    utc_now = dt_util.utcnow()
+    utc_dt = utc_now.replace(hour=h % 24, minute=m % 60, second=0, microsecond=0)
+    local_dt = dt_util.as_local(utc_dt)
+    return f"{local_dt.hour:02d}:{local_dt.minute:02d}"
+
+
+def _days_from_array(arr: object) -> list[str]:
+    """Charger day-set -> ['mon','wed']. Accepts either the Mon..Sun bit-array
+    [1,0,1,...] we *write*, or the bitmask integer r_schs *reads back*
+    (bit0=Mon … bit6=Sun; e.g. 127 = every day, 32 = Saturday)."""
+    if isinstance(arr, bool):
+        return []
+    if isinstance(arr, int):
+        return [_DAY_ORDER[i] for i in range(7) if arr & (1 << i)]
+    if isinstance(arr, list):
+        return [_DAY_ORDER[i] for i, on in enumerate(arr[:7]) if on]
+    return []
+
+
+def _decode_schedule(row: object) -> dict | None:
+    """A raw r_schs row -> the friendly shape the set_schedule service accepts."""
+    if not isinstance(row, dict):
+        return None
+    target = row.get("target") or {}
+    kwh = 0.0
+    if isinstance(target, dict) and target.get("type") == 1:
+        try:
+            kwh = round(int(target.get("value", 0)) / 1000, 3)
+        except (TypeError, ValueError):
+            kwh = 0.0
+    return {
+        "sid": row.get("sid"),
+        "start": _utc_int_to_local_hhmm(row.get("start")),
+        "stop": _utc_int_to_local_hhmm(row.get("stop")),
+        "days": _days_from_array(row.get("days")),
+        "max_current": row.get("mcr"),
+        "enabled": bool(row.get("enabled")),
+        "energy_target_kwh": kwh,
+    }
+
+
+def _resolve_coord_entry(hass: HomeAssistant, device_id: str | None):
+    """(coordinator, entry_id) for the targeted device, or the sole entry."""
+    store = hass.data.get(DOMAIN, {})
+    coordinators = {k: v for k, v in store.items() if k != "_assistants"}
+    if device_id:
+        device = dr.async_get(hass).async_get(device_id)
+        if device:
+            for entry_id in device.config_entries:
+                if entry_id in coordinators:
+                    return coordinators[entry_id], entry_id
+        raise HomeAssistantError("That device isn't a Wallbox Gateway charger.")
+    if len(coordinators) == 1:
+        entry_id, coord = next(iter(coordinators.items()))
+        return coord, entry_id
+    raise HomeAssistantError(
+        "Multiple Wallbox Gateways configured — pass device_id to pick one."
+    )
 
 
 def _resolve_client(hass: HomeAssistant, device_id: str | None) -> GatewayClient:
@@ -180,6 +248,35 @@ async def _handle_delete(hass: HomeAssistant, call: ServiceCall) -> None:
     _LOGGER.info("Wallbox Gateway: delete_schedule %s -> %s", sids, res)
 
 
+_IMPORT_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string})
+
+
+async def _handle_import(hass: HomeAssistant, call: ServiceCall) -> dict:
+    """Read the charger's native schedules and mirror a copy into HA.
+
+    Native schedules are *paused* (not deleted) while the integration owns
+    charge control, so this preserves a visible, persisted snapshot in the
+    config entry — nothing is lost and the user never has to re-create them.
+    """
+    coord, entry_id = _resolve_coord_entry(hass, call.data.get("device_id"))
+    try:
+        res = await coord.client.command(
+            {"action": "bapi", "met": "r_schs", "par": "null", "wait": "6000"}
+        )
+    except (GatewayError, GatewayUnreachable) as e:
+        raise HomeAssistantError(f"Couldn't reach the charger: {e}") from e
+    _raise_on_error(res, "import_native_schedules")
+    schedules = [s for s in (_decode_schedule(r) for r in _schedule_rows(res)) if s]
+    snapshot = {"at": dt_util.utcnow().isoformat(), "schedules": schedules}
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is not None:
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CA_IMPORTED_SCHEDULES: snapshot}
+        )
+    _LOGGER.info("Wallbox Gateway: imported %d native schedule(s)", len(schedules))
+    return {"count": len(schedules), "schedules": schedules}
+
+
 def async_setup_schedule_services(hass: HomeAssistant) -> None:
     """Register the schedule services once (idempotent)."""
     if hass.services.has_service(DOMAIN, SERVICE_SET):
@@ -191,5 +288,12 @@ def async_setup_schedule_services(hass: HomeAssistant) -> None:
     async def _delete(call: ServiceCall) -> None:
         await _handle_delete(hass, call)
 
+    async def _import(call: ServiceCall) -> dict:
+        return await _handle_import(hass, call)
+
     hass.services.async_register(DOMAIN, SERVICE_SET, _set, schema=_SET_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_DELETE, _delete, schema=_DELETE_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, SERVICE_IMPORT, _import, schema=_IMPORT_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )

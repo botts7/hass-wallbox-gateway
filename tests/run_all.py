@@ -24,6 +24,7 @@ MODULES = [
     "test_charger_control",
     "test_charge_guards",
     "test_cost_engine",
+    "test_charge_window",          # allowed-window + composable normalize
     "test_controller_decisions",   # needs HA importable; self-skips if not
 ]
 

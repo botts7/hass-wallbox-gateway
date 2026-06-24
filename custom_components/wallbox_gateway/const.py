@@ -22,8 +22,35 @@ MODE_OFF = "off"
 MODE_REMINDER = "reminder"
 MODE_TARGET = "target_soc"    # Phase 2: charge to a target % then stop
 MODE_SOLAR = "solar"          # Phase 3: charge from excess solar (surplus follow)
+MODE_SMART_SOLAR = "smart_solar"  # composable: solar-first, grid only to finish
 MODE_SCHEDULED = "scheduled"  # future phases
 MODE_PROMPT = "prompt"        # future phases
+
+# ── Composable model (v2) ────────────────────────────────────────────────
+# The acting "mode" above is the charging STRATEGY (off / target_soc / solar /
+# smart_solar). Plug-in reminders become an independent LAYER stored under a
+# nested dict so they can run on top of any strategy. The reminder sub-dict
+# reuses the same field keys as the flat reminder config (CA_TRIGGERS, etc.).
+# Legacy mode=="reminder" is migrated to mode==off + this layer enabled.
+CA_REMINDER = "reminder"            # nested dict: {enabled, triggers, ...}
+CA_REMINDER_ENABLED = "enabled"     # bool inside the reminder sub-dict
+
+# Allowed charging window — restrict charging to cheap hours (e.g. 00:00-06:00)
+# so the assistant never charges during expensive periods. Times are local
+# "HH:MM"; the window may wrap past midnight. Policies relax it (see
+# charge_window.py); charging outside the window raises a cost warning.
+CA_WINDOW_ENABLED = "window_enabled"      # bool
+CA_WINDOW_START = "window_start"          # local "HH:MM"
+CA_WINDOW_END = "window_end"              # local "HH:MM"
+CA_WINDOW_OVERRUN = "window_overrun"      # keep charging past end until target met
+CA_WINDOW_PRESTART = "window_prestart"    # start before window to be ready by departure
+CA_WINDOW_COST_WARN = "window_cost_warn"  # notify when a charge runs outside the window
+
+# Snapshot of the charger's native schedules, imported into HA so they're
+# preserved/visible even while the integration is the control owner (which
+# pauses them on the charger). Written by the import_native_schedules service;
+# lives at entry.options[CA_IMPORTED_SCHEDULES] = {"at": iso, "schedules": [...]}.
+CA_IMPORTED_SCHEDULES = "imported_schedules"
 
 # Target-SOC (smart charge) mode fields. Reuses CA_SOC_ENTITY (now
 # required), CA_CHARGE_SWITCH (auto-resolved), CA_NOTIFY_SERVICE (optional).

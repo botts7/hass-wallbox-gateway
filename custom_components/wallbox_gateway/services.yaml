@@ -137,3 +137,19 @@ delete_schedule:
       example: "[0]"
       selector:
         object:
+
+import_native_schedules:
+  name: Import native schedules
+  description: >
+    Read the charger's own (native) charge schedules and mirror a copy into
+    Home Assistant. The native schedules are only paused — not deleted — while
+    the Charge Assistant controls charging, so this keeps a visible, persisted
+    backup so nothing is lost and you never have to re-create them. Returns the
+    decoded schedules.
+  fields:
+    device_id:
+      name: Charger
+      description: Which charger (only needed if you have more than one).
+      selector:
+        device:
+          integration: wallbox_gateway

@@ -79,8 +79,17 @@ from .const import (
     DOMAIN,
     MODE_OFF,
     MODE_REMINDER,
+    MODE_SMART_SOLAR,
     MODE_SOLAR,
     MODE_TARGET,
+    CA_REMINDER,
+    CA_REMINDER_ENABLED,
+    CA_WINDOW_ENABLED,
+    CA_WINDOW_START,
+    CA_WINDOW_END,
+    CA_WINDOW_OVERRUN,
+    CA_WINDOW_PRESTART,
+    CA_WINDOW_COST_WARN,
     TRIG_ARRIVAL,
     TRIG_LEAD,
     TRIG_NIGHTLY,
@@ -335,6 +344,9 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             if mode == MODE_SOLAR:
                 self._ca = {CA_MODE: MODE_SOLAR}
                 return await self.async_step_solar()
+            if mode == MODE_SMART_SOLAR:
+                self._ca = {CA_MODE: MODE_SMART_SOLAR}
+                return await self.async_step_smart_solar()
             # "Off" (and not-yet-built modes) — store mode only.
             # Merge into existing options (don't replace the whole dict) so the
             # native flow doesn't wipe poll_interval / tariff / other keys the
@@ -362,6 +374,10 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                                 "value": MODE_SOLAR,
                                 "label": "Solar charge — charge from excess solar",
                             },
+                            {
+                                "value": MODE_SMART_SOLAR,
+                                "label": "Smart + Solar — solar first, grid to finish",
+                            },
                         ],
                         mode=selector.SelectSelectorMode.LIST,
                     )
@@ -375,6 +391,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
+            user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
@@ -488,15 +505,129 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                **self._acting_extra_schema(cur),
             }
         )
         return self.async_show_form(step_id="solar", data_schema=schema)
+
+    # ---- shared acting-strategy extras: charging window + reminder layer ----
+    def _acting_extra_schema(self, cur: dict) -> dict:
+        """vol fields for the allowed charging window + a compact plug-in
+        reminder layer, shared by the target / solar / smart_solar steps. The
+        Add-on offers the full reminder trigger set; the native flow keeps a
+        nightly reminder for simplicity."""
+        notify_opts = [
+            f"notify.{name}"
+            for name in sorted(self.hass.services.async_services().get("notify", {}))
+        ]
+        rem = cur.get(CA_REMINDER) or {}
+        rl_on = bool(rem.get(CA_REMINDER_ENABLED) and rem.get(CA_TRIGGERS))
+        return {
+            vol.Optional(CA_WINDOW_ENABLED, default=cur.get(CA_WINDOW_ENABLED, False)): selector.BooleanSelector(),
+            vol.Optional(CA_WINDOW_START, default=cur.get(CA_WINDOW_START, vol.UNDEFINED)): selector.TimeSelector(),
+            vol.Optional(CA_WINDOW_END, default=cur.get(CA_WINDOW_END, vol.UNDEFINED)): selector.TimeSelector(),
+            vol.Optional(CA_WINDOW_OVERRUN, default=cur.get(CA_WINDOW_OVERRUN, False)): selector.BooleanSelector(),
+            vol.Optional(CA_WINDOW_PRESTART, default=cur.get(CA_WINDOW_PRESTART, False)): selector.BooleanSelector(),
+            vol.Optional(CA_WINDOW_COST_WARN, default=cur.get(CA_WINDOW_COST_WARN, False)): selector.BooleanSelector(),
+            vol.Optional("rl_enabled", default=rl_on): selector.BooleanSelector(),
+            vol.Optional("rl_nightly_time", default=rem.get(CA_NIGHTLY_TIME, vol.UNDEFINED)): selector.TimeSelector(),
+            vol.Optional("rl_notify", default=rem.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=notify_opts, custom_value=True, mode=selector.SelectSelectorMode.DROPDOWN
+                )
+            ),
+        }
+
+    def _apply_acting_extra(self, user_input: dict) -> dict:
+        """Pop the reminder-layer temp keys and store them as a nested
+        `reminder` sub-dict on self._ca. Window keys stay flat (returned in the
+        cleaned dict for the caller's self._ca.update)."""
+        ui = dict(user_input)
+        rl_enabled = ui.pop("rl_enabled", False)
+        rl_nightly = ui.pop("rl_nightly_time", None)
+        rl_notify = ui.pop("rl_notify", None)
+        if rl_enabled:
+            rem = {CA_REMINDER_ENABLED: True, CA_TRIGGERS: [TRIG_NIGHTLY]}
+            if rl_nightly:
+                rem[CA_NIGHTLY_TIME] = rl_nightly
+            if rl_notify:
+                rem[CA_NOTIFY_SERVICE] = rl_notify
+            self._ca[CA_REMINDER] = rem
+        else:
+            self._ca[CA_REMINDER] = {CA_REMINDER_ENABLED: False}
+        return ui
+
+    # ---- Smart + Solar (combined: solar-first, grid to finish) ----
+    async def async_step_smart_solar(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            user_input = self._apply_acting_extra(user_input)
+            self._ca.update(user_input)
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, CA_KEY: self._ca}
+            )
+
+        cur = self._cur()
+        notify_opts = [
+            f"notify.{name}"
+            for name in sorted(self.hass.services.async_services().get("notify", {}))
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required(CA_SOC_ENTITY, default=cur.get(CA_SOC_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="battery")
+                ),
+                vol.Required(CA_TARGET_PCT, default=cur.get(CA_TARGET_PCT, 80)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=100, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER)
+                ),
+                vol.Optional(CA_DEPARTURE, default=cur.get(CA_DEPARTURE, vol.UNDEFINED)): selector.TimeSelector(),
+                vol.Optional(CA_BATTERY_KWH, default=cur.get(CA_BATTERY_KWH, vol.UNDEFINED)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=200, step=0.1, unit_of_measurement="kWh", mode=selector.NumberSelectorMode.BOX)
+                ),
+                vol.Optional(CA_CHARGE_POWER_KW, default=cur.get(CA_CHARGE_POWER_KW, 7.4)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=50, step=0.1, unit_of_measurement="kW", mode=selector.NumberSelectorMode.BOX)
+                ),
+                vol.Optional(CA_SURPLUS_SOURCE, default=cur.get(CA_SURPLUS_SOURCE, "entity")): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "entity", "label": "I have a surplus sensor"},
+                            {"value": "grid", "label": "Compute from grid power"},
+                            {"value": "solar_load", "label": "Compute from solar − house load"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(CA_SURPLUS_ENTITY, default=cur.get(CA_SURPLUS_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Optional(CA_GRID_ENTITY, default=cur.get(CA_GRID_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Optional(CA_GRID_EXPORT_NEGATIVE, default=cur.get(CA_GRID_EXPORT_NEGATIVE, True)): selector.BooleanSelector(),
+                vol.Optional(CA_SOLAR_ENTITY, default=cur.get(CA_SOLAR_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Optional(CA_LOAD_ENTITY, default=cur.get(CA_LOAD_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power")
+                ),
+                vol.Required(CA_SURPLUS_START, default=cur.get(CA_SURPLUS_START, 1.4)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=0, max=100000, step=0.1, mode=selector.NumberSelectorMode.BOX)
+                ),
+                vol.Optional(CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=notify_opts, custom_value=True, mode=selector.SelectSelectorMode.DROPDOWN)
+                ),
+                **self._acting_extra_schema(cur),
+            }
+        )
+        return self.async_show_form(step_id="smart_solar", data_schema=schema)
 
     # ---- Smart charge (target-SOC) ----
     async def async_step_target(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
+            user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
@@ -579,6 +710,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                **self._acting_extra_schema(cur),
             }
         )
         return self.async_show_form(step_id="target", data_schema=schema)

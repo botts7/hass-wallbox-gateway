@@ -94,14 +94,24 @@ from .const import (
     DOMAIN,
     MAX_CURRENT_A,
     MIN_CURRENT_A,
+    MODE_OFF,
     MODE_REMINDER,
+    MODE_SMART_SOLAR,
     MODE_SOLAR,
     MODE_TARGET,
+    CA_WINDOW_ENABLED,
+    CA_WINDOW_START,
+    CA_WINDOW_END,
+    CA_WINDOW_OVERRUN,
+    CA_WINDOW_PRESTART,
+    CA_WINDOW_COST_WARN,
     TRIG_ARRIVAL,
     TRIG_LEAD,
     TRIG_NIGHTLY,
     TRIG_TARIFF,
 )
+from . import ca_config
+from . import charge_window
 from . import price_planner
 from .charge_guards import derive_surplus, effective_target, price_allows_charge
 from .charger_control import WallboxGatewayCharger
@@ -123,6 +133,10 @@ _TARGET_DEADBAND = 5
 _OWNER = "integration"
 _MANUAL_OVERRIDE_COOLDOWN_S = 1800  # 30 min
 
+# Acting strategies (drive start/stop/current). Reminder is a notify-only layer,
+# not an acting strategy, so it's excluded here.
+_ACTING = (MODE_TARGET, MODE_SOLAR, MODE_SMART_SOLAR)
+
 
 class ChargeAssistant:
     """Runs the configured charge-assist behaviour for one config entry."""
@@ -131,6 +145,10 @@ class ChargeAssistant:
         self.hass = hass
         self.entry = entry
         self._opts: dict = {}
+        # Reminder LAYER config (composable model): the plug-in-reminder settings,
+        # which may live flat (legacy mode==reminder) or nested under 'reminder'
+        # for an acting strategy. Resolved in async_start via ca_config.
+        self._rem: dict = {}
         self._unsubs: list = []
         self._lead_unsub = None
         self._escalate_unsub = None
@@ -161,6 +179,9 @@ class ChargeAssistant:
         # Did *we* start the current charge? Cheapest-window only ever stops a
         # charge it started itself — never a manual / app-initiated one.
         self._we_started = False
+        # One-shot guard for the "charging outside your cheap window" cost
+        # warning (re-armed once we're back inside the window / not charging).
+        self._cost_warned = False
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -229,20 +250,30 @@ class ChargeAssistant:
     async def async_start(self) -> None:
         """Wire up listeners for the configured mode."""
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
-        mode = self._opts.get(CA_MODE)
-        _LOGGER.debug("Charge Assistant: async_start for %s — mode=%r", self.entry.title, mode)
+        # Composable model: an acting STRATEGY + an independent reminder LAYER.
+        # Legacy mode=='reminder' migrates to strategy 'off' + reminder layer.
+        strategy = ca_config.strategy_of(self._opts)
+        self._rem = ca_config.reminder_config(self._opts)
+        _LOGGER.debug(
+            "Charge Assistant: async_start for %s — strategy=%r reminder=%s",
+            self.entry.title, strategy, bool(self._rem.get(CA_TRIGGERS)),
+        )
         # Auto-resolve the gateway's own entities for this entry (shared).
         self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
             "charging", "switch"
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
         self._connected_entity = self._own_entity("car_connected", "binary_sensor")
-        if mode == MODE_REMINDER:
-            await self._start_reminder()
-        elif mode == MODE_TARGET:
+        # Acting strategy.
+        if strategy == MODE_TARGET:
             await self._start_target()
-        elif mode == MODE_SOLAR:
+        elif strategy == MODE_SOLAR:
             await self._start_solar()
+        elif strategy == MODE_SMART_SOLAR:
+            await self._start_smart_solar()
+        # Plug-in reminder layer — independent, runs on top of ANY strategy.
+        if self._rem.get(CA_TRIGGERS):
+            await self._start_reminder()
 
         # Native-schedule arbiter: while we actively control charging, the
         # charger's own schedules are disabled (and restored when we hand back).
@@ -259,7 +290,7 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     def _should_control(self) -> bool:
         """True when we're the gateway owner AND in an acting (start/stop) mode."""
-        if self._opts.get(CA_MODE) not in (MODE_TARGET, MODE_SOLAR):
+        if ca_config.strategy_of(self._opts) not in _ACTING:
             return False
         return self.control_owner() == _OWNER
 
@@ -301,7 +332,7 @@ class ChargeAssistant:
         gateway's control owner (so it's obvious why nothing is happening)."""
         from homeassistant.helpers import issue_registry as ir
 
-        acting = self._opts.get(CA_MODE) in (MODE_TARGET, MODE_SOLAR)
+        acting = ca_config.strategy_of(self._opts) in _ACTING
         owner = self.control_owner()
         issue_id = f"not_control_owner_{self.entry.entry_id}"
         if acting and owner and owner != _OWNER:
@@ -316,9 +347,9 @@ class ChargeAssistant:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
     async def _start_reminder(self) -> None:
-        triggers = self._opts.get(CA_TRIGGERS) or []
+        triggers = self._rem.get(CA_TRIGGERS) or []
         if not triggers:
-            _LOGGER.warning("Charge Assistant: reminder mode on but no triggers selected")
+            _LOGGER.warning("Charge Assistant: reminder layer on but no triggers selected")
             return
 
         # The Start/Snooze/Skip buttons fire mobile_app_notification_action.
@@ -326,12 +357,12 @@ class ChargeAssistant:
             self.hass.bus.async_listen("mobile_app_notification_action", self._on_action)
         )
 
-        if TRIG_ARRIVAL in triggers and (pe := self._opts.get(CA_ARRIVAL_ENTITY)):
+        if TRIG_ARRIVAL in triggers and (pe := self._rem.get(CA_ARRIVAL_ENTITY)):
             self._unsubs.append(
                 async_track_state_change_event(self.hass, [pe], self._on_arrival)
             )
         if TRIG_NIGHTLY in triggers:
-            h, m, s = _parse_hms(self._opts.get(CA_NIGHTLY_TIME, "20:00:00"))
+            h, m, s = _parse_hms(self._rem.get(CA_NIGHTLY_TIME, "20:00:00"))
             self._unsubs.append(
                 async_track_time_change(self.hass, self._on_nightly, hour=h, minute=m, second=s)
             )
@@ -343,7 +374,7 @@ class ChargeAssistant:
                 )
             )
             self._schedule_lead()
-        if TRIG_TARIFF in triggers and (pre := self._opts.get(CA_TARIFF_ENTITY)):
+        if TRIG_TARIFF in triggers and (pre := self._rem.get(CA_TARIFF_ENTITY)):
             self._unsubs.append(
                 async_track_state_change_event(self.hass, [pre], self._on_price)
             )
@@ -395,7 +426,7 @@ class ChargeAssistant:
     def _on_price(self, event: Event) -> None:
         new = event.data.get("new_state")
         old = event.data.get("old_state")
-        below = self._opts.get(CA_TARIFF_BELOW)
+        below = self._rem.get(CA_TARIFF_BELOW)
         if below is None or new is None or new.state in _UNAVAILABLE:
             return
         try:
@@ -430,7 +461,7 @@ class ChargeAssistant:
         charge_dt = dt_util.parse_datetime(st.state)
         if charge_dt is None:
             return
-        lead_h = float(self._opts.get(CA_LEAD_HOURS, 0) or 0)
+        lead_h = float(self._rem.get(CA_LEAD_HOURS, 0) or 0)
         fire_at = charge_dt - timedelta(hours=lead_h)
         now = dt_util.utcnow()
         if fire_at <= now < charge_dt:
@@ -558,6 +589,7 @@ class ChargeAssistant:
             return
         if soc >= target:
             # Charge cap reached — stop if we're charging.
+            self._cost_warned = False
             if charging:
                 _LOGGER.info("Charge Assistant: SOC %.0f%% >= target %.0f%% — stopping charge", soc, target)
                 self._set_charging(False)
@@ -584,9 +616,16 @@ class ChargeAssistant:
             if self._price_blocks():
                 self._note_standby(None)
                 return  # above the price cap — wait for a cheaper price
+            # Allowed-window gate: only auto-start inside the cheap window (with
+            # pre-start / overrun for the departure deadline). Departure JIT
+            # above already overrides this so the car is always ready in time.
+            decision = self._window_decision(soc, target)
+            if not decision["allow_charge"]:
+                return  # outside the cheap window — wait
             # Immediate auto-start (deadband stops flapping at the cap).
             _LOGGER.info("Charge Assistant: SOC %.0f%% below target %.0f%% — starting charge", soc, target)
             self._set_charging(True)
+            self._maybe_cost_warn(decision, target)
             self.hass.async_create_task(
                 self._send_notification("target", message_override=(
                     f"Charging started — {soc:.0f}% (target {target:.0f}%)."
@@ -1020,6 +1059,159 @@ class ChargeAssistant:
         self._eval_dynamic_current(self._is_charging())
 
     # ------------------------------------------------------------------
+    # Allowed charging window (manual cheap-hours restriction)
+    # ------------------------------------------------------------------
+    def _window_decision(self, soc: float | None, target: float | None) -> dict:
+        """Evaluate the manual allowed-window policy for *grid* charging right
+        now. Disabled window → always allowed. The departure deadline feeds the
+        pre-start relaxation; overrun lets a charge finish past the window."""
+        if not self._opts.get(CA_WINDOW_ENABLED):
+            return {"in_window": True, "allow_charge": True,
+                    "reason": "no_window", "cost_warn": False}
+        now_local = dt_util.now()
+        now_min = now_local.hour * 60 + now_local.minute
+        mins_to_dep = mins_needed = None
+        dep = self._next_departure()
+        if dep is not None:
+            mins_to_dep = max(0, int((dep - dt_util.utcnow()).total_seconds() // 60))
+            if soc is not None and target is not None:
+                try:
+                    batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
+                    power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+                    if batt > 0 and power > 0:
+                        needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
+                        mins_needed = int(needed_kwh / power * 60) + 10  # 10-min buffer
+                except (TypeError, ValueError):
+                    pass
+        return charge_window.evaluate(
+            now_min,
+            start=self._opts.get(CA_WINDOW_START),
+            end=self._opts.get(CA_WINDOW_END),
+            overrun=bool(self._opts.get(CA_WINDOW_OVERRUN)),
+            prestart=bool(self._opts.get(CA_WINDOW_PRESTART)),
+            target_met=(soc is not None and target is not None and soc >= target),
+            minutes_to_departure=mins_to_dep,
+            minutes_needed=mins_needed,
+        )
+
+    def _maybe_cost_warn(self, decision: dict, target: float | None) -> None:
+        """Notify once when a charge is running OUTSIDE the cheap window (a
+        pre-start or overrun), so the user is aware and can choose to stop it.
+        Re-armed when we're back inside the window / not charging."""
+        if not (self._opts.get(CA_WINDOW_COST_WARN) and decision.get("cost_warn")):
+            return
+        if self._cost_warned:
+            return
+        self._cost_warned = True
+        why = "to be ready by departure" if decision.get("reason") == "prestart_for_departure" \
+            else "to finish the charge"
+        tgt = f" toward {target:.0f}%" if isinstance(target, (int, float)) else ""
+        self.hass.async_create_task(self._send_notification("window", message_override=(
+            f"Heads up: charging is running outside your cheap window {why}{tgt} — "
+            "a pricier rate. Stop it from the dashboard if you'd rather wait."
+        )))
+
+    # ------------------------------------------------------------------
+    # Smart + Solar (composable combined strategy)
+    # ------------------------------------------------------------------
+    async def _start_smart_solar(self) -> None:
+        """Solar-first: charge from surplus whenever it's available, and top up
+        from grid only inside the allowed window (or to reach target by
+        departure). Stops at the SOC target."""
+        if not self._surplus_configured():
+            _LOGGER.warning("Charge Assistant: smart+solar needs a surplus source")
+            return
+        if not self._charge_switch:
+            _LOGGER.warning("Charge Assistant: smart+solar couldn't find the charging switch")
+            return
+        self._charging_sensor = self._own_entity("charging", "binary_sensor")
+        watch = []
+        if (soc := self._opts.get(CA_SOC_ENTITY)):
+            watch.append(soc)
+        if self._connected_entity:
+            watch.append(self._connected_entity)
+        if watch:
+            self._unsubs.append(
+                async_track_state_change_event(self.hass, watch, self._on_smart_solar_change)
+            )
+        # Solar is noisy + the window/departure are time-driven → steady poll.
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._on_smart_solar_tick, timedelta(seconds=60))
+        )
+        _LOGGER.info(
+            "Charge Assistant: smart+solar active — target %s%% departure=%s surplus=%s window=%s",
+            self._opts.get(CA_TARGET_PCT, 80), self._opts.get(CA_DEPARTURE) or "off",
+            self._surplus_source(), bool(self._opts.get(CA_WINDOW_ENABLED)),
+        )
+        self._eval_smart_solar()
+
+    @callback
+    def _on_smart_solar_tick(self, now: datetime) -> None:
+        self._eval_smart_solar()
+
+    @callback
+    def _on_smart_solar_change(self, event: Event) -> None:
+        self._eval_smart_solar()
+
+    def _eval_smart_solar(self) -> None:
+        ok, reason = self._may_control()
+        if not ok:
+            self._note_standby(reason)
+            return
+        self._note_standby(None)
+        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
+        target = self._target_pct()
+        charging = self._is_charging()
+
+        # Cap reached — stop only our own charge, and re-arm the cost warning.
+        if soc is not None and soc >= target:
+            self._cost_warned = False
+            if charging and self._we_started:
+                _LOGGER.info("Charge Assistant: smart+solar reached %.0f%% — stopping", soc)
+                self._set_charging(False)
+                self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
+                    f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
+                )))
+            return
+        if self._plugged_in() is not True:
+            return
+
+        # Solar is free → charge whenever surplus is available, ignoring the
+        # window. Grid top-up is gated by the cheap window (with pre-start /
+        # overrun for the departure deadline).
+        surplus = self._surplus_value()
+        try:
+            start_at = float(self._opts.get(CA_SURPLUS_START, 1.4) or 0)
+        except (TypeError, ValueError):
+            start_at = 0.0
+        have_solar = surplus is not None and surplus >= start_at
+
+        decision = self._window_decision(soc, target)
+        grid_ok = decision["allow_charge"] and not self._price_blocks()
+        want = have_solar or grid_ok
+
+        if want:
+            if not charging:
+                src = "solar surplus" if have_solar else "the cheap window"
+                _LOGGER.info("Charge Assistant: smart+solar starting (%s)", src)
+                self._set_charging(True)
+                if not have_solar:
+                    self._maybe_cost_warn(decision, target)
+                self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
+                    f"Charging started from {src}."
+                )))
+            elif not have_solar:
+                # Already charging from grid — warn if we've slipped outside the window.
+                self._maybe_cost_warn(decision, target)
+        elif charging and self._we_started:
+            _LOGGER.info("Charge Assistant: smart+solar — no surplus and outside window, pausing")
+            self._set_charging(False)
+        if decision.get("in_window"):
+            self._cost_warned = False
+
+        self._eval_dynamic_current(self._is_charging())
+
+    # ------------------------------------------------------------------
     # Decision + notification
     # ------------------------------------------------------------------
     @callback
@@ -1037,7 +1229,7 @@ class ChargeAssistant:
         if not self._quiet_ok():
             _LOGGER.debug("Charge Assistant: %s skipped — quiet hours", source)
             return
-        if self._opts.get(CA_ONLY_IF_SCHEDULED) and not self._charge_within():
+        if self._rem.get(CA_ONLY_IF_SCHEDULED) and not self._charge_within():
             _LOGGER.debug("Charge Assistant: %s skipped — no charge scheduled in window", source)
             return
         _LOGGER.info("Charge Assistant: reminding (trigger=%s)", source)
@@ -1049,7 +1241,7 @@ class ChargeAssistant:
         if self._escalate_unsub:
             self._escalate_unsub()
             self._escalate_unsub = None
-        mins = int(self._opts.get(CA_ESCALATE_MIN, 0) or 0)
+        mins = int(self._rem.get(CA_ESCALATE_MIN, 0) or 0)
         if mins <= 0 or self._escalations_left <= 0:
             return
         self._escalate_unsub = async_track_point_in_time(
@@ -1067,41 +1259,45 @@ class ChargeAssistant:
 
     async def _send_notification(self, source: str = "reminder", message_override: str | None = None) -> None:
         try:
-            raw = self._opts.get(CA_NOTIFY_SERVICE) or ""
+            # Charge-event alerts (message_override set) come from the acting
+            # strategy's own notify config; plug-in-reminder nudges come from the
+            # reminder LAYER. They can target different services.
+            cfg = self._opts if message_override is not None else self._rem
+            raw = cfg.get(CA_NOTIFY_SERVICE) or ""
             # One or more notify services, comma-separated (the GUI stores
             # multiple targets joined by commas).
             services = [s.strip() for s in str(raw).split(",") if s.strip() and "." in s]
             if not services:
                 if message_override is not None:
-                    return  # target-mode notify is optional — silently skip
+                    return  # acting-strategy notify is optional — silently skip
                 msg = f"no valid notify service configured (got {raw!r})"
                 _LOGGER.warning("Charge Assistant: %s", msg)
                 self._last_result = msg
                 return
             data: dict = {}
             if message_override is not None:
-                # Target-mode status message — informational, no action buttons.
+                # Acting-strategy status message — informational, no action buttons.
                 message = message_override
             else:
-                message = self._opts.get(CA_MESSAGE) or "Your car isn't plugged in — plug it in to charge."
-                soc_entity = self._opts.get(CA_SOC_ENTITY)
+                message = cfg.get(CA_MESSAGE) or "Your car isn't plugged in — plug it in to charge."
+                soc_entity = cfg.get(CA_SOC_ENTITY)
                 if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
                     message = f"{message} · battery {st.state}%"
                 if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
                     dt = dt_util.parse_datetime(nc.state)
                     if dt:
                         message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
-                if self._opts.get(CA_ACTIONABLE, True):
+                if cfg.get(CA_ACTIONABLE, True):
                     actions = []
                     if self._charge_switch:
                         actions.append({"action": CA_START_ACTION, "title": "Start charging now"})
                     actions.append({"action": CA_SNOOZE_ACTION, "title": "Snooze 1h"})
                     actions.append({"action": CA_SKIP_ACTION, "title": "Skip tonight"})
                     data["actions"] = actions
-                if self._opts.get(CA_TAP_PATH):
-                    data["clickAction"] = self._opts[CA_TAP_PATH]
+                if cfg.get(CA_TAP_PATH):
+                    data["clickAction"] = cfg[CA_TAP_PATH]
 
-            payload = {"title": self._opts.get(CA_TITLE) or "Wallbox", "message": message}
+            payload = {"title": cfg.get(CA_TITLE) or "Wallbox", "message": message}
             if data:
                 payload["data"] = data
             sent = []
@@ -1174,13 +1370,13 @@ class ChargeAssistant:
         dt = dt_util.parse_datetime(st.state)
         if dt is None:
             return False
-        window_h = float(self._opts.get(CA_SCHEDULED_WITHIN_H, 12) or 12)
+        window_h = float(self._rem.get(CA_SCHEDULED_WITHIN_H, 12) or 12)
         delta = (dt - dt_util.utcnow()).total_seconds()
         return 0 <= delta <= window_h * 3600
 
     def _soc_skip_ok(self) -> bool:
         """True = ok to notify. False only when a FRESH reading is >= skip%."""
-        soc_entity = self._opts.get(CA_SOC_ENTITY)
+        soc_entity = self._rem.get(CA_SOC_ENTITY)
         if not soc_entity:
             return True
         st = self.hass.states.get(soc_entity)
@@ -1190,17 +1386,17 @@ class ChargeAssistant:
             soc = float(st.state)
         except (TypeError, ValueError):
             return True
-        max_age = float(self._opts.get(CA_SOC_MAX_AGE, 60) or 0)
+        max_age = float(self._rem.get(CA_SOC_MAX_AGE, 60) or 0)
         fresh = True
         if max_age > 0:
             age_min = (dt_util.utcnow() - st.last_updated).total_seconds() / 60
             fresh = age_min <= max_age
-        threshold = float(self._opts.get(CA_SKIP_ABOVE, 80) or 100)
+        threshold = float(self._rem.get(CA_SKIP_ABOVE, 80) or 100)
         return not (fresh and soc >= threshold)
 
     def _quiet_ok(self) -> bool:
-        start = str(self._opts.get(CA_QUIET_START, "00:00:00"))
-        end = str(self._opts.get(CA_QUIET_END, "00:00:00"))
+        start = str(self._rem.get(CA_QUIET_START, "00:00:00"))
+        end = str(self._rem.get(CA_QUIET_END, "00:00:00"))
         if start == end:
             return True
         now = datetime.now().strftime("%H:%M:%S")
@@ -1217,13 +1413,14 @@ class ChargeAssistant:
         Writes the outcome to <config>/wallbox_ca_test.txt for inspection.
         """
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
+        self._rem = ca_config.reminder_config(self._opts)
         self._charge_switch = self._opts.get(CA_CHARGE_SWITCH) or self._own_entity(
             "charging", "switch"
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
         _LOGGER.info(
             "Charge Assistant: TEST notification requested (notify=%s)",
-            self._opts.get(CA_NOTIFY_SERVICE),
+            self._rem.get(CA_NOTIFY_SERVICE) or self._opts.get(CA_NOTIFY_SERVICE),
         )
         self._last_result = "(no result recorded)"
         await self._send_notification("test")

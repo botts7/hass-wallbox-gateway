@@ -108,7 +108,44 @@
           "trip_target_pct": "Trip target charge level (%) — for an upcoming trip",
           "trip_until": "Trip target applies until (then reverts to the everyday target)",
           "price_cap": "Never charge above this price (your departure time still wins)",
-          "notify_service": "Notify me when it starts/stops (optional)"
+          "notify_service": "Notify me when it starts/stops (optional)",
+          "window_enabled": "Only charge during a set window (cheap hours)",
+          "window_start": "Window start (local time)",
+          "window_end": "Window end (local time, can cross midnight)",
+          "window_overrun": "Keep charging past the window until the target is reached",
+          "window_prestart": "Start before the window if needed to be ready by departure",
+          "window_cost_warn": "Notify me when a charge runs outside the window",
+          "rl_enabled": "Also send plug-in reminders (notifications only)",
+          "rl_nightly_time": "Reminder time (nightly)",
+          "rl_notify": "Reminder notify service"
+        }
+      },
+      "smart_solar": {
+        "title": "Smart + Solar — solar first, grid to finish",
+        "description": "Charges from excess solar whenever it's available (free), and tops up from grid only inside your cheap window — or just in time to reach the target by departure. Stops at the target.",
+        "data": {
+          "soc_entity": "Car battery level sensor (required)",
+          "target_soc_pct": "Target charge level (%)",
+          "departure_time": "Ready-by time (optional)",
+          "battery_kwh": "Battery capacity (kWh) — for the ready-by / pre-start estimate",
+          "charge_power_kw": "Typical charge power (kW)",
+          "surplus_source": "Surplus source (a sensor, or derive from grid / solar−load)",
+          "surplus_entity": "Solar surplus power sensor",
+          "grid_entity": "Grid power sensor (for 'Compute from grid power')",
+          "grid_export_negative": "Grid reads negative when exporting",
+          "solar_entity": "Solar production sensor (for 'solar − house load')",
+          "load_entity": "House load sensor (for 'solar − house load')",
+          "surplus_start": "Start charging from solar at/above (surplus)",
+          "notify_service": "Notify me when it starts/stops (optional)",
+          "window_enabled": "Only top up from grid during a set window (cheap hours)",
+          "window_start": "Window start (local time)",
+          "window_end": "Window end (local time, can cross midnight)",
+          "window_overrun": "Keep charging past the window until the target is reached",
+          "window_prestart": "Start before the window if needed to be ready by departure",
+          "window_cost_warn": "Notify me when a charge runs outside the window",
+          "rl_enabled": "Also send plug-in reminders (notifications only)",
+          "rl_nightly_time": "Reminder time (nightly)",
+          "rl_notify": "Reminder notify service"
         }
       },
       "solar": {
@@ -131,7 +168,16 @@
           "supply_phases": "Supply phases",
           "load_limit_w": "House load limit (W, 0 = off)",
           "load_power_entity": "House/grid power sensor (for the load limit)",
-          "notify_service": "Notify me when it starts/stops (optional)"
+          "notify_service": "Notify me when it starts/stops (optional)",
+          "window_enabled": "Only charge during a set window (cheap hours)",
+          "window_start": "Window start (local time)",
+          "window_end": "Window end (local time, can cross midnight)",
+          "window_overrun": "Keep charging past the window until the target is reached",
+          "window_prestart": "Start before the window if needed to be ready by departure",
+          "window_cost_warn": "Notify me when a charge runs outside the window",
+          "rl_enabled": "Also send plug-in reminders (notifications only)",
+          "rl_nightly_time": "Reminder time (nightly)",
+          "rl_notify": "Reminder notify service"
         }
       }
     }

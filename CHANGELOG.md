@@ -4,6 +4,27 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.16.0] - 2026-06-24
+
+Composable Charge Assistant + native-schedule import.
+
+### Added
+- **Composable Charge Assistant**: plug-in **reminders are now a layer** that
+  runs on top of any charging strategy; a new **Smart + Solar** strategy
+  (solar-first, grid only to finish by departure / inside the window); and an
+  **allowed charging window** (e.g. 00:00–06:00) with pre-start, overrun, and a
+  cost-warning when a charge runs outside it. Legacy `mode: reminder` configs
+  migrate automatically.
+- **`import_native_schedules`** service — mirrors the charger's native
+  schedules into HA (persisted snapshot) so they're never lost while the
+  integration controls charging. Returns the decoded schedules.
+
+### Changed / Fixed
+- `set_config` now allow-lists the option keys it accepts, and the options flow
+  **merges** into `entry.options` instead of replacing it (preserves
+  `poll_interval` / `tariff`).
+- Fixed a `NameError` that crashed solar mode on start.
+
 ## [0.15.0] - 2026-06-22
 
 ### Added

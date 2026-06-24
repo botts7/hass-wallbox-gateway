@@ -149,6 +149,121 @@ def test_surplus_value_solar_minus_load():
     assert ca._surplus_value() == 2500.0
 
 
+# ── allowed charging window (composable) ────────────────────────────
+def _hhmm(delta_h):
+    return (dt_util.now() + timedelta(hours=delta_h)).strftime("%H:%M")
+
+
+@case
+def test_autostart_blocked_outside_window():
+    # Window is 2–3h from now (now is outside it) → autostart must wait.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_TARGET_AUTOSTART: True, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(2), C.CA_WINDOW_END: _hhmm(3)}
+    ca, calls = build(opts, {"sensor.soc": FakeState("50")})
+    ca._eval_target()
+    assert calls == [], f"outside window should not start, got {calls}"
+
+
+@case
+def test_autostart_allowed_inside_window():
+    # Window spans now (−1h..+1h) → autostart fires.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_TARGET_AUTOSTART: True, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(1)}
+    ca, calls = build(opts, {"sensor.soc": FakeState("50")})
+    ca._eval_target()
+    assert calls == [True], f"inside window should start, got {calls}"
+
+
+@case
+def test_smart_solar_starts_on_solar_even_outside_window():
+    # Surplus available → charge from solar (free), ignoring the window.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(2), C.CA_WINDOW_END: _hhmm(3)}
+    ca, calls = build(opts, {"sensor.soc": FakeState("50"), "sensor.surplus": FakeState("2000")})
+    ca._eval_smart_solar()
+    assert calls == [True], f"solar surplus should start, got {calls}"
+
+
+@case
+def test_smart_solar_grid_blocked_outside_window():
+    # No surplus + outside the window → don't pull grid.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(2), C.CA_WINDOW_END: _hhmm(3)}
+    ca, calls = build(opts, {"sensor.soc": FakeState("50"), "sensor.surplus": FakeState("0")})
+    ca._eval_smart_solar()
+    assert calls == [], f"no solar + outside window should wait, got {calls}"
+
+
+@case
+def test_smart_solar_grid_allowed_inside_window():
+    # No surplus but inside the cheap window → grid top-up allowed.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(1)}
+    ca, calls = build(opts, {"sensor.soc": FakeState("50"), "sensor.surplus": FakeState("0")})
+    ca._eval_smart_solar()
+    assert calls == [True], f"inside window grid top-up should start, got {calls}"
+
+
+@case
+def test_window_prestart_for_departure():
+    # Outside the window, but departure is close and we need more time than
+    # remains → pre-start (and flag the pricier charge).
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_WINDOW_ENABLED: True, C.CA_WINDOW_PRESTART: True,
+            C.CA_WINDOW_START: _hhmm(5), C.CA_WINDOW_END: _hhmm(6),
+            C.CA_DEPARTURE: _hhmm(1), C.CA_BATTERY_KWH: 60, C.CA_CHARGE_POWER_KW: 7.4}
+    ca, _ = build(opts, {"sensor.soc": FakeState("50")})
+    d = ca._window_decision(50.0, 80.0)
+    assert d["allow_charge"] is True and d["reason"] == "prestart_for_departure"
+    assert d["cost_warn"] is True
+
+
+# ── native-schedule import: decode round-trips ──────────────────────
+@case
+def test_schedule_time_roundtrip():
+    import wallbox_gateway.schedule as sch
+    for t in ("00:00", "06:30", "23:15"):
+        utc_int = sch._local_hhmm_to_utc_int(None, t)
+        assert sch._utc_int_to_local_hhmm(utc_int) == t, f"round-trip failed for {t}"
+
+
+@case
+def test_schedule_days_roundtrip():
+    import wallbox_gateway.schedule as sch
+    arr = sch._days_array(["mon", "wed", "sun"])
+    assert sch._days_from_array(arr) == ["mon", "wed", "sun"]
+
+
+@case
+def test_schedule_days_bitmask():
+    # r_schs reads days back as a bitmask int (bit0=Mon..bit6=Sun).
+    import wallbox_gateway.schedule as sch
+    assert sch._days_from_array(127) == ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    assert sch._days_from_array(32) == ["sat"]     # bit5
+    assert sch._days_from_array(0) == []
+
+
+@case
+def test_decode_native_schedule_shape():
+    import wallbox_gateway.schedule as sch
+    row = {"sid": 2, "start": 1400, "stop": 2100, "days": [1, 1, 1, 1, 1, 0, 0],
+           "mcr": 16, "enabled": 1, "target": {"type": 1, "value": 7000}}
+    d = sch._decode_schedule(row)
+    assert d["sid"] == 2 and d["max_current"] == 16 and d["enabled"] is True
+    assert d["energy_target_kwh"] == 7.0
+    assert d["days"] == ["mon", "tue", "wed", "thu", "fri"]
+    assert d["start"] and d["stop"]
+    assert sch._decode_schedule("not a dict") is None
+
+
 def main():
     if not _HA_OK:
         return
