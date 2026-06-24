@@ -32,6 +32,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_point_in_time,
     async_track_state_change_event,
     async_track_time_change,
@@ -85,6 +86,7 @@ from .const import (
     CA_SURPLUS_START,
     CA_SURPLUS_STOP,
     CA_TAP_PATH,
+    CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
     CA_TARGET_PCT,
     CA_TARIFF_BELOW,
@@ -122,9 +124,12 @@ _LOGGER = logging.getLogger(__name__)
 _UNAVAILABLE = (None, "", "unknown", "unavailable")
 _MAX_ESCALATIONS = 3
 _SNOOZE_MINUTES = 60
-# Target-SOC auto-start deadband: once stopped at target, don't auto-restart
-# until SOC has fallen this far below target (prevents flapping around the cap).
+# Target-SOC auto-start deadband: once we've stopped at target, don't auto-
+# restart until SOC has fallen this far below target (prevents flapping at the
+# cap). Only applies AFTER reaching target this session — a fresh plug-in below
+# target uses the small initial margin so it always starts.
 _TARGET_DEADBAND = 5
+_INITIAL_START_MARGIN = 1
 
 # Charge-control arbitration (see esp32-wallbox docs/control-owner.md). The
 # gateway's control_owner says who may autonomously drive charging; the acting
@@ -182,6 +187,20 @@ class ChargeAssistant:
         # One-shot guard for the "charging outside your cheap window" cost
         # warning (re-armed once we're back inside the window / not charging).
         self._cost_warned = False
+        # Auto-start grace period: a pending start the user can still cancel.
+        # _grace_unsub cancels the scheduled fire; _grace_pending holds the
+        # context ({"reason", "target"}) for the notification + the fire.
+        self._grace_unsub = None
+        self._grace_pending: dict | None = None
+        # Forced grid-override session: True between a forced start and its
+        # finish, so _finish_charge knows to hand control back (resume-if-paused).
+        self._managed = False
+        # True once a forced charge has reached target this plug-in session — the
+        # 5% anti-flap deadband then gates re-starts. Reset on unplug so a fresh
+        # plug-in below target always starts (no surprise "won't charge").
+        self._reached_target = False
+        # "Not now" on a grace nudge holds auto-start off until this time.
+        self._autostart_suppress_until: datetime | None = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -389,6 +408,8 @@ class ChargeAssistant:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        # Cancel any pending auto-start countdown so it can't fire post-teardown.
+        self._cancel_grace("assistant stopping")
         for handle in (self._lead_unsub, self._escalate_unsub):
             if handle:
                 handle()
@@ -505,9 +526,10 @@ class ChargeAssistant:
                     self.hass, [self._opts.get(CA_PRICE_ENTITY)], self._on_target_change
                 )
             )
-        # Departure targeting and cheapest-window are both time-driven (not just
-        # SOC-driven), so poll on a steady cadence too.
-        if self._departure_active() or cheapest:
+        # Departure / cheapest are time-driven; autostart needs a steady tick too
+        # so a plug-in that's stable across an HA restart (no SOC/plug edge to
+        # react to) still gets evaluated and started.
+        if self._departure_active() or cheapest or self._opts.get(CA_TARGET_AUTOSTART):
             self._unsubs.append(
                 async_track_time_interval(self.hass, self._on_target_tick, timedelta(minutes=5))
             )
@@ -520,6 +542,12 @@ class ChargeAssistant:
         )
         # Evaluate once at startup in case we're already at/over target.
         self._eval_target()
+        # The SOC / plug entities may not be loaded yet at startup (their
+        # integration can come up after us), and plain autostart has no later
+        # SOC edge to react to — re-check shortly once everything's settled.
+        self._unsubs.append(
+            async_call_later(self.hass, 20, lambda _now: self._eval_target())
+        )
 
     @callback
     def _on_target_tick(self, now: datetime) -> None:
@@ -588,31 +616,29 @@ class ChargeAssistant:
             self._eval_cheapest(soc, target, charging)
             return
         if soc >= target:
-            # Charge cap reached — stop if we're charging.
+            # Charge cap reached — stop if we're charging, hand control back.
             self._cost_warned = False
+            self._cancel_grace("target reached")
             if charging:
                 _LOGGER.info("Charge Assistant: SOC %.0f%% >= target %.0f%% — stopping charge", soc, target)
-                self._set_charging(False)
-                self.hass.async_create_task(
-                    self._send_notification("target", message_override=(
-                        f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
-                    ))
-                )
+                self._finish_charge(soc, target)
             return
         # Below target — only consider starting when plugged in and idle.
-        if charging or self._plugged_in() is not True:
+        if self._plugged_in() is not True:
+            self._cancel_grace("car unplugged")
+            self._reached_target = False   # fresh session next plug-in
+            return
+        if charging:
             return
         if self._departure_active():
             # Just-in-time: start only once it's late enough to finish by departure.
             if self._jit_should_start(soc, target):
-                _LOGGER.info("Charge Assistant: departure just-in-time — starting at SOC %.0f%%", soc)
-                self._set_charging(True)
-                self.hass.async_create_task(
-                    self._send_notification("target", message_override=(
-                        f"Charging started for your {self._opts.get(CA_DEPARTURE)} departure — {soc:.0f}% to {target:.0f}%."
-                    ))
-                )
-        elif self._opts.get(CA_TARGET_AUTOSTART) and soc <= target - _TARGET_DEADBAND:
+                self._begin_charge(f"for your {self._opts.get(CA_DEPARTURE)} departure", soc, target)
+        elif self._opts.get(CA_TARGET_AUTOSTART) and soc <= target - (
+            _TARGET_DEADBAND if self._reached_target else _INITIAL_START_MARGIN
+        ):
+            # Fresh plug-in starts on any real gap; the wide 5% deadband only
+            # gates re-starts after we've already hit target (true anti-flap).
             if self._price_blocks():
                 self._note_standby(None)
                 return  # above the price cap — wait for a cheaper price
@@ -622,15 +648,8 @@ class ChargeAssistant:
             decision = self._window_decision(soc, target)
             if not decision["allow_charge"]:
                 return  # outside the cheap window — wait
-            # Immediate auto-start (deadband stops flapping at the cap).
-            _LOGGER.info("Charge Assistant: SOC %.0f%% below target %.0f%% — starting charge", soc, target)
-            self._set_charging(True)
             self._maybe_cost_warn(decision, target)
-            self.hass.async_create_task(
-                self._send_notification("target", message_override=(
-                    f"Charging started — {soc:.0f}% (target {target:.0f}%)."
-                ))
-            )
+            self._begin_charge("smart charge to target", soc, target)
 
     # ------------------------------------------------------------------
     # Cheapest-window planning (Phase 3) — a sub-mode of target charging
@@ -696,14 +715,12 @@ class ChargeAssistant:
         (2) we only ever STOP a charge we started ourselves — never a manual
         one; (3) if the price entity has no usable forecast we fall back to the
         plain target/JIT behaviour."""
-        # Cap reached — stop only our own charge.
+        # Cap reached — stop only our own charge, hand control back.
         if soc >= target:
+            self._cancel_grace("target reached")
             if charging and self._we_started:
                 _LOGGER.info("Charge Assistant: cheapest — reached target %.0f%%, stopping", target)
-                self._set_charging(False)
-                self.hass.async_create_task(self._send_notification("target", message_override=(
-                    f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
-                )))
+                self._finish_charge(soc, target)
             return
 
         now = dt_util.utcnow()
@@ -738,11 +755,7 @@ class ChargeAssistant:
 
         if want:
             if not charging and self._plugged_in() is True:
-                _LOGGER.info("Charge Assistant: cheapest — in a cheap window, starting at %.0f%%", soc)
-                self._set_charging(True)
-                self.hass.async_create_task(self._send_notification("target", message_override=(
-                    f"Charging now — cheap-rate window ({soc:.0f}% → {target:.0f}%)."
-                )))
+                self._begin_charge("cheap-rate window", soc, target)
         elif charging and self._we_started:
             # Outside a cheap window — pause, but only our own charge.
             _LOGGER.info("Charge Assistant: cheapest — outside cheap window, pausing")
@@ -758,18 +771,30 @@ class ChargeAssistant:
             return
         if has_departure:
             if self._jit_should_start(soc, target):
-                self._set_charging(True)
+                self._begin_charge("for your departure", soc, target)
         elif self._opts.get(CA_TARGET_AUTOSTART) and soc <= target - _TARGET_DEADBAND:
-            self._set_charging(True)
+            self._begin_charge("smart charge to target", soc, target)
 
     def _is_charging(self) -> bool:
-        """True if the charger reports it's actively charging."""
+        """True if the charger is actively charging. Checks the binary sensor,
+        the control switch, AND the live charge power — the binary sensor can
+        lag 'off' for a tick after a start / config reload, which would make the
+        stop-at-target step wrongly think there's nothing to stop."""
         ent = getattr(self, "_charging_sensor", None)
         if ent and (st := self.hass.states.get(ent)) and st.state not in _UNAVAILABLE:
-            return st.state == "on"
-        # Fall back to the control switch's commanded state.
-        if self._charge_switch and (sw := self.hass.states.get(self._charge_switch)):
-            return sw.state == "on"
+            if st.state == "on":
+                return True
+        if self._charge_switch and (sw := self.hass.states.get(self._charge_switch)) and sw.state == "on":
+            return True
+        # Robust fallback: the gateway's live charge power (r_dat.cp).
+        coord = self._coordinator()
+        if coord is not None and getattr(coord, "data", None):
+            rt = coord.data.get("charger_realtime") or {}
+            try:
+                if float(rt.get("cp") or 0) > 0.05:
+                    return True
+            except (TypeError, ValueError):
+                pass
         return False
 
     def _set_charging(self, on: bool) -> None:
@@ -808,6 +833,133 @@ class ChargeAssistant:
                 _LOGGER.warning("Charge Assistant: unknown charger action %s", action)
         except Exception as err:  # noqa: BLE001 — never crash the eval loop
             _LOGGER.warning("Charge Assistant: %s command failed: %s", action, err)
+
+    # ------------------------------------------------------------------
+    # Managed grid-override session: grace period + Eco/schedule handback
+    # ------------------------------------------------------------------
+    def _grace_minutes(self) -> int:
+        try:
+            return max(0, int(self._opts.get(CA_AUTOSTART_GRACE_MIN) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _autostart_suppressed(self) -> bool:
+        return (
+            self._autostart_suppress_until is not None
+            and dt_util.utcnow() < self._autostart_suppress_until
+        )
+
+    def _begin_charge(self, reason: str, soc: float, target: float) -> None:
+        """The single entry point for every auto-start. With a grace period the
+        user first gets a 'starting in N min — tap to cancel' nudge; otherwise it
+        starts immediately. Idempotent while a countdown is already running."""
+        if self._is_charging() or self._grace_pending is not None:
+            return
+        if self._autostart_suppressed():
+            return  # user said 'Not now' recently
+        grace = self._grace_minutes()
+        if grace <= 0:
+            self._do_start(reason, soc, target)
+            return
+        self._grace_pending = {"reason": reason, "target": target}
+        self._grace_unsub = async_call_later(self.hass, grace * 60, self._grace_fire)
+        _LOGGER.info("Charge Assistant: auto-start scheduled in %d min (%s)", grace, reason)
+        self.hass.async_create_task(self._send_notification(
+            "grace",
+            message_override=(
+                f"Charging will start in {grace} min — {reason}. "
+                "Tap 'Not now' to hold off, or 'Start now' to begin."
+            ),
+            action_set="grace",
+        ))
+
+    @callback
+    def _grace_fire(self, _now=None) -> None:
+        """Grace elapsed — start unless the situation changed under us."""
+        self._grace_unsub = None
+        pending = self._grace_pending
+        self._grace_pending = None
+        if pending is None:
+            return
+        ok, _ = self._may_control()
+        if not ok or self._plugged_in() is not True or self._is_charging():
+            return
+        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
+        target = pending.get("target")
+        if soc is not None and target is not None and soc >= float(target):
+            return
+        self._do_start(pending.get("reason", ""), soc or 0.0, target or 0.0)
+
+    def _cancel_grace(self, why: str | None = None) -> None:
+        """Cancel a pending auto-start (conditions changed, or user opted out)."""
+        if self._grace_unsub is not None:
+            try:
+                self._grace_unsub()
+            except Exception:  # noqa: BLE001
+                pass
+            self._grace_unsub = None
+        if self._grace_pending is not None and why:
+            _LOGGER.info("Charge Assistant: auto-start cancelled — %s", why)
+        self._grace_pending = None
+
+    def _do_start(self, reason: str, soc: float, target: float) -> None:
+        """Begin the forced grid charge and confirm. The owner-tagged start
+        overrides the charger's Solar-Only / schedule pause for the session
+        (verified live), so we do NOT toggle Eco-Smart — that risks leaving solar
+        off if a restore fails. _finish_charge hands control back at the end."""
+        self._set_charging(True)
+        self._managed = True          # mark a forced override → finish hands back
+        self._reached_target = False  # fresh charge; not yet at target
+        msg = (
+            f"Charging now — {reason} ({soc:.0f}% → {target:.0f}%)."
+            if (soc and target) else f"Charging now — {reason}."
+        )
+        self.hass.async_create_task(
+            self._send_notification("target", message_override=msg)
+        )
+
+    def _is_paused(self) -> bool:
+        """Charger's sticky manual-override / pause flag (r_dat.gen != 0). When
+        set, the charger's own Solar + schedule loops are held off."""
+        coord = self._coordinator()
+        if coord is None or not getattr(coord, "data", None):
+            return False
+        raw = coord.data.get("raw_status") or {}
+        rt = coord.data.get("charger_realtime") or {}
+        gen = raw.get("gen", rt.get("gen"))
+        try:
+            return (gen or 0) != 0
+        except TypeError:
+            return False
+
+    async def _resume_if_paused(self) -> None:
+        """Hand control back to the charger's own Solar + schedule loops after a
+        forced charge — but ONLY if it's actually still paused/overridden. A
+        clean stop normally leaves it armed (gen=0); a blind ``resume`` would
+        just restart charging, so we check the pause flag first."""
+        if not self._is_paused():
+            _LOGGER.debug("Charge Assistant: finish — charger armed (gen=0), no resume needed")
+            return
+        coord = self._coordinator()
+        if coord is None:
+            return
+        try:
+            await WallboxGatewayCharger(coord).resume()
+            _LOGGER.info("Charge Assistant: finish — charger was paused, resumed native control")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Charge Assistant: resume failed: %s", err)
+
+    def _finish_charge(self, soc: float, target: float) -> None:
+        """Forced charge complete (target reached) — stop. Hand control back to
+        native Solar/schedule only if the charger is left paused (checked)."""
+        self._reached_target = True
+        self._set_charging(False)
+        if self._managed:
+            self._managed = False
+            self.hass.async_create_task(self._resume_if_paused())
+        self.hass.async_create_task(self._send_notification("target", message_override=(
+            f"Charged to {soc:.0f}% (target {target:.0f}%)."
+        )))
 
     # ------------------------------------------------------------------
     # Dynamic current control (Phase 2)
@@ -1257,7 +1409,48 @@ class ChargeAssistant:
         self.hass.async_create_task(self._send_notification("reminder"))
         self._arm_escalation()
 
-    async def _send_notification(self, source: str = "reminder", message_override: str | None = None) -> None:
+    def _plan_clause(self) -> str | None:
+        """One line describing what the *assistant* will do once the car is
+        plugged in — so a reminder promises the assistant's actual plan, not the
+        charger's stale native-schedule time. Returns None when no acting
+        strategy is configured (reminder-only / native schedule runs — the caller
+        falls back to the native next-charge time, which is correct there)."""
+        opts = self._opts
+        strat = ca_config.strategy_of(opts)
+        # Plug-aware: a plug-in reminder normally only fires when unplugged, but
+        # the wording must never contradict reality (forced test, or the car was
+        # plugged in right at reminder time).
+        try:
+            plugged = self._plugged_in() is True
+        except Exception:  # noqa: BLE001 — never let state-read break a message
+            plugged = False
+        win = ""
+        if opts.get(CA_WINDOW_ENABLED) and opts.get(CA_WINDOW_START) and opts.get(CA_WINDOW_END):
+            win = f" in the {opts[CA_WINDOW_START]}–{opts[CA_WINDOW_END]} window"
+        tgt = opts.get(CA_TARGET_PCT)
+        try:
+            tgt_s = f" to {int(float(tgt))}%" if tgt else ""
+        except (TypeError, ValueError):
+            tgt_s = ""
+        if strat == MODE_TARGET:
+            if opts.get(CA_TARGET_AUTOSTART):
+                if win:
+                    return f"will charge{tgt_s}{win}"
+                when = " now that it's plugged in" if plugged else " as soon as you plug in"
+                return f"will charge{tgt_s}{when}"
+            if plugged:
+                return f"plugged in — tap Start to charge{tgt_s}"
+            return f"plug in, then tap Start to charge{tgt_s}"
+        if strat == MODE_SOLAR:
+            return "will charge from spare solar when there's a surplus"
+        if strat == MODE_SMART_SOLAR:
+            return f"will use solar first, topping up from grid{win} to reach{tgt_s or ' your target'}"
+        return None
+
+    async def _send_notification(
+        self, source: str = "reminder", message_override: str | None = None,
+        action_set: str | None = None,
+    ) -> None:
         try:
             # Charge-event alerts (message_override set) come from the acting
             # strategy's own notify config; plug-in-reminder nudges come from the
@@ -1276,23 +1469,43 @@ class ChargeAssistant:
                 return
             data: dict = {}
             if message_override is not None:
-                # Acting-strategy status message — informational, no action buttons.
+                # Acting-strategy status message — informational. The grace nudge
+                # is the exception: it carries override buttons so the user can
+                # cancel or start immediately before the countdown fires.
                 message = message_override
+                if action_set == "grace":
+                    data["actions"] = [
+                        {"action": CA_START_ACTION, "title": "Start now"},
+                        {"action": CA_SNOOZE_ACTION, "title": "Not now"},
+                    ]
             else:
-                message = cfg.get(CA_MESSAGE) or "Your car isn't plugged in — plug it in to charge."
+                # Plug-aware default base line so the whole message never
+                # contradicts itself (a custom message is left untouched).
+                try:
+                    plugged = self._plugged_in() is True
+                except Exception:  # noqa: BLE001
+                    plugged = False
+                message = cfg.get(CA_MESSAGE) or (
+                    "Your car is plugged in." if plugged
+                    else "Your car isn't plugged in — plug it in to charge."
+                )
                 soc_entity = cfg.get(CA_SOC_ENTITY)
                 if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
                     message = f"{message} · battery {st.state}%"
-                if self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
+                plan = self._plan_clause()
+                if plan:
+                    message = f"{message} · {plan}"
+                elif self._next_charge and (nc := self.hass.states.get(self._next_charge)) and nc.state not in _UNAVAILABLE:
                     dt = dt_util.parse_datetime(nc.state)
                     if dt:
                         message = f"{message} · charge {dt_util.as_local(dt).strftime('%a %H:%M')}"
                 if cfg.get(CA_ACTIONABLE, True):
+                    # Keep titles short — phone notification actions truncate.
                     actions = []
                     if self._charge_switch:
-                        actions.append({"action": CA_START_ACTION, "title": "Start charging now"})
+                        actions.append({"action": CA_START_ACTION, "title": "Start now"})
                     actions.append({"action": CA_SNOOZE_ACTION, "title": "Snooze 1h"})
-                    actions.append({"action": CA_SKIP_ACTION, "title": "Skip tonight"})
+                    actions.append({"action": CA_SKIP_ACTION, "title": "Skip"})
                     data["actions"] = actions
                 if cfg.get(CA_TAP_PATH):
                     data["clickAction"] = cfg[CA_TAP_PATH]
@@ -1319,7 +1532,13 @@ class ChargeAssistant:
     def _on_action(self, event: Event) -> None:
         action = event.data.get("action")
         if action == CA_START_ACTION:
-            if self._charge_switch:
+            # During a grace countdown, "Start now" skips the wait and begins.
+            if self._grace_pending is not None:
+                pending = self._grace_pending
+                self._cancel_grace("user tapped Start now")
+                soc = self._read_float(self._opts.get(CA_SOC_ENTITY)) or 0.0
+                self._do_start(pending.get("reason", ""), soc, pending.get("target") or 0.0)
+            elif self._charge_switch:
                 _LOGGER.info("Charge Assistant: 'Start now' -> %s", self._charge_switch)
                 self.hass.async_create_task(
                     self.hass.services.async_call(
@@ -1327,6 +1546,11 @@ class ChargeAssistant:
                     )
                 )
         elif action == CA_SNOOZE_ACTION:
+            # During a grace countdown, "Not now" holds auto-start off for a while.
+            if self._grace_pending is not None or self._grace_unsub is not None:
+                self._cancel_grace("user tapped Not now")
+                self._autostart_suppress_until = dt_util.utcnow() + timedelta(minutes=_SNOOZE_MINUTES)
+                _LOGGER.info("Charge Assistant: auto-start held off until %s", self._autostart_suppress_until)
             self._suppress_until = dt_util.utcnow() + timedelta(minutes=_SNOOZE_MINUTES)
             self._cancel_escalation()
             _LOGGER.info("Charge Assistant: snoozed until %s", self._suppress_until)

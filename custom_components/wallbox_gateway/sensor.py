@@ -57,10 +57,22 @@ class GatewaySensorEntityDescription(SensorEntityDescription):
     requires_meter: bool = False
 
 
+# Disambiguated label for Wallbox status 4 when it's idle (gen == 0), not an
+# active override. Added to the enum option set below.
+STATUS_NOT_CHARGING = "Connected — not charging"
+
+
 def _status_label(entity: GatewayEntity) -> str | None:
     code = entity._charger_status_code()
     if code is None:
         return None
+    # Wallbox status 4 is "Paused", but that term covers TWO different states:
+    # an active override (Schedule/Solar charging paused — r_dat.gen != 0) AND a
+    # plain stopped/idle session (gen == 0, e.g. after reaching target). Only the
+    # former is really "Paused" — disambiguate so idle isn't mislabelled.
+    if code == 4 and not entity._is_zentri():
+        gen = entity._status().get("gen")
+        return "Paused" if (gen or 0) != 0 else STATUS_NOT_CHARGING
     # Zentri uses a different enum; its labels are reused from STATUS_CODES so
     # the ENUM `options` list stays valid.
     table = ZENTRI_STATUS_CODES if entity._is_zentri() else STATUS_CODES
@@ -143,7 +155,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         translation_key="charger_status",
         name="Charger status",
         device_class=SensorDeviceClass.ENUM,
-        options=sorted(set(STATUS_CODES.values())),
+        options=sorted(set(STATUS_CODES.values()) | {STATUS_NOT_CHARGING}),
         value_fn=_status_label,
     ),
     GatewaySensorEntityDescription(

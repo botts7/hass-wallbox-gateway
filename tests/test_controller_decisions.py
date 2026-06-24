@@ -226,6 +226,197 @@ def test_window_prestart_for_departure():
     assert d["cost_warn"] is True
 
 
+# ── reminder "what will happen" plan clause ─────────────────────────
+@case
+def test_plan_clause_target_autostart_plug_aware():
+    # Plugged in (build() default) → "now that it's plugged in".
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 80,
+                   C.CA_TARGET_AUTOSTART: True}, {})
+    assert ca._plan_clause() == "will charge to 80% now that it's plugged in"
+    # Unplugged → "as soon as you plug in" (the real nudge scenario).
+    ca._plugged_in = lambda: False
+    assert ca._plan_clause() == "will charge to 80% as soon as you plug in"
+
+
+@case
+def test_plan_clause_target_autostart_window():
+    # Window wording is plug-state-independent (no contradiction either way).
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 80,
+                   C.CA_TARGET_AUTOSTART: True, C.CA_WINDOW_ENABLED: True,
+                   C.CA_WINDOW_START: "00:00", C.CA_WINDOW_END: "06:00"}, {})
+    assert ca._plan_clause() == "will charge to 80% in the 00:00–06:00 window"
+
+
+@case
+def test_plan_clause_target_manual():
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 80,
+                   C.CA_TARGET_AUTOSTART: False}, {})
+    # Plugged in (build() default) → already-plugged manual wording.
+    assert ca._plan_clause() == "plugged in — tap Start to charge to 80%"
+    ca._plugged_in = lambda: False
+    assert ca._plan_clause() == "plug in, then tap Start to charge to 80%"
+
+
+@case
+def test_plan_clause_solar_and_smart_solar():
+    ca, _ = build({C.CA_MODE: C.MODE_SOLAR}, {})
+    assert "spare solar" in ca._plan_clause()
+    ca2, _ = build({C.CA_MODE: C.MODE_SMART_SOLAR, C.CA_TARGET_PCT: 90}, {})
+    assert ca2._plan_clause().startswith("will use solar first")
+
+
+@case
+def test_plan_clause_reminder_only_is_none():
+    # No acting strategy (reminder-only / off) → None, so the caller falls back
+    # to the charger's native next-charge time.
+    assert build({C.CA_MODE: C.MODE_REMINDER}, {})[0]._plan_clause() is None
+    assert build({C.CA_MODE: C.MODE_OFF}, {})[0]._plan_clause() is None
+
+
+# ── auto-start grace period + managed override ──────────────────────
+@case
+def test_grace_minutes_parse():
+    assert build({C.CA_AUTOSTART_GRACE_MIN: "5"}, {})[0]._grace_minutes() == 5
+    assert build({}, {})[0]._grace_minutes() == 0
+    assert build({C.CA_AUTOSTART_GRACE_MIN: "bad"}, {})[0]._grace_minutes() == 0
+
+
+@case
+def test_grace_defers_then_fires():
+    # With a grace period the autostart is scheduled, not immediate; firing the
+    # scheduled callback then starts.
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (
+        sched.update(delay=delay, cb=cb) or (lambda: sched.update(cancelled=True))
+    )
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+                           C.CA_AUTOSTART_GRACE_MIN: 5},
+                          {"sensor.soc": FakeState("50")})
+        ca._eval_target()
+        assert calls == [], f"grace should defer, got {calls}"
+        assert sched.get("delay") == 300 and ca._grace_pending is not None
+        sched["cb"](None)                      # grace timer fires
+        assert calls == [True], f"grace fire should start, got {calls}"
+        assert ca._grace_pending is None
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_grace_cancel_blocks_start():
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (
+        sched.update(cb=cb) or (lambda: None)
+    )
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+                           C.CA_AUTOSTART_GRACE_MIN: 5},
+                          {"sensor.soc": FakeState("50")})
+        ca._eval_target()
+        assert ca._grace_pending is not None
+        ca._cancel_grace("test")
+        assert ca._grace_pending is None and calls == []
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_autostart_suppressed_blocks_start():
+    ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                       C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True},
+                      {"sensor.soc": FakeState("50")})
+    ca._autostart_suppress_until = dt_util.utcnow() + timedelta(minutes=30)
+    ca._eval_target()
+    assert calls == [], f"'Not now' suppression should block start, got {calls}"
+
+
+@case
+def test_finish_charge_stops():
+    ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                       C.CA_TARGET_PCT: 80}, {})
+    ca._finish_charge(80.0, 80.0)
+    assert calls == [False], f"finish should stop, got {calls}"
+    assert ca._reached_target is True
+
+
+@case
+def test_initial_plugin_starts_within_deadband():
+    # Fresh plug-in at 77% with target 80% (only 3% gap) MUST start — the wide
+    # 5% deadband only applies after we've already reached target.
+    ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                       C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True},
+                      {"sensor.soc": FakeState("77")})
+    ca._eval_target()
+    assert calls == [True], f"fresh plug-in below target should start, got {calls}"
+
+
+@case
+def test_no_reflap_after_target():
+    # After reaching target, a small drop (77 vs 80) must NOT restart (anti-flap).
+    ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                       C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True},
+                      {"sensor.soc": FakeState("77")})
+    ca._reached_target = True
+    ca._eval_target()
+    assert calls == [], f"within 5% deadband after target should not restart, got {calls}"
+
+
+@case
+def test_unplug_resets_reached_target():
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                   C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True},
+                  {"sensor.soc": FakeState("77")})
+    ca._reached_target = True
+    ca._plugged_in = lambda: False
+    ca._eval_target()
+    assert ca._reached_target is False, "unplug should reset the anti-flap flag"
+
+
+@case
+def test_is_paused_reads_gen():
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET}, {})
+    coord = ca._coordinator()
+    coord.data["raw_status"] = {"gen": 0}
+    assert ca._is_paused() is False
+    coord.data["raw_status"] = {"gen": 1}
+    assert ca._is_paused() is True
+
+
+@case
+def test_charger_adapter_eco_and_resume():
+    import asyncio
+    import json as _json
+    from wallbox_gateway.charger_control import WallboxGatewayCharger, ECO_DISABLED
+
+    sent = []
+
+    class FakeClient:
+        async def get(self, url): sent.append(("get", url))
+        async def bapi(self, met, par=None, wait_ms=None): sent.append(("bapi", met, par))
+
+    class FakeCoord2:
+        def __init__(self):
+            self.client = FakeClient()
+            self.data = {"eco_smart": {"mode": 1, "power_pct": 80}}
+
+    ch = WallboxGatewayCharger(FakeCoord2())
+    assert ch.eco_mode() == 1                       # Full Green
+
+    async def _run():
+        await ch.set_eco_mode(ECO_DISABLED)
+        await ch.resume()
+    asyncio.run(_run())
+
+    eco_calls = [c for c in sent if c[0] == "bapi" and c[1] == "s_ecos"]
+    assert eco_calls and _json.loads(eco_calls[0][2])["esm"] == 0, sent
+    assert any(c[0] == "get" and "resume" in c[1] for c in sent), sent
+
+
 # ── native-schedule import: decode round-trips ──────────────────────
 @case
 def test_schedule_time_roundtrip():

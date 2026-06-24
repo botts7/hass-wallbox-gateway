@@ -4,6 +4,45 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.17.0] - 2026-06-24
+
+Forced grid charge with a clean hand-back to Solar/schedule — validated live on
+a Pulsar Max.
+
+### Added
+- **Auto-start grace period** (`autostart_grace_min`, default 0 = off). When set,
+  the assistant first sends *"Charging will start in N min — tap Not now / Start
+  now"* and only begins after the countdown, so you can override. The countdown
+  is cancelled automatically if the car unplugs or the target is reached.
+- **"Charging now" follow-up** confirming the charge actually began (after the
+  grace period, or immediately when grace is 0).
+- **Clean hand-back on finish.** A forced charge (owner-tagged start) overrides
+  the charger's Solar-Only / schedule pause for the session. When it reaches
+  target the assistant **stops**, then hands control back to the charger's own
+  Solar + schedule loops **only if the charger is actually still paused**
+  (checks the `gen` flag first). A plain stop normally leaves it armed (`gen=0`),
+  so no `resume` is sent — avoiding a blind `resume` that would *restart*
+  charging. (We do **not** toggle Eco-Smart off/on — the start already overrides
+  it, and toggling risked leaving Solar disabled.)
+
+### Fixed
+- **"Paused" charger status was misleading.** Wallbox status 4 ("Paused")
+  covers both an active override (Schedule/Solar paused, `gen≠0`) **and** a
+  plain stopped/idle session (`gen=0`, e.g. after reaching target). The status
+  sensor now shows **"Connected — not charging"** for the idle case and reserves
+  **"Paused"** for a real override.
+- **Auto-start deadband suppressed the initial charge.** "Plug in at 77%, target
+  80%" wouldn't start because a 5% anti-flap margin gated *all* starts. The 5%
+  deadband now only applies to **re-starts after reaching target** this session;
+  a fresh plug-in starts on any real gap. Reset on unplug.
+- **Stop-at-target could miss** when the charging binary sensor lagged 'off'
+  after a start/reload — `_is_charging` now also checks the live charge power.
+- **Auto-start could stall after an HA restart** when the car was already
+  plugged in (no SOC/plug edge to react to) — added a steady tick for autostart
+  plus a deferred startup re-check.
+- **Notification action buttons were truncating** on the phone — shortened the
+  titles ("Start now" / "Snooze 1h" / "Skip").
+
 ## [0.16.0] - 2026-06-24
 
 Composable Charge Assistant + native-schedule import.
@@ -24,6 +63,14 @@ Composable Charge Assistant + native-schedule import.
   **merges** into `entry.options` instead of replacing it (preserves
   `poll_interval` / `tariff`).
 - Fixed a `NameError` that crashed solar mode on start.
+- **Reminders now say what the *assistant* will do**, not the charger's stale
+  native-schedule time. A plug-in reminder under Smart charge + autostart now
+  reads "…will charge to 80% as soon as you plug in" (or "…in the 00:00–06:00
+  window"), Solar reads "…will charge from spare solar", etc. Reminder-only /
+  Off still shows the charger's native next-charge time (correct there, since
+  the assistant isn't acting). Previously every reminder appended the native
+  next-charge time even when the assistant was going to start immediately —
+  promising the wrong thing.
 
 ## [0.15.0] - 2026-06-22
 

@@ -15,11 +15,18 @@ firmware's hardware range (6–32 A on a Pulsar).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 # Hardware current range (mirrors const.MIN/MAX_CURRENT_A and the firmware).
 MIN_CURRENT_A = 6
 MAX_CURRENT_A = 32
+
+# Eco-Smart modes (esm). 0 lets the charger pull grid freely; 1/2 gate charging
+# on solar, which would re-pause a forced grid charge.
+ECO_DISABLED = 0
+ECO_FULL_GREEN = 1
+ECO_SMART = 2
 
 # Owner tag recorded on every command so the gateway (and our own
 # manual-override detection) knows the integration issued it.
@@ -46,6 +53,12 @@ class ChargerControl:
     async def start(self) -> None: raise NotImplementedError
     async def stop(self) -> None: raise NotImplementedError
     async def set_current(self, amps: int) -> None: raise NotImplementedError
+    # Hand control back to the charger's own schedule + Eco-Smart loops.
+    async def resume(self) -> None: raise NotImplementedError
+    # Eco-Smart mode (esm int) — read current, force a value (e.g. Disabled for a
+    # grid override), then restore. None when unknown.
+    def eco_mode(self) -> int | None: raise NotImplementedError
+    async def set_eco_mode(self, mode: int) -> None: raise NotImplementedError
 
     # — capabilities + state (cheap, synchronous reads) —
     def capabilities(self) -> ChargerCapabilities: raise NotImplementedError
@@ -87,6 +100,32 @@ class WallboxGatewayCharger(ChargerControl):
     async def set_current(self, amps: int) -> None:
         lo, hi = MIN_CURRENT_A, MAX_CURRENT_A
         await self._send("current", value=int(max(lo, min(amps, hi))))
+
+    async def resume(self) -> None:
+        # action=resume → s_cmode {"mode":0}; clears the manual-override flag so
+        # the charger's schedule + Eco-Smart loops control it again.
+        await self._coord.client.get("/api/command?action=resume")
+
+    def eco_mode(self) -> int | None:
+        eco = self.eco_state()
+        m = eco.get("mode")
+        return int(m) if isinstance(m, (int, float)) else None
+
+    def eco_state(self) -> dict:
+        if self._coord is None or not getattr(self._coord, "data", None):
+            return {}
+        return dict(self._coord.data.get("eco_smart") or {})
+
+    async def set_eco_mode(self, mode: int) -> None:
+        # s_ecos shape {ese, esm, esp}; preserve the solar power target, derive
+        # the enabled flag from the mode (matches the select entity + dashboard).
+        eco = self.eco_state()
+        payload = {
+            "ese": 1 if int(mode) > 0 else 0,
+            "esm": int(mode),
+            "esp": int(eco.get("power_pct") or 100),
+        }
+        await self._coord.client.bapi("s_ecos", par=json.dumps(payload), wait_ms=8000)
 
     # ---- capabilities + state ----
     def capabilities(self) -> ChargerCapabilities:

@@ -67,6 +67,7 @@ from .const import (
     CA_SURPLUS_STOP,
     CA_TRIP_TARGET,
     CA_TRIP_UNTIL,
+    CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
     CA_TARGET_PCT,
     CA_TARIFF_BELOW,
@@ -523,6 +524,14 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         rem = cur.get(CA_REMINDER) or {}
         rl_on = bool(rem.get(CA_REMINDER_ENABLED) and rem.get(CA_TRIGGERS))
         return {
+            vol.Optional(
+                CA_AUTOSTART_GRACE_MIN, default=cur.get(CA_AUTOSTART_GRACE_MIN, 0)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=60, step=1, unit_of_measurement="min",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
             vol.Optional(CA_WINDOW_ENABLED, default=cur.get(CA_WINDOW_ENABLED, False)): selector.BooleanSelector(),
             vol.Optional(CA_WINDOW_START, default=cur.get(CA_WINDOW_START, vol.UNDEFINED)): selector.TimeSelector(),
             vol.Optional(CA_WINDOW_END, default=cur.get(CA_WINDOW_END, vol.UNDEFINED)): selector.TimeSelector(),

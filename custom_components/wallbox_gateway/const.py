@@ -56,6 +56,11 @@ CA_IMPORTED_SCHEDULES = "imported_schedules"
 # required), CA_CHARGE_SWITCH (auto-resolved), CA_NOTIFY_SERVICE (optional).
 CA_TARGET_PCT = "target_soc_pct"          # stop charging at/above this %
 CA_TARGET_AUTOSTART = "target_autostart"  # also START when below target + plugged in
+# Grace period (minutes) between deciding to auto-start and actually starting:
+# the assistant notifies "charging will start in N min — tap to cancel" so the
+# user can override. 0 = start immediately (default; opt-in delay).
+CA_AUTOSTART_GRACE_MIN = "autostart_grace_min"
+DEFAULT_AUTOSTART_GRACE_MIN = 0
 # Phase 2b — departure-time targeting ("ready by HH:MM"). When set, charging
 # starts just-in-time: now >= departure - (target-soc)% * battery / power.
 CA_DEPARTURE = "departure_time"           # local "HH:MM"
