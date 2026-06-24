@@ -336,12 +336,43 @@ def test_autostart_suppressed_blocks_start():
 
 
 @case
-def test_finish_charge_stops():
-    ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
-                       C.CA_TARGET_PCT: 80}, {})
-    ca._finish_charge(80.0, 80.0)
-    assert calls == [False], f"finish should stop, got {calls}"
-    assert ca._reached_target is True
+def test_finish_charge_stops_and_verifies():
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (
+        sched.update(delay=delay, cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {})
+        ca._finish_charge(80.0, 80.0)
+        assert calls == [False], f"finish should issue stop, got {calls}"
+        assert ca._reached_target is True
+        assert ca._finishing is not None and sched.get("delay") == 10
+        # build()'s _is_charging is False → verify confirms the stop took.
+        sched["cb"](None)
+        assert ca._finishing is None, "confirmed stop should clear finishing"
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_finish_retries_when_stop_ignored():
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (sched.update(cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {})
+        ca._is_charging = lambda: True          # charger keeps ignoring Stop
+        ca._finish_charge(80.0, 80.0)
+        assert calls == [False]
+        sched["cb"](None); assert calls == [False, False]           # retry 2
+        sched["cb"](None); assert calls == [False, False, False]    # retry 3
+        sched["cb"](None)                                           # cap hit → give up
+        assert ca._finishing is None
+        assert calls == [False, False, False], f"no stops past the cap, got {calls}"
+    finally:
+        ca_mod.async_call_later = orig
 
 
 @case

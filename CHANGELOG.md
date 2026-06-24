@@ -24,6 +24,11 @@ a Pulsar Max.
   so no `resume` is sent — avoiding a blind `resume` that would *restart*
   charging. (We do **not** toggle Eco-Smart off/on — the start already overrides
   it, and toggling risked leaving Solar disabled.)
+- **Stop is verified, not trusted (cross-charger hardening).** Some chargers
+  (original/Zentri Pulsar, older Plus firmware) can silently drop a Stop. The
+  finish now **reads back the charge state, retries the Stop**, and only declares
+  "Charged to X%" + hands control back once charging has actually ceased — and
+  warns you if the charger keeps ignoring Stop, instead of falsely reporting done.
 
 ### Fixed
 - **"Paused" charger status was misleading.** Wallbox status 4 ("Paused")

@@ -130,6 +130,11 @@ _SNOOZE_MINUTES = 60
 # target uses the small initial margin so it always starts.
 _TARGET_DEADBAND = 5
 _INITIAL_START_MARGIN = 1
+# Some chargers (original/Zentri Pulsar, older Plus firmware) can silently drop
+# a Stop. On finish we verify the stop actually took via charge-state readback
+# and retry, only declaring "done" once charging has genuinely ceased.
+_FINISH_STOP_RETRIES = 3
+_FINISH_VERIFY_DELAY_S = 10
 
 # Charge-control arbitration (see esp32-wallbox docs/control-owner.md). The
 # gateway's control_owner says who may autonomously drive charging; the acting
@@ -201,6 +206,10 @@ class ChargeAssistant:
         self._reached_target = False
         # "Not now" on a grace nudge holds auto-start off until this time.
         self._autostart_suppress_until: datetime | None = None
+        # Finish-verification: a stop we issued at target but haven't yet
+        # confirmed actually stopped the charge (some chargers drop a Stop).
+        self._finishing: dict | None = None
+        self._finish_unsub = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -408,8 +417,10 @@ class ChargeAssistant:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
-        # Cancel any pending auto-start countdown so it can't fire post-teardown.
+        # Cancel any pending auto-start countdown / finish-verify so neither can
+        # fire post-teardown.
         self._cancel_grace("assistant stopping")
+        self._cancel_finish()
         for handle in (self._lead_unsub, self._escalate_unsub):
             if handle:
                 handle()
@@ -907,6 +918,7 @@ class ChargeAssistant:
         overrides the charger's Solar-Only / schedule pause for the session
         (verified live), so we do NOT toggle Eco-Smart — that risks leaving solar
         off if a restore fails. _finish_charge hands control back at the end."""
+        self._cancel_finish()         # a new charge supersedes any pending finish
         self._set_charging(True)
         self._managed = True          # mark a forced override → finish hands back
         self._reached_target = False  # fresh charge; not yet at target
@@ -950,15 +962,74 @@ class ChargeAssistant:
             _LOGGER.warning("Charge Assistant: resume failed: %s", err)
 
     def _finish_charge(self, soc: float, target: float) -> None:
-        """Forced charge complete (target reached) — stop. Hand control back to
-        native Solar/schedule only if the charger is left paused (checked)."""
+        """Forced charge complete (target reached) — stop. We don't trust the
+        Stop blindly (some chargers drop it): issue it, then VERIFY via readback
+        and retry, only declaring done + handing control back once charging has
+        actually ceased."""
         self._reached_target = True
+        if self._finishing is not None:
+            return  # already finishing — let the verify loop run
         self._set_charging(False)
-        if self._managed:
-            self._managed = False
-            self.hass.async_create_task(self._resume_if_paused())
+        self._finishing = {"soc": soc, "target": target, "attempts": 1}
+        self._schedule_finish_verify()
+
+    def _schedule_finish_verify(self) -> None:
+        if self._finish_unsub is not None:
+            try:
+                self._finish_unsub()
+            except Exception:  # noqa: BLE001
+                pass
+        self._finish_unsub = async_call_later(
+            self.hass, _FINISH_VERIFY_DELAY_S, self._verify_finish
+        )
+
+    def _cancel_finish(self) -> None:
+        """Drop any pending finish-verify (a new charge supersedes it, or we're
+        tearing down) so the verify loop can't fight a fresh start."""
+        if self._finish_unsub is not None:
+            try:
+                self._finish_unsub()
+            except Exception:  # noqa: BLE001
+                pass
+            self._finish_unsub = None
+        self._finishing = None
+
+    @callback
+    def _verify_finish(self, _now=None) -> None:
+        """Did the Stop take? If charging has ceased, declare done + hand back;
+        if it's still charging, retry the stop up to a limit, then warn."""
+        self._finish_unsub = None
+        f = self._finishing
+        if f is None:
+            return
+        if not self._is_charging():
+            # Confirmed stopped — now it's safe to hand control back + notify.
+            self._finishing = None
+            if self._managed:
+                self._managed = False
+                self.hass.async_create_task(self._resume_if_paused())
+            self.hass.async_create_task(self._send_notification("target", message_override=(
+                f"Charged to {f['soc']:.0f}% (target {f['target']:.0f}%)."
+            )))
+            return
+        if f["attempts"] < _FINISH_STOP_RETRIES:
+            f["attempts"] += 1
+            _LOGGER.warning(
+                "Charge Assistant: Stop didn't take at target — retry %d/%d",
+                f["attempts"], _FINISH_STOP_RETRIES,
+            )
+            self._set_charging(False)
+            self._schedule_finish_verify()
+            return
+        # Charger keeps ignoring Stop — give up retrying and tell the user.
+        self._finishing = None
+        _LOGGER.error(
+            "Charge Assistant: charger did not accept Stop after %d attempts at %.0f%%",
+            f["attempts"], f["soc"],
+        )
         self.hass.async_create_task(self._send_notification("target", message_override=(
-            f"Charged to {soc:.0f}% (target {target:.0f}%)."
+            f"Reached {f['target']:.0f}% but the charger didn't accept Stop — "
+            "you may need to stop it manually."
         )))
 
     # ------------------------------------------------------------------
