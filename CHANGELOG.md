@@ -64,6 +64,8 @@ Composable Charge Assistant + native-schedule import.
   integration controls charging. Returns the decoded schedules.
 
 ### Changed / Fixed
+- Options flow: the reminder's **"Tap opens" path** is now a dropdown of your
+  Lovelace dashboards + views (still accepts free-text), matching the Add-on.
 - Options flow: the **charging window + auto-start grace** no longer appear in
   the **Solar** step — they only gate *grid* charging (Smart charge / Smart +
   Solar), and pure Solar charges from surplus anytime, so they don't apply there.

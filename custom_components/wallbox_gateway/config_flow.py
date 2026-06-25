@@ -871,6 +871,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             f"notify.{name}"
             for name in sorted(self.hass.services.async_services().get("notify", {}))
         ]
+        page_opts = await self._page_path_options()
         schema = vol.Schema(
             {
                 vol.Required(
@@ -899,7 +900,38 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
-                vol.Optional(CA_TAP_PATH, default=cur.get(CA_TAP_PATH, "")): str,
+                vol.Optional(
+                    CA_TAP_PATH, default=cur.get(CA_TAP_PATH, "")
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=page_opts, custom_value=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
             }
         )
         return self.async_show_form(step_id="notify", data_schema=schema)
+
+    async def _page_path_options(self) -> list[str]:
+        """Best-effort Lovelace dashboard/view paths for the tap-path dropdown.
+        Reads hass.data['lovelace'] internals; any failure returns just the
+        default so the field (custom_value=True) still works as free-text."""
+        paths: list[str] = ["/lovelace"]
+        try:
+            data = self.hass.data.get("lovelace")
+            dashboards = getattr(data, "dashboards", None) or {}
+            for url, dash in dashboards.items():
+                root = "/lovelace" if url is None else f"/{url}"
+                if url and root not in paths:
+                    paths.append(root)
+                try:
+                    conf = await dash.async_load(False)
+                except Exception:  # noqa: BLE001 — YAML/auto dashboards may not load
+                    conf = None
+                for idx, v in enumerate((conf or {}).get("views") or []):
+                    p = f"{root}/{v.get('path') or idx}"
+                    if p not in paths:
+                        paths.append(p)
+        except Exception:  # noqa: BLE001 — lovelace internals are version-sensitive
+            pass
+        return paths
