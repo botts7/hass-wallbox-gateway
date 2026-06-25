@@ -64,6 +64,9 @@ Composable Charge Assistant + native-schedule import.
   integration controls charging. Returns the decoded schedules.
 
 ### Changed / Fixed
+- Options flow: the **charging window + auto-start grace** no longer appear in
+  the **Solar** step — they only gate *grid* charging (Smart charge / Smart +
+  Solar), and pure Solar charges from surplus anytime, so they don't apply there.
 - `set_config` now allow-lists the option keys it accepts, and the options flow
   **merges** into `entry.options` instead of replacing it (preserves
   `poll_interval` / `tariff`).

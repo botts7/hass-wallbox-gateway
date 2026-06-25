@@ -506,38 +506,47 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                **self._acting_extra_schema(cur),
+                **self._acting_extra_schema(cur, with_window=False),
             }
         )
         return self.async_show_form(step_id="solar", data_schema=schema)
 
     # ---- shared acting-strategy extras: charging window + reminder layer ----
-    def _acting_extra_schema(self, cur: dict) -> dict:
+    def _acting_extra_schema(self, cur: dict, with_window: bool = True) -> dict:
         """vol fields for the allowed charging window + a compact plug-in
         reminder layer, shared by the target / solar / smart_solar steps. The
         Add-on offers the full reminder trigger set; the native flow keeps a
-        nightly reminder for simplicity."""
+        nightly reminder for simplicity.
+
+        ``with_window`` is False for pure Solar: the grace period + charging
+        window only gate GRID charging (Smart charge / Smart+Solar), so they
+        don't apply when charging purely from surplus — omit them there.
+        """
         notify_opts = [
             f"notify.{name}"
             for name in sorted(self.hass.services.async_services().get("notify", {}))
         ]
         rem = cur.get(CA_REMINDER) or {}
         rl_on = bool(rem.get(CA_REMINDER_ENABLED) and rem.get(CA_TRIGGERS))
-        return {
-            vol.Optional(
-                CA_AUTOSTART_GRACE_MIN, default=cur.get(CA_AUTOSTART_GRACE_MIN, 0)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=0, max=60, step=1, unit_of_measurement="min",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
-            ),
-            vol.Optional(CA_WINDOW_ENABLED, default=cur.get(CA_WINDOW_ENABLED, False)): selector.BooleanSelector(),
-            vol.Optional(CA_WINDOW_START, default=cur.get(CA_WINDOW_START, vol.UNDEFINED)): selector.TimeSelector(),
-            vol.Optional(CA_WINDOW_END, default=cur.get(CA_WINDOW_END, vol.UNDEFINED)): selector.TimeSelector(),
-            vol.Optional(CA_WINDOW_OVERRUN, default=cur.get(CA_WINDOW_OVERRUN, False)): selector.BooleanSelector(),
-            vol.Optional(CA_WINDOW_PRESTART, default=cur.get(CA_WINDOW_PRESTART, False)): selector.BooleanSelector(),
-            vol.Optional(CA_WINDOW_COST_WARN, default=cur.get(CA_WINDOW_COST_WARN, False)): selector.BooleanSelector(),
+        fields: dict = {}
+        if with_window:
+            fields.update({
+                vol.Optional(
+                    CA_AUTOSTART_GRACE_MIN, default=cur.get(CA_AUTOSTART_GRACE_MIN, 0)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=60, step=1, unit_of_measurement="min",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(CA_WINDOW_ENABLED, default=cur.get(CA_WINDOW_ENABLED, False)): selector.BooleanSelector(),
+                vol.Optional(CA_WINDOW_START, default=cur.get(CA_WINDOW_START, vol.UNDEFINED)): selector.TimeSelector(),
+                vol.Optional(CA_WINDOW_END, default=cur.get(CA_WINDOW_END, vol.UNDEFINED)): selector.TimeSelector(),
+                vol.Optional(CA_WINDOW_OVERRUN, default=cur.get(CA_WINDOW_OVERRUN, False)): selector.BooleanSelector(),
+                vol.Optional(CA_WINDOW_PRESTART, default=cur.get(CA_WINDOW_PRESTART, False)): selector.BooleanSelector(),
+                vol.Optional(CA_WINDOW_COST_WARN, default=cur.get(CA_WINDOW_COST_WARN, False)): selector.BooleanSelector(),
+            })
+        fields.update({
             vol.Optional("rl_enabled", default=rl_on): selector.BooleanSelector(),
             vol.Optional("rl_nightly_time", default=rem.get(CA_NIGHTLY_TIME, vol.UNDEFINED)): selector.TimeSelector(),
             vol.Optional("rl_notify", default=rem.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)): selector.SelectSelector(
@@ -545,7 +554,8 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                     options=notify_opts, custom_value=True, mode=selector.SelectSelectorMode.DROPDOWN
                 )
             ),
-        }
+        })
+        return fields
 
     def _apply_acting_extra(self, user_input: dict) -> dict:
         """Pop the reminder-layer temp keys and store them as a nested
