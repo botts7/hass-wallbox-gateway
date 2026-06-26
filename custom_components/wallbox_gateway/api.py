@@ -76,6 +76,26 @@ class GatewayClient:
         except TimeoutError as e:
             raise GatewayUnreachable(f"timeout on {path}") from e
 
+    async def post(self, path: str, timeout: float = 6.0) -> Any:
+        """POST with no body — for auth-only side-effect endpoints like
+        /api/reboot_gateway (which is POST so a stray browser GET can't fire it)."""
+        url = self._config.base_url + path
+        try:
+            async with self._session.post(
+                url,
+                auth=self._auth(),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise GatewayAuthError(f"{resp.status} on {path}")
+                if resp.status >= 400:
+                    raise GatewayError(f"{resp.status} on {path}")
+                return await resp.json(content_type=None)
+        except aiohttp.ClientConnectorError as e:
+            raise GatewayUnreachable(str(e)) from e
+        except TimeoutError as e:
+            raise GatewayUnreachable(f"timeout on {path}") from e
+
     async def bapi(self, met: str, par: str = "null", wait_ms: int = 5000) -> Any:
         """Invoke a BAPI method via /api/command. Returns the parsed JSON
         body — caller decides what to do with `r:` / `error:` fields.

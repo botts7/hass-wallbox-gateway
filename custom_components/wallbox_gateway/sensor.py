@@ -55,6 +55,9 @@ class GatewaySensorEntityDescription(SensorEntityDescription):
     # "meter": false and these go unavailable instead of showing 0 — mirrors
     # the dashboard hiding the voltage / house-power cells.
     requires_meter: bool = False
+    # Optional extra state attributes (e.g. the next-start sensor's status +
+    # human-readable reason alongside its timestamp value).
+    attrs_fn: Callable[[GatewayEntity], dict | None] | None = None
 
 
 # Disambiguated label for Wallbox status 4 when it's idle (gen == 0), not an
@@ -111,6 +114,36 @@ def _next_charge(entity: GatewayEntity) -> datetime | None:
     if not isinstance(epoch, (int, float)) or epoch <= 0:
         return None
     return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+def _assistant(entity: GatewayEntity):
+    """This entry's Charge Assistant controller (set up after the platforms),
+    or None if it isn't ready yet."""
+    try:
+        return (entity.hass.data.get(DOMAIN, {}).get("_assistants", {})
+                .get(entity.coordinator.entry.entry_id))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _next_charge_start(entity: GatewayEntity) -> datetime | None:
+    """When the Charge Assistant will next START charging (a future clock time),
+    or None when it's charging / due now / has no time-based plan."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    return a.next_start_estimate().get("time")
+
+
+def _next_charge_start_attrs(entity: GatewayEntity) -> dict | None:
+    """Status + human reason for the next-start sensor, so the UI can show a
+    friendly label ('Charging now', 'Ready to start', 'At target', …) even when
+    there's no future timestamp."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    est = a.next_start_estimate()
+    return {"status": est.get("state"), "reason": est.get("reason")}
 
 
 def _control_owner(entity: GatewayEntity) -> str | None:
@@ -631,6 +664,20 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_next_charge,
     ),
+    # ---- Charge Assistant: next start estimate -------------------------
+    # When the assistant will next START charging — so a just-in-time / cheap-
+    # window charge that's deliberately waiting doesn't look "broken". TIMESTAMP
+    # value when there's a future clock time; the `status` + `reason` attributes
+    # carry a friendly label for charging-now / due / at-target / solar / off.
+    GatewaySensorEntityDescription(
+        key="next_charge_start",
+        translation_key="next_charge_start",
+        name="Next charge start",
+        icon="mdi:clock-start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=_next_charge_start,
+        attrs_fn=_next_charge_start_attrs,
+    ),
     # ---- Charge-control owner (arbitration) ----------------------------
     # Who is allowed to autonomously drive charging (set on the gateway's
     # /config page). Diagnostic so the user can see why the Charge Assistant
@@ -728,3 +775,9 @@ class GatewaySensor(GatewayEntity, SensorEntity):
     @property
     def native_value(self) -> Any:
         return self.entity_description.value_fn(self)
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        if self.entity_description.attrs_fn is None:
+            return None
+        return self.entity_description.attrs_fn(self)

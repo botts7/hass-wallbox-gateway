@@ -360,6 +360,9 @@
       "next_scheduled_charge": {
         "name": "Next scheduled charge"
       },
+      "next_charge_start": {
+        "name": "Next charge start"
+      },
       "cost_week": {
         "name": "Charging cost (7 days)"
       },
@@ -408,6 +411,9 @@
       },
       "reboot_charger": {
         "name": "Reboot charger"
+      },
+      "reboot_gateway": {
+        "name": "Reboot gateway"
       }
     }
   },

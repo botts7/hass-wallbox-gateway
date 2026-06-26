@@ -347,7 +347,7 @@ def test_finish_charge_stops_and_verifies():
         ca._finish_charge(80.0, 80.0)
         assert calls == [False], f"finish should issue stop, got {calls}"
         assert ca._reached_target is True
-        assert ca._finishing is not None and sched.get("delay") == 10
+        assert ca._finishing is not None and sched.get("delay") == 18
         # build()'s _is_charging is False → verify confirms the stop took.
         sched["cb"](None)
         assert ca._finishing is None, "confirmed stop should clear finishing"
@@ -363,7 +363,9 @@ def test_finish_retries_when_stop_ignored():
     try:
         ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
                            C.CA_TARGET_PCT: 80}, {})
-        ca._is_charging = lambda: True          # charger keeps ignoring Stop
+        # Charger keeps ignoring Stop → live power stays high (finish-verify reads
+        # charger_realtime.cp, not just _is_charging, to ignore a ramp-down tail).
+        ca._coordinator().data["charger_realtime"] = {"cp": 7.0}
         ca._finish_charge(80.0, 80.0)
         assert calls == [False]
         sched["cb"](None); assert calls == [False, False]           # retry 2
@@ -371,6 +373,26 @@ def test_finish_retries_when_stop_ignored():
         sched["cb"](None)                                           # cap hit → give up
         assert ca._finishing is None
         assert calls == [False, False, False], f"no stops past the cap, got {calls}"
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_finish_ignores_rampdown_tail():
+    # A small ramp-down power tail (0.3 kW) after Stop must read as STOPPED, not
+    # "charger ignored the Stop" — otherwise it false-alarms (the user hit this).
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (sched.update(cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {})
+        ca._coordinator().data["charger_realtime"] = {"cp": 0.3}  # ramp-down tail
+        ca._finish_charge(80.0, 80.0)
+        assert calls == [False]
+        sched["cb"](None)                       # verify fires
+        assert ca._finishing is None, "ramp-down tail should count as stopped"
+        assert calls == [False], "must NOT retry a Stop that already took"
     finally:
         ca_mod.async_call_later = orig
 
@@ -484,6 +506,183 @@ def test_decode_native_schedule_shape():
     assert d["days"] == ["mon", "tue", "wed", "thu", "fri"]
     assert d["start"] and d["stop"]
     assert sch._decode_schedule("not a dict") is None
+
+
+# ── window GOVERNS: bound the charge by the cheap window ─────────────
+@case
+def test_window_jit_waits_early_in_window():
+    # In the cheap window but plenty of time before the window END → JIT waits
+    # (charge as late as possible within the cheap hours).
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+            C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(6),
+            C.CA_BATTERY_KWH: 80, C.CA_CHARGE_POWER_KW: 6.8}
+    ca, calls = build(opts, {"sensor.soc": FakeState("55")})
+    ca._eval_target()
+    assert calls == [], f"JIT should wait early in window, got {calls}"
+
+
+@case
+def test_window_jit_starts_when_late():
+    # Window end is only minutes away and target not reached → start now.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+            C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-5), C.CA_WINDOW_END: _hhmm(0.15),
+            C.CA_BATTERY_KWH: 80, C.CA_CHARGE_POWER_KW: 6.8}
+    ca, calls = build(opts, {"sensor.soc": FakeState("55")})
+    ca._eval_target()
+    assert calls == [True], f"late in window should start, got {calls}"
+
+
+@case
+def test_window_stops_when_outside_no_overrun():
+    # Charging but now OUTSIDE the window with overrun OFF → stop (bounded).
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (
+        sched.update(delay=delay, cb=cb) or (lambda: None))
+    try:
+        opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+                C.CA_WINDOW_ENABLED: True, C.CA_WINDOW_OVERRUN: False,
+                C.CA_WINDOW_START: _hhmm(2), C.CA_WINDOW_END: _hhmm(3)}
+        ca, calls = build(opts, {"sensor.soc": FakeState("60")})
+        ca._is_charging = lambda: True
+        ca._we_started = True
+        ca._eval_target()
+        assert calls == [False], f"outside window should stop, got {calls}"
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_window_overrun_keeps_charging_outside():
+    # Outside the window but overrun ON → keep charging to target.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+            C.CA_WINDOW_ENABLED: True, C.CA_WINDOW_OVERRUN: True,
+            C.CA_WINDOW_START: _hhmm(2), C.CA_WINDOW_END: _hhmm(3)}
+    ca, calls = build(opts, {"sensor.soc": FakeState("60")})
+    ca._is_charging = lambda: True
+    ca._we_started = True
+    ca._eval_target()
+    assert calls == [], f"overrun should keep charging, got {calls}"
+
+
+@case
+def test_departure_jit_no_window_still_starts():
+    # No window, departure set + late enough → JIT starts (unchanged path).
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 80, C.CA_DEPARTURE: _hhmm(0.2),
+            C.CA_BATTERY_KWH: 80, C.CA_CHARGE_POWER_KW: 6.8}
+    ca, calls = build(opts, {"sensor.soc": FakeState("55")})
+    ca._eval_target()
+    assert calls == [True], f"departure JIT (no window) should start, got {calls}"
+
+
+# ── start-verify watchdog: re-assert an Eco-Smart-re-queued charge ───
+@case
+def test_start_verify_reasserts_on_eco_requeue():
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (
+        sched.update(delay=delay, cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
+        ca._we_started = True
+        ca._is_charging = lambda: False        # charger re-queued it
+        ca._schedule_start_verify("test", 80.0)
+        assert ca._starting is not None and sched.get("delay") == 12
+        sched["cb"](None)                      # watchdog fires
+        assert calls == [True], f"should re-assert start, got {calls}"
+        assert ca._starting["attempts"] == 2
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_start_verify_clears_when_charging():
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (sched.update(cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
+        ca._we_started = True
+        ca._is_charging = lambda: True         # start held
+        ca._schedule_start_verify("test", 80.0)
+        sched["cb"](None)
+        assert ca._starting is None and calls == [], f"charging → no re-assert, got {calls}"
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_start_verify_gives_up_after_retries():
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (sched.update(cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
+        ca._we_started = True
+        ca._is_charging = lambda: False
+        ca._schedule_start_verify("test", 80.0)
+        sched["cb"](None)      # attempt 2 (re-assert)
+        sched["cb"](None)      # attempt 3 (re-assert)
+        sched["cb"](None)      # cap → give up
+        assert ca._starting is None
+        assert calls == [True, True], f"two re-asserts then give up, got {calls}"
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_start_verify_cancelled_by_finish():
+    # An intentional stop (finish) must cancel a pending re-assert.
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (sched.update(cb=cb) or (lambda: None))
+    try:
+        ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                           C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("80")})
+        ca._we_started = True
+        ca._schedule_start_verify("test", 80.0)
+        assert ca._starting is not None
+        ca._finish_charge(80.0, 80.0)          # stop supersedes the re-assert
+        assert ca._starting is None, "finish should cancel the start-verify"
+    finally:
+        ca_mod.async_call_later = orig
+
+
+# ── next-start estimate (display) ───────────────────────────────────
+@case
+def test_next_start_estimate_window_scheduled():
+    # Early in the window with an energy model → a future scheduled start time.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 80, C.CA_TARGET_AUTOSTART: True,
+            C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(6),
+            C.CA_BATTERY_KWH: 80, C.CA_CHARGE_POWER_KW: 6.8}
+    ca, _ = build(opts, {"sensor.soc": FakeState("55")})
+    est = ca.next_start_estimate()
+    assert est["state"] == "scheduled" and est["time"] is not None, est
+    assert "by" in est["reason"], est
+
+
+@case
+def test_next_start_estimate_charging_and_target_and_off():
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                   C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
+    ca._is_charging = lambda: True
+    assert ca.next_start_estimate()["state"] == "charging"
+    ca2, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                    C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("85")})
+    assert ca2.next_start_estimate()["state"] == "target_reached"
+    assert build({C.CA_MODE: C.MODE_OFF}, {})[0].next_start_estimate()["state"] == "off"
 
 
 def main():

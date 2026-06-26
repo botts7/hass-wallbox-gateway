@@ -405,6 +405,9 @@
       },
       "reboot_charger": {
         "name": "Reboot charger"
+      },
+      "reboot_gateway": {
+        "name": "Reboot gateway"
       }
     }
   },

@@ -4,12 +4,57 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b1] - 2026-06-27
+
+The cheap window now genuinely **bounds** a smart charge, and a forced start
+holds against Eco-Smart. Prompted by a live "80% by 8am" charge that quietly did
+nothing (departure just-in-time was waiting) and an earlier one that started then
+got re-queued by the charger's Solar-Only Eco-Smart.
+
+### Changed
+- **The charging window now GOVERNS grid charging.** Previously, setting a
+  departure time made the just-in-time logic *ignore* the window — so a
+  "00:00–06:00, ready by 08:00" setup would charge ~04:54–07:50, two hours into
+  peak. Now, when a window is enabled, the assistant charges *just-in-time to
+  finish by the window END*, **stops at the window end**, and only pushes
+  charging outside the cheap hours toward the departure deadline if you turn on
+  **overrun** ("keep charging past the window") and/or **pre-start**. The window
+  wins by default; the departure is the fallback, not the master.
+
+### Added
+- **Eco-Smart re-assert watchdog.** An owner-tagged start overrides the charger's
+  Solar-Only / schedule pause (like a manual start in the official app), but some
+  chargers re-queue it a beat later when there's no solar at night. The assistant
+  now verifies the start actually held and re-asserts it (clearing the sticky
+  Eco/schedule pause first) a few times before warning you — so a night grid
+  charge sticks without you having to disable Eco-Smart.
+- **`sensor.<name>_next_charge_start`** — a TIMESTAMP sensor showing *when* the
+  assistant will next start charging, with `status` + `reason` attributes
+  (charging now / at target / ready to start / when there's solar / off). So a
+  just-in-time charge that's deliberately waiting reads as "starts ~03:54 to
+  reach 80% by 06:00" instead of looking broken.
+
+### Fixed
+- **False "charger didn't accept Stop" alert at target.** The finish-verify
+  checked too soon: after a Stop the charge power ramps down over several seconds
+  and the coordinator only polls ~10s, so a normal stop still *looked* like
+  charging and the verify warned even though it stopped. Now it requests a fresh
+  reading, waits longer than a poll cycle (18s), and only treats a clearly-
+  significant charge power (> 1 kW) as "ignored the Stop" — so a ramp-down tail /
+  poll lag no longer false-alarms, while a charger that genuinely drops a Stop is
+  still caught and retried.
+
 ## [0.17.0] - 2026-06-24
 
 Forced grid charge with a clean hand-back to Solar/schedule — validated live on
 a Pulsar Max.
 
 ### Added
+- **`button.reboot_gateway`** — reboots the ESP32 gateway itself (the v0.2
+  deferred item). Uses the firmware's new auth-only `POST /api/reboot_gateway`
+  (no CSRF), so the stateless integration can call it; the CSRF-gated
+  `/api/reboot` stays for the gateway's own web UI. Needs gateway firmware with
+  the endpoint (v3.2.0-beta.8+).
 - **Auto-start grace period** (`autostart_grace_min`, default 0 = off). When set,
   the assistant first sends *"Charging will start in N min — tap Not now / Start
   now"* and only begins after the countdown, so you can override. The countdown
