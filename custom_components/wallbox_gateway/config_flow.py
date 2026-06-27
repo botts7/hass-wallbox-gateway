@@ -65,6 +65,7 @@ from .const import (
     CA_SURPLUS_ENTITY,
     CA_SURPLUS_START,
     CA_SURPLUS_STOP,
+    CA_SOLAR_MAX_SOC,
     CA_TRIP_TARGET,
     CA_TRIP_UNTIL,
     CA_AUTOSTART_GRACE_MIN,
@@ -598,6 +599,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                     selector.EntitySelectorConfig(domain="sensor", device_class="battery")
                 ),
                 vol.Required(CA_TARGET_PCT, default=cur.get(CA_TARGET_PCT, 80)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=100, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER)
+                ),
+                # The target caps GRID top-up; free solar keeps charging past it
+                # up to this ceiling (default 100% — grab all available surplus).
+                vol.Optional(CA_SOLAR_MAX_SOC, default=cur.get(CA_SOLAR_MAX_SOC, 100)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=100, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER)
                 ),
                 vol.Optional(CA_DEPARTURE, default=cur.get(CA_DEPARTURE, vol.UNDEFINED)): selector.TimeSelector(),
