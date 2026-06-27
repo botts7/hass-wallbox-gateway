@@ -85,6 +85,7 @@ from .const import (
     CA_SURPLUS_SOURCE,
     CA_SURPLUS_START,
     CA_SURPLUS_STOP,
+    CA_SOLAR_MAX_SOC,
     CA_TAP_PATH,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -1005,6 +1006,14 @@ class ChargeAssistant:
             self._we_started = True
         self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
 
+    def _stop_and_handback(self) -> None:
+        """Stop our charge AND clear any lingering Eco/schedule pause so the
+        charger's own Solar + schedule control resumes. Used by the continuously-
+        managing modes (solar / smart+solar): when we stop, we're yielding, so we
+        must not leave the charger paused (which would block native solar too)."""
+        self._set_charging(False)
+        self.hass.async_create_task(self._resume_if_paused())
+
     async def _send_command(self, coord, action: str, value=None) -> None:
         # All charge control goes through the ChargerControl adapter — the seam
         # for supporting non-Wallbox chargers (see charger_control.py).
@@ -1291,10 +1300,12 @@ class ChargeAssistant:
             return
         if not self._finish_still_charging():
             # Confirmed stopped — now it's safe to hand control back + notify.
+            # Always clear a lingering Eco/schedule pause (idempotent — no-op if
+            # not paused) so we never leave the charger stuck unable to run its
+            # own Solar/schedules, even for a manual-but-owner charge.
             self._finishing = None
-            if self._managed:
-                self._managed = False
-                self.hass.async_create_task(self._resume_if_paused())
+            self._managed = False
+            self.hass.async_create_task(self._resume_if_paused())
             self.hass.async_create_task(self._send_notification("target", message_override=(
                 f.get("message") or f"Charged to {f['soc']:.0f}% (target {f['target']:.0f}%)."
             )))
@@ -1404,6 +1415,16 @@ class ChargeAssistant:
         if src == "solar_load":
             return bool(self._opts.get(CA_SOLAR_ENTITY) and self._opts.get(CA_LOAD_ENTITY))
         return bool(self._opts.get(CA_SURPLUS_ENTITY))
+
+    def _solar_ceiling(self) -> float:
+        """Absolute SOC ceiling for FREE solar charging. The SOC target only caps
+        grid top-up; solar keeps filling beyond it up to this cap so we never
+        waste surplus. Defaults to 100% (grab all available solar)."""
+        try:
+            v = self._opts.get(CA_SOLAR_MAX_SOC)
+            return float(v) if v not in (None, "") else 100.0
+        except (TypeError, ValueError):
+            return 100.0
 
     def _to_watts(self, value: float | None) -> float | None:
         """Normalise a value in the surplus source's units to watts. Uses the
@@ -1554,7 +1575,7 @@ class ChargeAssistant:
                 self._deficit_since = now
             if charging and held(self._deficit_since):
                 _LOGGER.info("Charge Assistant: solar surplus %.2f below %.2f — stopping", surplus, stop_at)
-                self._set_charging(False)
+                self._stop_and_handback()   # hand back so native Solar/schedules resume
                 self._deficit_since = None
                 self.hass.async_create_task(self._send_notification("solar", message_override=(
                     f"Solar charging paused — surplus dropped to {surplus:.2f}."
@@ -1673,29 +1694,49 @@ class ChargeAssistant:
         target = self._target_pct()
         charging = self._is_charging()
 
-        # Cap reached — stop only our own charge, and re-arm the cost warning.
-        if soc is not None and soc >= target:
-            self._cost_warned = False
-            if charging and self._we_started:
-                _LOGGER.info("Charge Assistant: smart+solar reached %.0f%% — stopping", soc)
-                self._set_charging(False)
-                self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
-                    f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
-                )))
-            return
-        if self._plugged_in() is not True:
-            return
-
-        # Solar is free → charge whenever surplus is available, ignoring the
-        # window. Grid top-up is gated by the cheap window (with pre-start /
-        # overrun for the departure deadline).
+        # Solar availability up-front: the SOC target caps GRID top-up, but free
+        # solar should keep filling the battery past it — so we need to know
+        # whether there's surplus before deciding the target is "reached".
         surplus = self._surplus_value()
         try:
             start_at = float(self._opts.get(CA_SURPLUS_START, 1.4) or 0)
         except (TypeError, ValueError):
             start_at = 0.0
         have_solar = surplus is not None and surplus >= start_at
+        plugged = self._plugged_in() is True
 
+        # At/above the grid target: don't waste free solar. Keep charging from
+        # surplus up to the (higher) solar ceiling; only stop when it's grid, or
+        # the surplus is gone, or we've hit the absolute solar cap.
+        if soc is not None and soc >= target:
+            ceiling = self._solar_ceiling()
+            if have_solar and plugged and soc < ceiling:
+                if not charging:
+                    _LOGGER.info(
+                        "Charge Assistant: smart+solar — above target %.0f%% but solar surplus, grabbing it",
+                        soc,
+                    )
+                    self._set_charging(True)
+                    self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
+                        f"Charging from spare solar above your {target:.0f}% target (now {soc:.0f}%)."
+                    )))
+                self._eval_dynamic_current(self._is_charging())
+                return
+            # No spare solar (or at the solar cap) → enforce the grid target.
+            self._cost_warned = False
+            if charging and self._we_started:
+                _LOGGER.info("Charge Assistant: smart+solar reached %.0f%% — stopping (no spare solar)", soc)
+                self._stop_and_handback()   # hand back so native Solar/schedules resume
+                self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
+                    f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
+                )))
+            return
+        if not plugged:
+            return
+
+        # Below target — solar is free (charge on any surplus, ignoring the
+        # window); grid top-up is gated by the cheap window (with pre-start /
+        # overrun for the departure deadline).
         decision = self._window_decision(soc, target)
         grid_ok = decision["allow_charge"] and not self._price_blocks()
         want = have_solar or grid_ok
@@ -1715,7 +1756,7 @@ class ChargeAssistant:
                 self._maybe_cost_warn(decision, target)
         elif charging and self._we_started:
             _LOGGER.info("Charge Assistant: smart+solar — no surplus and outside window, pausing")
-            self._set_charging(False)
+            self._stop_and_handback()   # hand back so native Solar/schedules resume
         if decision.get("in_window"):
             self._cost_warned = False
 

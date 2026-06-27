@@ -213,6 +213,52 @@ def test_smart_solar_grid_allowed_inside_window():
 
 
 @case
+def test_smart_solar_charges_above_target_on_solar():
+    # Above the SOC target but solar surplus available → keep grabbing free solar
+    # (the target only caps GRID top-up, never free solar).
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0}
+    ca, calls = build(opts, {"sensor.soc": FakeState("85"), "sensor.surplus": FakeState("2000")})
+    ca._eval_smart_solar()
+    assert calls == [True], f"solar should charge past target, got {calls}"
+
+
+@case
+def test_smart_solar_stops_above_target_without_solar():
+    # Above target with no surplus → stop the (grid) charge.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0}
+    ca, calls = build(opts, {"sensor.soc": FakeState("85"), "sensor.surplus": FakeState("0")})
+    ca._is_charging = lambda: True
+    ca._we_started = True
+    ca._eval_smart_solar()
+    assert calls == [False], f"no solar above target should stop, got {calls}"
+
+
+@case
+def test_smart_solar_stops_at_solar_ceiling():
+    # At the solar ceiling (default 100%) even surplus stops it — battery full.
+    opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0}
+    ca, calls = build(opts, {"sensor.soc": FakeState("100"), "sensor.surplus": FakeState("2000")})
+    ca._is_charging = lambda: True
+    ca._we_started = True
+    ca._eval_smart_solar()
+    assert calls == [False], f"at solar ceiling should stop, got {calls}"
+
+
+@case
+def test_solar_ceiling_default_and_custom():
+    ca, _ = build({}, {})
+    assert ca._solar_ceiling() == 100.0
+    ca._opts[C.CA_SOLAR_MAX_SOC] = 90
+    assert ca._solar_ceiling() == 90.0
+
+
+@case
 def test_window_prestart_for_departure():
     # Outside the window, but departure is close and we need more time than
     # remains → pre-start (and flag the pricier charge).

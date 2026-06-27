@@ -102,6 +102,10 @@ CA_SURPLUS_ENTITY = "surplus_entity"
 CA_SURPLUS_START = "surplus_start"          # start charging at/above this
 CA_SURPLUS_STOP = "surplus_stop"            # stop charging at/below this
 CA_SURPLUS_DEBOUNCE = "surplus_debounce_min"  # must hold this long before acting
+# Free solar should keep filling the battery PAST the (grid) SOC target — the
+# target only caps grid top-up. This is the absolute ceiling for solar charging
+# (default 100% = grab all available surplus).
+CA_SOLAR_MAX_SOC = "solar_max_soc"
 
 # ---- Dynamic current control (Phase 2) ----
 # Shared current bounds the assistant stays within when it sets the charge

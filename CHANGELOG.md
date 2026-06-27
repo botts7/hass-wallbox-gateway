@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b2] - 2026-06-27
+
+### Changed
+- **Smart + Solar no longer caps free solar at the SOC target.** The SOC target
+  now only stops *grid* top-up — when there's solar surplus the assistant keeps
+  charging past the target (grabbing all the free energy), up to a solar ceiling
+  (`solar_max_soc`, default 100%). Previously it stopped dead at 80% even with
+  the sun pouring in, wasting surplus.
+
+### Fixed
+- **Hand back on stop.** When the Solar / Smart-Solar modes stop a charge (target
+  reached, surplus gone), and when a target charge finishes, the assistant now
+  clears any lingering Eco/schedule pause so the charger's own Solar + schedule
+  control resumes — it no longer leaves the charger stuck "paused" and unable to
+  charge from solar on its own.
+
 ## [0.18.0b1] - 2026-06-27
 
 The cheap window now genuinely **bounds** a smart charge, and a forced start
