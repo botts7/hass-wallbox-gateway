@@ -146,6 +146,27 @@ def _next_charge_start_attrs(entity: GatewayEntity) -> dict | None:
     return {"status": est.get("state"), "reason": est.get("reason")}
 
 
+def _daily_use_avg(entity: GatewayEntity) -> float | None:
+    """Learned average daily energy use (kWh/day) from the charge-log — the basis
+    for the commute-based adaptive target."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    v = a._avg_daily_use_kwh()
+    return round(v, 2) if v is not None else None
+
+
+def _commute_target(entity: GatewayEntity) -> float | None:
+    """The adaptive charge target (%) the commute feature would charge to
+    (reserve + learned use + margin, capped). Shown even when commute mode is off,
+    as advice."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    v = a._commute_target()
+    return round(v) if v is not None else None
+
+
 def _control_owner(entity: GatewayEntity) -> str | None:
     # Charge-control arbitration: who may autonomously drive charging.
     o = entity._status().get("control_owner")
@@ -677,6 +698,26 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_next_charge_start,
         attrs_fn=_next_charge_start_attrs,
+    ),
+    # ---- Commute-based adaptive target (learned daily use) -------------
+    GatewaySensorEntityDescription(
+        key="daily_use_avg",
+        translation_key="daily_use_avg",
+        name="Daily use (average)",
+        icon="mdi:car-electric",
+        native_unit_of_measurement="kWh",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=_daily_use_avg,
+    ),
+    GatewaySensorEntityDescription(
+        key="commute_target",
+        translation_key="commute_target",
+        name="Commute charge target",
+        icon="mdi:battery-charging-medium",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=_commute_target,
     ),
     # ---- Charge-control owner (arbitration) ----------------------------
     # Who is allowed to autonomously drive charging (set on the gateway's

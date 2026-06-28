@@ -363,6 +363,12 @@
       "next_charge_start": {
         "name": "Next charge start"
       },
+      "daily_use_avg": {
+        "name": "Daily use (average)"
+      },
+      "commute_target": {
+        "name": "Commute charge target"
+      },
       "cost_week": {
         "name": "Charging cost (7 days)"
       },

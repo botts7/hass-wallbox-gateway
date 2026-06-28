@@ -4,6 +4,23 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b7] - 2026-06-28
+
+### Added
+- **Commute-based adaptive target.** Turn it on under the Target-charge mode and
+  the assistant learns how much you actually drive — from the firmware's real
+  charge-log (energy added per day ≈ energy driven) — and sizes the SOC target to
+  it automatically: `reserve + avg_daily_use × cover_days + margin`, clamped to
+  `[30%, your everyday target]`. An overnight cheap-window charge then tops up
+  just enough for the commute (plus a margin) instead of always filling to a
+  fixed number. Tunables (all optional): floor (`commute_reserve_pct`, default
+  20), margin (`commute_margin_pct`, default 10), days-to-cover
+  (`commute_cover_days`, default 1) and the learning window
+  (`commute_window_days`, default 7).
+- Two new sensors: **Daily use (average)** (kWh/day, learned) and **Commute
+  charge target** (%, what it would charge to) — shown even when commute mode is
+  off, as advice.
+
 ## [0.18.0b6] - 2026-06-28
 
 ### Added

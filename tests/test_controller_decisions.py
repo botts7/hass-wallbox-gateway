@@ -814,6 +814,41 @@ def test_auto_resume_skips():
         "disabled via option → no resume"
 
 
+# ── commute-based adaptive target ───────────────────────────────────
+@case
+def test_commute_avg_use_and_target():
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80,
+            C.CA_COMMUTE_ENABLED: True, C.CA_COMMUTE_RESERVE: 20,
+            C.CA_COMMUTE_MARGIN: 10, C.CA_COMMUTE_COVER_DAYS: 1,
+            C.CA_COMMUTE_WINDOW_DAYS: 7, C.CA_SOC_ENTITY: "sensor.soc"}
+    ca, _ = build(opts, {"sensor.soc": FakeState("50")})
+    now = dt_util.utcnow().timestamp()
+    ca._coordinator().data["charge_log"] = [
+        {"start": now - 1 * 86400, "wh": 16000},
+        {"start": now - 2 * 86400, "wh": 16000},
+        {"start": now - 4 * 86400, "wh": 32000},
+        {"start": now - 6 * 86400, "wh": 16000},     # 80 kWh over a ~6-day span
+    ]
+    avg = ca._avg_daily_use_kwh()
+    assert avg is not None and 12 < avg < 15, f"~13.3 kWh/day expected, got {avg}"
+    t = ca._commute_target()                          # 20 + 16.7 + 10 ≈ 46.7
+    assert t is not None and 42 < t < 52, t
+    assert abs(ca._target_pct() - t) < 0.01, "commute target flows into _target_pct"
+
+
+@case
+def test_commute_target_capped_disabled_and_nodata():
+    ca, _ = build({C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80, C.CA_COMMUTE_ENABLED: True}, {})
+    now = dt_util.utcnow().timestamp()
+    ca._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 70000}]  # 70 kWh/day
+    assert ca._commute_target() == 80.0, "huge use clamps to the configured cap"
+    ca._opts[C.CA_COMMUTE_ENABLED] = False
+    assert ca._target_pct() == 80.0, "disabled → fixed target"
+    ca2, _ = build({C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80, C.CA_COMMUTE_ENABLED: True}, {})
+    ca2._coordinator().data["charge_log"] = []
+    assert ca2._commute_target() is None and ca2._target_pct() == 80, "no data → fixed target"
+
+
 def main():
     if not _HA_OK:
         return

@@ -87,6 +87,11 @@ from .const import (
     CA_SURPLUS_START,
     CA_SURPLUS_STOP,
     CA_SOLAR_MAX_SOC,
+    CA_COMMUTE_ENABLED,
+    CA_COMMUTE_RESERVE,
+    CA_COMMUTE_MARGIN,
+    CA_COMMUTE_COVER_DAYS,
+    CA_COMMUTE_WINDOW_DAYS,
     CA_TAP_PATH,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -982,13 +987,72 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     def _target_pct(self) -> float:
         """The active SOC target: the everyday care target, raised to the trip
-        target only until the trip deadline (auto-reverts by time)."""
+        target only until the trip deadline (auto-reverts by time). When commute
+        mode is on, the everyday target is replaced by the learned adaptive
+        target (still capped at CA_TARGET_PCT and overridable by a trip)."""
+        base = self._opts.get(CA_TARGET_PCT, 80)
+        if self._opts.get(CA_COMMUTE_ENABLED):
+            ct = self._commute_target()
+            if ct is not None:
+                base = ct
         return effective_target(
-            self._opts.get(CA_TARGET_PCT, 80),
+            base,
             self._opts.get(CA_TRIP_TARGET),
             self._parse_dt_local(self._opts.get(CA_TRIP_UNTIL)),
             dt_util.utcnow(),
         )
+
+    # ------------------------------------------------------------------
+    # Commute-based adaptive target — learn daily use, charge just enough
+    # ------------------------------------------------------------------
+    def _avg_daily_use_kwh(self) -> float | None:
+        """Average daily energy use, learned from the firmware charge-log (energy
+        added per day ≈ energy driven). Averaged over the rolling learning window,
+        using the actual data span so it's sensible before a full window of data
+        has accrued. None until there's any charge logged."""
+        coord = self._coordinator()
+        if coord is None or not getattr(coord, "data", None):
+            return None
+        log = coord.data.get("charge_log") or []
+        if not log:
+            return None
+        window = int(self._read_float_opt(CA_COMMUTE_WINDOW_DAYS) or 7)
+        window = max(1, min(window, 60))
+        now = dt_util.utcnow().timestamp()
+        cutoff = now - window * 86400
+        in_win = [iv for iv in log if (iv.get("start") or 0) >= cutoff and (iv.get("wh") or 0) > 0]
+        total_wh = sum((iv.get("wh") or 0) for iv in in_win)
+        if total_wh <= 0:
+            return None
+        earliest = min(iv["start"] for iv in in_win)
+        span_days = max(1.0, min(float(window), (now - earliest) / 86400.0))
+        return (total_wh / 1000.0) / span_days
+
+    def _commute_target(self) -> float | None:
+        """Adaptive target SOC% from learned use: reserve + avg_use×cover + margin,
+        clamped to [30%, CA_TARGET_PCT]. None without enough data / battery size."""
+        use_kwh = self._avg_daily_use_kwh()
+        if use_kwh is None:
+            return None
+        try:
+            batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
+        except (TypeError, ValueError):
+            return None
+        if batt <= 0:
+            return None
+        use_pct = use_kwh / batt * 100.0
+        reserve = self._read_float_opt(CA_COMMUTE_RESERVE)
+        margin = self._read_float_opt(CA_COMMUTE_MARGIN)
+        cover = self._read_float_opt(CA_COMMUTE_COVER_DAYS)
+        reserve = 20.0 if reserve is None else reserve
+        margin = 10.0 if margin is None else margin
+        cover = 1.0 if cover is None else max(0.5, cover)
+        try:
+            cap = float(self._opts.get(CA_TARGET_PCT, 80) or 80)
+        except (TypeError, ValueError):
+            cap = 80.0
+        target = reserve + use_pct * cover + margin
+        return max(30.0, min(cap, target))
 
     def _price_blocks(self) -> bool:
         """True when a price cap is set and the current price exceeds it. The

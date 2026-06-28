@@ -46,6 +46,11 @@ from .const import (
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
     CA_CHEAPEST,
+    CA_COMMUTE_ENABLED,
+    CA_COMMUTE_RESERVE,
+    CA_COMMUTE_MARGIN,
+    CA_COMMUTE_COVER_DAYS,
+    CA_COMMUTE_WINDOW_DAYS,
     CA_DEPARTURE,
     CA_GRID_ENTITY,
     CA_GRID_EXPORT_NEGATIVE,
@@ -727,6 +732,44 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=0, step=0.01, mode=selector.NumberSelectorMode.BOX
+                    )
+                ),
+                # Commute-based adaptive target — learn daily use from charge
+                # history and size the target to it (capped at CA_TARGET_PCT).
+                vol.Optional(
+                    CA_COMMUTE_ENABLED, default=cur.get(CA_COMMUTE_ENABLED, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_COMMUTE_RESERVE, default=cur.get(CA_COMMUTE_RESERVE, 20)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=100, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_COMMUTE_MARGIN, default=cur.get(CA_COMMUTE_MARGIN, 10)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=100, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_COMMUTE_COVER_DAYS, default=cur.get(CA_COMMUTE_COVER_DAYS, 1)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=14, step=1, unit_of_measurement="days",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_COMMUTE_WINDOW_DAYS,
+                    default=cur.get(CA_COMMUTE_WINDOW_DAYS, 7),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=60, step=1, unit_of_measurement="days",
+                        mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
                 vol.Optional(

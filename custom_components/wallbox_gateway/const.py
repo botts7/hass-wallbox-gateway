@@ -113,6 +113,18 @@ CA_SURPLUS_DEBOUNCE = "surplus_debounce_min"  # must hold this long before actin
 # (default 100% = grab all available surplus).
 CA_SOLAR_MAX_SOC = "solar_max_soc"
 
+# ---- Commute-based adaptive target ----
+# Learn average daily consumption (from the firmware charge-log: energy added per
+# day ≈ energy used) and charge only as much as tomorrow needs + a reserve, in the
+# cheap window. Replaces the fixed target with target = reserve + avg_use*cover +
+# margin, clamped to [30%, CA_TARGET_PCT]. So you always have enough without
+# topping to 80% every night (saves cost + battery wear).
+CA_COMMUTE_ENABLED = "commute_enabled"       # bool — use the adaptive target
+CA_COMMUTE_RESERVE = "commute_reserve_pct"   # SOC floor to always keep (default 20)
+CA_COMMUTE_MARGIN = "commute_margin_pct"     # buffer over the average (default 10)
+CA_COMMUTE_COVER_DAYS = "commute_cover_days"  # days of use to cover per charge (default 1)
+CA_COMMUTE_WINDOW_DAYS = "commute_window_days"  # rolling learning window (default 7)
+
 # ---- Dynamic current control (Phase 2) ----
 # Shared current bounds the assistant stays within when it sets the charge
 # current. The gateway clamps to 6-32 A regardless; these let the user narrow
