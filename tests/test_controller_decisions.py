@@ -1017,6 +1017,27 @@ def test_identity_soc_rise_wins_over_urgency():
 
 
 @case
+def test_identity_per_tick_soc_rise_confirms_and_unplug_resets():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd"},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla"},
+    ]
+    states = {"sensor.byd": FakeState("50"), "sensor.tesla": FakeState("53")}
+    ca, _ = build({C.CA_CARS: cars}, states)
+    ca._plugged_was = True            # already plugged (no edge), still a guess
+    ca._identity_confirmed = False
+    ca._plug_soc = {"BYD": 50.0, "Tesla": 50.0}    # Tesla +3 since plug-in
+    ca._maybe_identity()              # per-tick SOC-rise should confirm Tesla
+    assert ca._identity_confirmed is True
+    assert ca._active_car().get(C.CA_CAR_NAME) == "Tesla"
+    # Unplug from an unconfirmed state resets to confident (sticky car).
+    ca._identity_confirmed = False
+    ca._plugged_in = lambda: False
+    ca._maybe_identity()
+    assert ca._identity_confirmed is True, "unplug resets identity confidence"
+
+
+@case
 def test_identity_single_car_is_noop():
     ca, _ = build({C.CA_BATTERY_KWH: 80, C.CA_SOC_ENTITY: "sensor.soc"},
                   {"sensor.soc": FakeState("50")})

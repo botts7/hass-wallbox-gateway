@@ -1197,10 +1197,12 @@ class ChargeAssistant:
                 val = await self._compute_history_daily_kwh(car)
                 if val is not None:
                     self._learned_daily_kwh[self._car_key(car)] = val
-            self._learned_at = dt_util.utcnow()
         except Exception as err:  # recorder missing / entity not recorded — degrade gracefully
             _LOGGER.debug("Charge Assistant: commute learner history read failed: %s", err)
         finally:
+            # Stamp even on failure so the 1h throttle still applies — otherwise a
+            # recorder error would re-dispatch this read on every coordinator tick.
+            self._learned_at = dt_util.utcnow()
             self._learning = False
 
     async def _history(self, entity_id: str, start: datetime) -> list:
@@ -1341,7 +1343,6 @@ class ChargeAssistant:
     # Multi-vehicle identity — which car is on the cable (confirm-on-plug)
     # ------------------------------------------------------------------
     _IDENTITY_PROMPT_DELAY = 20          # s after plug before the "which car?" prompt
-    _SOC_RISE_RECHECK = timedelta(minutes=4)   # later: whichever car's SOC rose is it
     _SOC_RISE_PCT = 1.0                  # min SOC gain to count as "this one's charging"
 
     def _maybe_identity(self) -> None:
@@ -1355,8 +1356,18 @@ class ChargeAssistant:
         self._plugged_was = plugged
         if plugged is True and was is False:        # a car was just plugged in
             self._on_plug_in()
-        elif plugged is False and was is True:       # unplugged — drop any pending prompt
+        elif plugged is False and was is True:       # unplugged
             self._cancel_identity()
+            self._identity_confirmed = True          # back to confident (sticky car)
+        # Keep watching the SOC-rise every tick while a guess is in play — the car
+        # actually taking charge reveals itself, however slowly. This auto-confirms
+        # without a single-shot window (a slow/big-battery car would otherwise stay
+        # "uncertain" all session and be stuck on the conservative cap).
+        if plugged is True and not self._identity_confirmed:
+            risen = self._soc_risen_cars()
+            if risen:
+                self._set_active_car(risen[0][1].get(CA_CAR_NAME), "SOC-rise auto-confirm")
+                self._identity_confirmed = True
 
     def _on_plug_in(self) -> None:
         self._identity_confirmed = False     # a guess until confirmed / SOC-rise
@@ -1417,23 +1428,13 @@ class ChargeAssistant:
         _LOGGER.info("Charge Assistant: active vehicle → %s (%s)", name, reason)
 
     async def _fire_identity_prompt(self) -> None:
+        # One-shot user prompt. SOC-rise auto-confirm is handled per-tick in
+        # _maybe_identity, so there's no follow-up timer to leak here.
         self._identity_unsub = None
         guess = self._guess_active_car()             # refine now charging may have begun
         if guess:
             self._set_active_car(guess, "guess refined")
         await self._send_identity_prompt(guess)
-        # auto-confirm by physics: if the user doesn't reply, the SOC-rise wins
-        self._identity_unsub = async_call_later(
-            self.hass, self._SOC_RISE_RECHECK.total_seconds(),
-            lambda _now: self._recheck_soc_rise(),
-        )
-
-    def _recheck_soc_rise(self) -> None:
-        self._identity_unsub = None
-        risen = self._soc_risen_cars()
-        if risen:
-            self._set_active_car(risen[0][1].get(CA_CAR_NAME), "SOC-rise auto-confirm")
-            self._identity_confirmed = True   # the charging car has revealed itself
 
     def _notify_services(self) -> list[str]:
         raw = self._opts.get(CA_NOTIFY_SERVICE) or self._rem.get(CA_NOTIFY_SERVICE) or ""

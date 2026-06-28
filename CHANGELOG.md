@@ -4,6 +4,18 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b15] - 2026-06-28
+
+### Fixed
+- **Multi-car identity: SOC-rise auto-confirm now runs every coordinator tick**
+  instead of a single 4-minute check. A slow / big-battery car (where SOC hadn't
+  risen ≥1% by the 4-min mark) no longer gets stuck "uncertain" and capped at the
+  conservative target for the whole session — it confirms as soon as its SOC rises.
+- **Identity confidence resets to confident on unplug** (was left "uncertain", so
+  a between-sessions manual charge on the sticky car could wrongly hit the cap).
+- **Commute learner: stamp the 1-hour throttle even when a recorder read fails**,
+  so a recorder error can't re-dispatch the history read every tick.
+
 ## [0.18.0b14] - 2026-06-28
 
 ### Added
