@@ -18,6 +18,12 @@ DEFAULT_POLL_INTERVAL = 10  # seconds
 # docs/design/guided-charge-assistant.md. Phase 1 = Reminder mode.
 CA_KEY = "charge_assistant"
 CA_MODE = "mode"
+# Auto-resume Eco-Smart / native schedule after a manual charge. A manual/owner
+# start pauses Eco-Smart (r_dat.gen != 0). When the charge later stops and the
+# charger is left paused + idle, clear the override (action=resume) so the
+# charger's own Solar + schedule loops take back over. Top-level option (applies
+# in every mode, incl. off); default ON.
+CA_AUTO_RESUME = "auto_resume_eco"
 MODE_OFF = "off"
 MODE_REMINDER = "reminder"
 MODE_TARGET = "target_soc"    # Phase 2: charge to a target % then stop

@@ -18,7 +18,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ClientConfig, GatewayClient
 from .charge_assistant import ChargeAssistant
-from .const import CA_KEY, CONF_POLL_INTERVAL, DEFAULT_USERNAME, DOMAIN
+from .const import CA_AUTO_RESUME, CA_KEY, CONF_POLL_INTERVAL, DEFAULT_USERNAME, DOMAIN
 from .coordinator import GatewayCoordinator
 from .schedule import async_setup_schedule_services
 
@@ -116,6 +116,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         clean[key] = val
                     else:
                         _LOGGER.warning("set_config: ignoring %s (expected an object)", key)
+                elif key == CA_AUTO_RESUME:
+                    clean[key] = bool(val)
                 else:
                     _LOGGER.warning("set_config: ignoring unknown option key %r", key)
             if not clean:

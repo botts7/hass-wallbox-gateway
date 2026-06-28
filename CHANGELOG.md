@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b6] - 2026-06-28
+
+### Added
+- **Auto-resume Eco-Smart / native schedule after a manual charge** (on by
+  default; opt-out in the add-on's Integration settings). A manual/owner start
+  pauses Eco-Smart (`gen != 0`); when the charge then stops and the charger is
+  left paused + idle, the integration clears the override (`action=resume`) so the
+  charger's own Solar + schedule loops take back over — no need to tap "Resume
+  schedule". Only runs when the integration isn't the active controller, debounced
+  ~3 min and rate-limited so it never spams. New top-level option `auto_resume_eco`.
+
 ## [0.18.0b5] - 2026-06-27
 
 ### Fixed

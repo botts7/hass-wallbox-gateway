@@ -783,6 +783,37 @@ def test_maybe_remind_respects_home_gate():
     assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "home → nudge"
 
 
+# ── auto-resume Eco-Smart/schedule after a manual charge ────────────
+@case
+def test_auto_resume_when_paused_and_idle():
+    ca, _ = build({C.CA_MODE: C.MODE_OFF}, {})
+    ca._coordinator().data["raw_status"] = {"control_owner": "integration", "gen": 1}  # paused
+    ca._is_charging = lambda: False
+    ca._maybe_auto_resume(False)                  # 1st tick just arms the timer
+    assert ca._auto_resume_since is not None and ca._auto_resume_last is None
+    ca._auto_resume_since = dt_util.utcnow() - timedelta(minutes=5)  # delay elapsed
+    ca._maybe_auto_resume(False)
+    assert ca._auto_resume_last is not None, "paused+idle past the delay should resume"
+
+
+@case
+def test_auto_resume_skips():
+    def armed(opts, gen, charging, controlling, optsroot=None):
+        ca, _ = build(opts, {})
+        if optsroot is not None:
+            ca.entry.options = optsroot
+        ca._coordinator().data["raw_status"] = {"gen": gen}
+        ca._is_charging = lambda: charging
+        ca._auto_resume_since = dt_util.utcnow() - timedelta(minutes=5)
+        ca._maybe_auto_resume(controlling)
+        return ca._auto_resume_last
+    assert armed({}, 0, False, False) is None, "not paused → no resume"
+    assert armed({}, 1, True, False) is None, "charging → no resume"
+    assert armed({}, 1, False, True) is None, "we're the controller → no resume"
+    assert armed({}, 1, False, False, optsroot={C.CA_KEY: {}, C.CA_AUTO_RESUME: False}) is None, \
+        "disabled via option → no resume"
+
+
 def main():
     if not _HA_OK:
         return

@@ -43,6 +43,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CA_ACTIONABLE,
     CA_ARRIVAL_ENTITY,
+    CA_AUTO_RESUME,
     CA_CHARGE_SWITCH,
     CA_ESCALATE_MIN,
     CA_KEY,
@@ -132,6 +133,11 @@ _SNOOZE_MINUTES = 60
 # (clouds), nudge at most once per this window. The notification's Skip button
 # still dismisses it for the rest of the day.
 _SOLAR_REMIND_COOLDOWN = timedelta(hours=4)
+# Auto-resume Eco-Smart/schedule: how long the charger must sit paused + idle (a
+# stopped manual charge) before we clear the override, and the minimum gap
+# between resume attempts so a resume that doesn't immediately take isn't spammed.
+_AUTO_RESUME_DELAY = timedelta(minutes=3)
+_AUTO_RESUME_COOLDOWN = timedelta(minutes=10)
 # Target-SOC auto-start deadband: once we've stopped at target, don't auto-
 # restart until SOC has fallen this far below target (prevents flapping at the
 # cap). Only applies AFTER reaching target this session — a fresh plug-in below
@@ -194,6 +200,10 @@ class ChargeAssistant:
         # Suppression windows set by the Snooze / Skip notification actions.
         self._suppress_until: datetime | None = None
         self._escalations_left = 0
+        # Auto-resume Eco-Smart/schedule: when the paused-and-idle state began,
+        # and when we last issued a resume (debounce + cooldown).
+        self._auto_resume_since: datetime | None = None
+        self._auto_resume_last: datetime | None = None
         # Solar-available reminder edge: True once we've nudged for the current
         # surplus episode; re-armed when surplus drops back below the threshold.
         self._solar_reminded = False
@@ -387,6 +397,32 @@ class ChargeAssistant:
         sc = self._should_control()
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
+        self._maybe_auto_resume(sc)
+
+    def _maybe_auto_resume(self, controlling: bool) -> None:
+        """Auto-unpause Eco-Smart / native schedule after a manual charge. When
+        the charger is left 'paused' (gen != 0 — a manual/owner start overrode it)
+        but is idle, and we're NOT the active controller, clear the override so
+        the charger's own Solar + schedule loops resume. Debounced + cooled down
+        so it fires once per pause episode, not on transients. Opt-out via
+        CA_AUTO_RESUME."""
+        if controlling or not self.entry.options.get(CA_AUTO_RESUME, True):
+            self._auto_resume_since = None
+            return
+        if not self._is_paused() or self._is_charging():
+            self._auto_resume_since = None   # not in the paused-and-idle state
+            return
+        now = dt_util.utcnow()
+        if self._auto_resume_since is None:
+            self._auto_resume_since = now
+            return
+        if now - self._auto_resume_since < _AUTO_RESUME_DELAY:
+            return
+        if self._auto_resume_last is not None and now - self._auto_resume_last < _AUTO_RESUME_COOLDOWN:
+            return
+        self._auto_resume_last = now
+        _LOGGER.info("Charge Assistant: auto-resuming Eco-Smart/schedule (paused + idle)")
+        self.hass.async_create_task(self._resume_native())
 
     def _update_repair(self) -> None:
         """Raise/clear an HA Repair when an acting mode is set but we aren't the
