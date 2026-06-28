@@ -4,6 +4,20 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b11] - 2026-06-28
+
+### Added
+- **Multi-vehicle identity (P2a) — confirm-on-plug.** With ≥2 cars configured,
+  a plug-in (`car_connected` rising edge) starts the identity flow: it guesses
+  the car (a car whose **SOC is rising** = the one charging; else the most-urgent
+  car by days-to-reserve / lowest SOC; else the sticky last car) and sends an
+  actionable **"Which car is charging?"** notification — one tap confirms or
+  corrects. If you don't reply, the **SOC-rise auto-confirms** after a few
+  minutes. The chosen car becomes the active car and the per-car target /
+  commute / projection all apply to it.
+- **Active vehicle** sensor — which mapped car is on the cable now (single-car:
+  unknown). The confirmed car is sticky for the session.
+
 ## [0.18.0b10] - 2026-06-28
 
 ### Added

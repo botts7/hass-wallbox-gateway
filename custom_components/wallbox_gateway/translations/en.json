@@ -372,6 +372,9 @@
       "projected_soc": {
         "name": "Projected SOC after a day's driving"
       },
+      "active_vehicle": {
+        "name": "Active vehicle"
+      },
       "cost_week": {
         "name": "Charging cost (7 days)"
       },

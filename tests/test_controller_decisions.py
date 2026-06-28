@@ -981,6 +981,51 @@ def test_single_car_legacy_unchanged():
     assert ca._target_pct() <= 80.0
 
 
+@case
+def test_identity_guess_most_urgent_and_override():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd", C.CA_BATTERY_KWH: 80,
+         C.CA_COMMUTE_RESERVE: 20},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla", C.CA_BATTERY_KWH: 75,
+         C.CA_COMMUTE_RESERVE: 20},
+    ]
+    # BYD low (25%), Tesla high (80%) → BYD is the more urgent guess
+    states = {"sensor.byd": FakeState("25"), "sensor.tesla": FakeState("80")}
+    ca, _ = build({C.CA_CARS: cars}, states)
+    assert ca._guess_active_car() == "BYD", "lowest SOC = most urgent guess"
+    # confirm flips the active car, and _active_car() honours the override
+    ca._set_active_car("Tesla", "user confirmed")
+    assert ca._active_car().get(C.CA_CAR_NAME) == "Tesla"
+    assert ca.active_vehicle_name() == "Tesla"
+    # a bad name is ignored (stays on Tesla)
+    ca._set_active_car("Ghost", "bogus")
+    assert ca._active_car().get(C.CA_CAR_NAME) == "Tesla"
+
+
+@case
+def test_identity_soc_rise_wins_over_urgency():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd", C.CA_BATTERY_KWH: 80},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla", C.CA_BATTERY_KWH: 75},
+    ]
+    # BYD is lower (would be the urgency guess) but Tesla's SOC has RISEN since
+    # plug-in → Tesla is the one actually charging, so it wins.
+    states = {"sensor.byd": FakeState("30"), "sensor.tesla": FakeState("63")}
+    ca, _ = build({C.CA_CARS: cars}, states)
+    ca._plug_soc = {"BYD": 30.0, "Tesla": 60.0}     # Tesla +3, BYD +0
+    assert ca._guess_active_car() == "Tesla", "SOC-rise beats urgency"
+
+
+@case
+def test_identity_single_car_is_noop():
+    ca, _ = build({C.CA_BATTERY_KWH: 80, C.CA_SOC_ENTITY: "sensor.soc"},
+                  {"sensor.soc": FakeState("50")})
+    assert ca.active_vehicle_name() is None, "single-car: no identity"
+    ca._plugged_was = False
+    ca._maybe_identity()   # must not raise / prompt for a single car
+    assert ca.active_vehicle_name() is None
+
+
 def main():
     if not _HA_OK:
         return

@@ -198,6 +198,15 @@ def _projected_soc_attrs(entity: GatewayEntity) -> dict | None:
     return out or None
 
 
+def _active_vehicle(entity: GatewayEntity) -> str | None:
+    """Which mapped car is on the cable right now (multi-vehicle). None for
+    single-car setups, where identity isn't meaningful."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    return a.active_vehicle_name()
+
+
 def _control_owner(entity: GatewayEntity) -> str | None:
     # Charge-control arbitration: who may autonomously drive charging.
     o = entity._status().get("control_owner")
@@ -759,6 +768,13 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_projected_soc,
         attrs_fn=_projected_soc_attrs,
+    ),
+    GatewaySensorEntityDescription(
+        key="active_vehicle",
+        translation_key="active_vehicle",
+        name="Active vehicle",
+        icon="mdi:car-connected",
+        value_fn=_active_vehicle,
     ),
     # ---- Charge-control owner (arbitration) ----------------------------
     # Who is allowed to autonomously drive charging (set on the gateway's

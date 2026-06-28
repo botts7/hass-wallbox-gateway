@@ -174,6 +174,14 @@ CA_LOAD_POWER_ENTITY = "load_power_entity"
 CA_START_ACTION = "WB_CA_START"
 CA_SNOOZE_ACTION = "WB_CA_SNOOZE"
 CA_SKIP_ACTION = "WB_CA_SKIP"
+# Identity: confirm-on-plug "which car?" actions are "WB_CA_CAR|<name>".
+CA_CAR_ACTION_PREFIX = "WB_CA_CAR|"
+
+# Multi-vehicle identity fallback when the plugged-in car can't be determined:
+#   "ask"        — don't act on a car-specific target; notify + wait (safest).
+#   "conservative" — use the lowest target across cars (never over-charges).
+#   "assume_last" — trust the last-confirmed (sticky) car.
+CA_UNKNOWN_CAR = "unknown_car"
 
 # Field keys (shared across modes)
 CA_REMINDER_ENTITY = "reminder_entity"

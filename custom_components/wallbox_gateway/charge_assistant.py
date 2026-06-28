@@ -101,6 +101,7 @@ from .const import (
     CA_CARS,
     CA_ACTIVE_CAR,
     CA_CAR_NAME,
+    CA_CAR_ACTION_PREFIX,
     CA_TAP_PATH,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -225,6 +226,14 @@ class ChargeAssistant:
         self._learned_daily_kwh: dict[str, float] = {}
         self._learned_at: datetime | None = None
         self._learning = False
+        # Multi-vehicle identity: which car is on the cable now (set by the
+        # confirm-on-plug flow), the last plug state for edge detection, the
+        # per-car SOC snapshot at plug-in (for the SOC-rise guess), and the
+        # pending guess/auto-confirm timer.
+        self._active_override: str | None = None
+        self._plugged_was: bool | None = None
+        self._plug_soc: dict[str, float] = {}
+        self._identity_unsub = None
         # Solar-available reminder edge: True once we've nudged for the current
         # surplus episode; re-armed when surplus drops back below the threshold.
         self._solar_reminded = False
@@ -419,6 +428,7 @@ class ChargeAssistant:
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
         self._maybe_auto_resume(sc)
+        self._maybe_identity()
         if any(self._cg(c, CA_COMMUTE_ENABLED) for c in self._cars()):
             self._maybe_refresh_learned()
 
@@ -1037,17 +1047,33 @@ class ChargeAssistant:
         return [{}]
 
     def _active_car(self) -> dict:
-        """The car currently on the cable: the one named by CA_ACTIVE_CAR, else
-        the first profile. {} when single-car (full top-level fallback)."""
+        """The car currently on the cable: the identity override (confirm-on-plug),
+        else the persisted CA_ACTIVE_CAR (sticky last), else the first profile.
+        {} when single-car (full top-level fallback)."""
         cars = self._cars()
         if len(cars) == 1:
             return cars[0]
-        name = self._opts.get(CA_ACTIVE_CAR)
+        name = self._active_override or self._opts.get(CA_ACTIVE_CAR)
         if name:
             for c in cars:
                 if c.get(CA_CAR_NAME) == name:
                     return c
         return cars[0]
+
+    def active_vehicle_name(self) -> str | None:
+        """The car currently on the cable, for the diagnostic sensor. None when
+        only one (or no) car is configured (identity isn't meaningful)."""
+        if len(self._cars()) < 2:
+            return None
+        return self._active_car().get(CA_CAR_NAME) or None
+
+    def _car_by_name(self, name: str | None) -> dict | None:
+        if not name:
+            return None
+        for c in self._cars():
+            if c.get(CA_CAR_NAME) == name:
+                return c
+        return None
 
     @staticmethod
     def _car_key(car: dict) -> str:
@@ -1271,6 +1297,133 @@ class ChargeAssistant:
         reserve = self._read_float_cg(car, CA_COMMUTE_RESERVE)
         reserve = 20.0 if reserve is None else reserve
         return max(0.0, (soc - reserve) / use_pct)
+
+    # ------------------------------------------------------------------
+    # Multi-vehicle identity — which car is on the cable (confirm-on-plug)
+    # ------------------------------------------------------------------
+    _IDENTITY_PROMPT_DELAY = 20          # s after plug before the "which car?" prompt
+    _SOC_RISE_RECHECK = timedelta(minutes=4)   # later: whichever car's SOC rose is it
+    _SOC_RISE_PCT = 1.0                  # min SOC gain to count as "this one's charging"
+
+    def _maybe_identity(self) -> None:
+        """Detect a plug-in edge and run the identity flow. Only relevant with
+        ≥2 cars; single-car needs no identity."""
+        plugged = self._plugged_in()
+        if len(self._cars()) < 2:
+            self._plugged_was = plugged
+            return
+        was = self._plugged_was
+        self._plugged_was = plugged
+        if plugged is True and was is False:        # a car was just plugged in
+            self._on_plug_in()
+        elif plugged is False and was is True:       # unplugged — drop any pending prompt
+            self._cancel_identity()
+
+    def _on_plug_in(self) -> None:
+        # snapshot each car's SOC so a later rise reveals which one is charging
+        self._plug_soc = {}
+        for c in self._cars():
+            soc = self._read_float(self._cg(c, CA_SOC_ENTITY))
+            if soc is not None:
+                self._plug_soc[self._car_key(c)] = soc
+        guess = self._guess_active_car()             # provisional (most-urgent / sticky)
+        if guess:
+            self._set_active_car(guess, "guess on plug-in")
+        self._cancel_identity()
+        self._identity_unsub = async_call_later(
+            self.hass, self._IDENTITY_PROMPT_DELAY,
+            lambda _now: self.hass.async_create_task(self._fire_identity_prompt()),
+        )
+
+    def _guess_active_car(self) -> str | None:
+        """Best guess of the plugged-in car. Priority: a car whose SOC has risen
+        since plug-in (it's the one charging) → most urgent (lowest days-to-reserve,
+        then lowest SOC) → first. The sticky last car is the _active_car default."""
+        cars = self._cars()
+        if not cars:
+            return None
+        risen = self._soc_risen_cars()
+        if risen:
+            return risen[0][1].get(CA_CAR_NAME)
+        def urgency(c: dict):
+            d = self._days_until_reserve(c)
+            if d is not None:
+                return (0, d)
+            soc = self._read_float(self._cg(c, CA_SOC_ENTITY))
+            return (1, soc if soc is not None else 999.0)
+        for c in sorted(cars, key=urgency):
+            if c.get(CA_CAR_NAME):
+                return c.get(CA_CAR_NAME)
+        return cars[0].get(CA_CAR_NAME)
+
+    def _soc_risen_cars(self) -> list[tuple[float, dict]]:
+        """Cars whose SOC has gained ≥ threshold since the plug-in snapshot,
+        most-risen first — i.e. the one(s) actually taking charge."""
+        out: list[tuple[float, dict]] = []
+        for c in self._cars():
+            base = self._plug_soc.get(self._car_key(c))
+            cur = self._read_float(self._cg(c, CA_SOC_ENTITY))
+            if base is not None and cur is not None and cur - base >= self._SOC_RISE_PCT:
+                out.append((cur - base, c))
+        out.sort(key=lambda t: t[0], reverse=True)
+        return out
+
+    def _set_active_car(self, name: str | None, reason: str) -> None:
+        """Set the car on the cable. Takes effect on the next evaluation tick
+        (the active strategy reads _target_pct() for the new car)."""
+        if not name or self._car_by_name(name) is None or self._active_override == name:
+            return
+        self._active_override = name
+        _LOGGER.info("Charge Assistant: active vehicle → %s (%s)", name, reason)
+
+    async def _fire_identity_prompt(self) -> None:
+        self._identity_unsub = None
+        guess = self._guess_active_car()             # refine now charging may have begun
+        if guess:
+            self._set_active_car(guess, "guess refined")
+        await self._send_identity_prompt(guess)
+        # auto-confirm by physics: if the user doesn't reply, the SOC-rise wins
+        self._identity_unsub = async_call_later(
+            self.hass, self._SOC_RISE_RECHECK.total_seconds(),
+            lambda _now: self._recheck_soc_rise(),
+        )
+
+    def _recheck_soc_rise(self) -> None:
+        self._identity_unsub = None
+        risen = self._soc_risen_cars()
+        if risen:
+            self._set_active_car(risen[0][1].get(CA_CAR_NAME), "SOC-rise auto-confirm")
+
+    def _notify_services(self) -> list[str]:
+        raw = self._opts.get(CA_NOTIFY_SERVICE) or self._rem.get(CA_NOTIFY_SERVICE) or ""
+        return [s.strip() for s in str(raw).split(",") if s.strip() and "." in s]
+
+    async def _send_identity_prompt(self, guess: str | None) -> None:
+        services = self._notify_services()
+        names = [c.get(CA_CAR_NAME) for c in self._cars() if c.get(CA_CAR_NAME)]
+        if not services or len(names) < 2:
+            return
+        gname = guess or names[0]
+        actions = [
+            {"action": CA_CAR_ACTION_PREFIX + n, "title": (("✓ " if n == gname else "") + n)[:30]}
+            for n in names[:3]
+        ]
+        payload = {
+            "title": "Which car is charging?",
+            "message": f"🔌 Plugged in — is it the {gname}? Confirm, or pick another.",
+            "data": {"actions": actions, "tag": "wb_ca_identity"},
+        }
+        for svc in services:
+            domain, name = svc.split(".", 1)
+            try:
+                await self.hass.services.async_call(domain, name, payload, blocking=True)
+            except Exception:  # noqa: BLE001 — a notify failure must not crash the loop
+                _LOGGER.debug("Charge Assistant: identity prompt failed via %s", svc)
+
+    def _cancel_identity(self) -> None:
+        if self._identity_unsub:
+            self._identity_unsub()
+            self._identity_unsub = None
 
     def _price_blocks(self) -> bool:
         """True when a price cap is set and the current price exceeds it. The
@@ -2323,6 +2476,13 @@ class ChargeAssistant:
     @callback
     def _on_action(self, event: Event) -> None:
         action = event.data.get("action")
+        if isinstance(action, str) and action.startswith(CA_CAR_ACTION_PREFIX):
+            # Confirm-on-plug: the user picked which car is on the cable.
+            name = action[len(CA_CAR_ACTION_PREFIX):]
+            self._cancel_identity()
+            self._active_override = None   # clear so _set_active_car always applies
+            self._set_active_car(name, "user confirmed")
+            return
         if action == CA_START_ACTION:
             # During a grace countdown, "Start now" skips the wait and begins.
             if self._grace_pending is not None:
