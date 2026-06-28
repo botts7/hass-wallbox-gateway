@@ -44,6 +44,19 @@ cards:
 
       Typical use **{{ states(use) }} kWh/day** · commute target **{{ states(tgt) }}%**
       {% endif %}
+
+      {% set av = states('sensor.wallbox_01234567_active_vehicle') %}
+      {% set rec = 'sensor.wallbox_01234567_plug_in_next' %}
+      {% if av not in ['unknown', 'unavailable', 'none', none] %}
+      ***
+      🚗 **On the cable:** {{ av }}
+      {% set pin = states(rec) %}
+      {% if pin not in ['unknown', 'unavailable', 'none', none] %}
+      🔌 **Plug in next:** **{{ pin }}** — {{ state_attr(rec, 'reason') }}
+      {% endif %}
+      {% set fn = state_attr(rec, 'feasibility_note') %}
+      {% if fn %}⚠️ {{ fn }}{% endif %}
+      {% endif %}
   - type: horizontal-stack
     cards:
       - type: gauge
@@ -83,3 +96,22 @@ cards:
         name: Days until reserve
         icon: mdi:calendar-clock
         suffix: " days"
+  # Multi-vehicle rows — only useful when ≥2 cars are configured; hidden
+  # automatically (state "unknown") for single-car setups.
+  - type: conditional
+    conditions:
+      - entity: sensor.wallbox_01234567_active_vehicle
+        state_not: "unknown"
+      - entity: sensor.wallbox_01234567_active_vehicle
+        state_not: "unavailable"
+    card:
+      type: entities
+      title: Vehicles
+      show_header_toggle: false
+      entities:
+        - entity: sensor.wallbox_01234567_active_vehicle
+          name: On the cable now
+          icon: mdi:car-connected
+        - entity: sensor.wallbox_01234567_plug_in_next
+          name: Plug in next
+          icon: mdi:ev-plug-type2

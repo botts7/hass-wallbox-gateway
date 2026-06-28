@@ -4,6 +4,20 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b13] - 2026-06-28
+
+### Added
+- **"Plug in car X" nudge.** When the cable is free and a car needs charge, an
+  actionable notification names which car to plug in (gated on "home",
+  anti-spammed: 4h cooldown, re-armed when the recommended car changes).
+- **Cheap-window feasibility.** "Plug in next" now carries `feasible`,
+  `needed_hours`, `available_hours` and a `feasibility_note` — e.g. *"~10h needed
+  but only ~6h before departure — prioritising BYD"* — when the cars' must-haves
+  can't all fit the cheap window before the earliest departure (one cable =
+  charge times add up).
+- `examples/lovelace-commute-card.yaml` now surfaces **On the cable** + **Plug in
+  next** (with reason + feasibility warning) when ≥2 cars are configured.
+
 ## [0.18.0b12] - 2026-06-28
 
 ### Added

@@ -1069,6 +1069,30 @@ def test_recommended_plug_in_skips_satisfied_and_active():
     assert ca4.recommended_plug_in() is None
 
 
+@case
+def test_feasibility_flags_when_window_too_short():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd", C.CA_BATTERY_KWH: 80,
+         C.CA_TARGET_PCT: 80, C.CA_CHARGE_POWER_KW: 7.0},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla", C.CA_BATTERY_KWH: 75,
+         C.CA_TARGET_PCT: 80, C.CA_CHARGE_POWER_KW: 7.0},
+    ]
+    # BYD 30→80 = 40 kWh ≈ 5.7h; Tesla 40→80 = 30 kWh ≈ 4.3h → ~10h total.
+    # Cheap window 00:00–06:00 = 6h → can't do both.
+    opts = {C.CA_CARS: cars, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: "00:00", C.CA_WINDOW_END: "06:00"}
+    states = {"sensor.byd": FakeState("30"), "sensor.tesla": FakeState("40")}
+    ca, _ = build(opts, states)
+    f = ca._feasibility()
+    assert f["available_hours"] == 6.0, f
+    assert f["needed_hours"] > 6.0 and f["feasible"] is False, f
+    assert f["feasibility_note"] and "prioritising" in f["feasibility_note"]
+    # Loosen: only BYD needs a small top-up → fits in 6h → feasible
+    ca2, _ = build(opts, {"sensor.byd": FakeState("75"), "sensor.tesla": FakeState("90")})
+    f2 = ca2._feasibility()
+    assert f2["feasible"] is True and f2["feasibility_note"] is None, f2
+
+
 def main():
     if not _HA_OK:
         return

@@ -234,6 +234,9 @@ class ChargeAssistant:
         self._plugged_was: bool | None = None
         self._plug_soc: dict[str, float] = {}
         self._identity_unsub = None
+        # "Plug in car X next" nudge: last fired + which car (anti-spam).
+        self._plug_rec_last: datetime | None = None
+        self._plug_rec_car: str | None = None
         # Solar-available reminder edge: True once we've nudged for the current
         # surplus episode; re-armed when surplus drops back below the threshold.
         self._solar_reminded = False
@@ -429,6 +432,7 @@ class ChargeAssistant:
             self.hass.async_create_task(self._apply_control(sc))
         self._maybe_auto_resume(sc)
         self._maybe_identity()
+        self._maybe_plug_recommendation()
         if any(self._cg(c, CA_COMMUTE_ENABLED) for c in self._cars()):
             self._maybe_refresh_learned()
 
@@ -1495,7 +1499,105 @@ class ChargeAssistant:
                     reason = f"{rec} runs to reserve in {dur} day(s) — plug it in next."
                 else:
                     reason = f"{rec} needs the most charge ({top['deficit_pct']}% below target)."
-        return {"reason": reason, "ranked": ranked}
+        out = {"reason": reason, "ranked": ranked}
+        out.update(self._feasibility())            # feasible / hours / note
+        return out
+
+    # ---- cheap-window feasibility: can all cars be charged in time? -----
+    @staticmethod
+    def _hhmm_to_min(s) -> int | None:
+        try:
+            h, m = str(s).split(":")[:2]
+            return int(h) * 60 + int(m)
+        except (ValueError, AttributeError):
+            return None
+
+    def _available_charge_hours(self) -> float | None:
+        """Hours available to charge before the earliest car departure, bounded
+        by the cheap window if one is set. None when neither is configured."""
+        win_h = None
+        if self._opts.get(CA_WINDOW_ENABLED):
+            a = self._hhmm_to_min(self._opts.get(CA_WINDOW_START))
+            b = self._hhmm_to_min(self._opts.get(CA_WINDOW_END))
+            if a is not None and b is not None:
+                span = (b - a) % (24 * 60)
+                win_h = (span or 24 * 60) / 60.0
+        deps = [self._hhmm_to_min(self._cg(c, CA_DEPARTURE)) for c in self._cars()]
+        deps = [d for d in deps if d is not None]
+        dep_h = None
+        if deps:
+            now = dt_util.now()
+            now_min = now.hour * 60 + now.minute
+            dep_h = min((d - now_min) % (24 * 60) for d in deps) / 60.0
+        if win_h is not None and dep_h is not None:
+            return min(win_h, dep_h)
+        return win_h if win_h is not None else dep_h
+
+    def _feasibility(self) -> dict:
+        """Can every car that needs charge reach its target in the available
+        cheap-window hours before the earliest departure? One cable = the charge
+        times add up. Flags 'can't do all — prioritise X' when they don't fit."""
+        needing = [(c, self._car_deficit_pct(c)) for c in self._cars()]
+        needing = [(c, d) for c, d in needing if d and d > 1.0]
+        total_h = 0.0
+        for c, d in needing:
+            batt = self._read_float_cg(c, CA_BATTERY_KWH) or 0.0
+            pwr = self._read_float_cg(c, CA_CHARGE_POWER_KW) or 7.4
+            if batt > 0 and pwr > 0:
+                total_h += (d / 100.0 * batt) / pwr
+        avail = self._available_charge_hours()
+        feasible = avail is None or total_h <= avail + 0.05
+        note = None
+        if not feasible and len(needing) >= 2:
+            top = min(needing, key=lambda cd: self._car_urgency_key(cd[0]))[0].get(CA_CAR_NAME)
+            note = (f"~{round(total_h, 1)}h needed but only ~{round(avail, 1)}h before "
+                    f"departure — prioritising {top}.")
+        return {
+            "feasible": feasible,
+            "needed_hours": round(total_h, 1),
+            "available_hours": None if avail is None else round(avail, 1),
+            "feasibility_note": note,
+        }
+
+    # ---- "plug in car X next" nudge -----------------------------------
+    _PLUG_REC_COOLDOWN = timedelta(hours=4)
+
+    def _maybe_plug_recommendation(self) -> None:
+        """When the cable is free and a car needs charge, nudge which one to plug
+        in. Gated on 'home', anti-spammed (4h cooldown, re-armed when the
+        recommended car changes)."""
+        if len(self._cars()) < 2 or self._plugged_in() is not False:
+            return
+        rec = self.recommended_plug_in()
+        if not rec:
+            self._plug_rec_car = None
+            return
+        if not self._home_ok():
+            return
+        now = dt_util.utcnow()
+        if (rec == self._plug_rec_car and self._plug_rec_last
+                and now - self._plug_rec_last < self._PLUG_REC_COOLDOWN):
+            return
+        self._plug_rec_car = rec
+        self._plug_rec_last = now
+        self.hass.async_create_task(self._send_plug_recommendation(rec))
+
+    async def _send_plug_recommendation(self, car: str) -> None:
+        services = self._notify_services()
+        if not services:
+            return
+        reason = self.recommended_plug_in_detail().get("reason") or f"{car} needs a charge."
+        payload = {
+            "title": "Plug in your car",
+            "message": f"🔌 Plug in the {car} — {reason}",
+            "data": {"tag": "wb_ca_plugrec"},
+        }
+        for svc in services:
+            domain, name = svc.split(".", 1)
+            try:
+                await self.hass.services.async_call(domain, name, payload, blocking=True)
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Charge Assistant: plug recommendation failed via %s", svc)
 
     def _price_blocks(self) -> bool:
         """True when a price cap is set and the current price exceeds it. The
