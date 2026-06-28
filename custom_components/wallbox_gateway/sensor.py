@@ -207,6 +207,22 @@ def _active_vehicle(entity: GatewayEntity) -> str | None:
     return a.active_vehicle_name()
 
 
+def _recommended_plug_in(entity: GatewayEntity) -> str | None:
+    """Which mapped car to plug in next (most urgent that needs charge and isn't
+    already on the cable). None when nothing needs it / single-car."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    return a.recommended_plug_in()
+
+
+def _recommended_plug_in_attrs(entity: GatewayEntity) -> dict | None:
+    a = _assistant(entity)
+    if a is None or len(a._cars()) < 2:
+        return None
+    return a.recommended_plug_in_detail()
+
+
 def _control_owner(entity: GatewayEntity) -> str | None:
     # Charge-control arbitration: who may autonomously drive charging.
     o = entity._status().get("control_owner")
@@ -775,6 +791,14 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         name="Active vehicle",
         icon="mdi:car-connected",
         value_fn=_active_vehicle,
+    ),
+    GatewaySensorEntityDescription(
+        key="recommended_plug_in",
+        translation_key="recommended_plug_in",
+        name="Plug in next",
+        icon="mdi:ev-plug-type2",
+        value_fn=_recommended_plug_in,
+        attrs_fn=_recommended_plug_in_attrs,
     ),
     # ---- Charge-control owner (arbitration) ----------------------------
     # Who is allowed to autonomously drive charging (set on the gateway's

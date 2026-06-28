@@ -4,6 +4,16 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b12] - 2026-06-28
+
+### Added
+- **Multi-vehicle recommendation (P3) — "Plug in next" sensor.** Ranks the cars
+  by urgency (lowest days-to-reserve / "won't make it" first, then biggest
+  deficit) and names the most-urgent car that still needs charge and isn't
+  already on the cable — i.e. which one to plug in next (or swap to). Attributes:
+  a friendly `reason` + a `ranked` per-car table (soc / target / deficit /
+  days-until-reserve). None when nothing needs charge or single-car.
+
 ## [0.18.0b11] - 2026-06-28
 
 ### Added

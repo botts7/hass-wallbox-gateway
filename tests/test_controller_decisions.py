@@ -1026,6 +1026,49 @@ def test_identity_single_car_is_noop():
     assert ca.active_vehicle_name() is None
 
 
+@case
+def test_recommended_plug_in_ranks_most_urgent():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd", C.CA_BATTERY_KWH: 80,
+         C.CA_TARGET_PCT: 80},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla", C.CA_BATTERY_KWH: 75,
+         C.CA_TARGET_PCT: 80},
+    ]
+    # Nothing on the cable → all cars are candidates. BYD 30% (deficit 50),
+    # Tesla 70% (deficit 10) → recommend BYD (biggest deficit / most urgent).
+    states = {"sensor.byd": FakeState("30"), "sensor.tesla": FakeState("70")}
+    ca, _ = build({C.CA_CARS: cars}, states)
+    ca._plugged_in = lambda: False
+    assert ca.recommended_plug_in() == "BYD", "biggest deficit / most urgent first"
+    detail = ca.recommended_plug_in_detail()
+    assert detail["ranked"][0]["name"] == "BYD"
+    assert detail["reason"] and "BYD" in detail["reason"]
+
+
+@case
+def test_recommended_plug_in_skips_satisfied_and_active():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd", C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla", C.CA_BATTERY_KWH: 75, C.CA_TARGET_PCT: 80},
+    ]
+    # Both already at/above target → nobody needs charge → None.
+    ca, _ = build({C.CA_CARS: cars}, {"sensor.byd": FakeState("85"), "sensor.tesla": FakeState("90")})
+    ca._plugged_in = lambda: False
+    assert ca.recommended_plug_in() is None, "all satisfied → no recommendation"
+    # BYD needs charge, Tesla satisfied → recommend BYD.
+    ca2, _ = build({C.CA_CARS: cars}, {"sensor.byd": FakeState("40"), "sensor.tesla": FakeState("90")})
+    ca2._plugged_in = lambda: False
+    assert ca2.recommended_plug_in() == "BYD"
+    # Active car (BYD) is on the cable → recommend the NEXT needing car (Tesla).
+    ca3, _ = build({C.CA_CARS: cars}, {"sensor.byd": FakeState("30"), "sensor.tesla": FakeState("60")})
+    ca3._plugged_in = lambda: True          # active defaults to first = BYD
+    assert ca3.recommended_plug_in() == "Tesla", "exclude the car already plugged in"
+    # single car → never recommends
+    ca4, _ = build({C.CA_BATTERY_KWH: 80, C.CA_SOC_ENTITY: "sensor.b", C.CA_TARGET_PCT: 80},
+                   {"sensor.b": FakeState("20")})
+    assert ca4.recommended_plug_in() is None
+
+
 def main():
     if not _HA_OK:
         return

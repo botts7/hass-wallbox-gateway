@@ -375,6 +375,9 @@
       "active_vehicle": {
         "name": "Active vehicle"
       },
+      "recommended_plug_in": {
+        "name": "Plug in next"
+      },
       "cost_week": {
         "name": "Charging cost (7 days)"
       },

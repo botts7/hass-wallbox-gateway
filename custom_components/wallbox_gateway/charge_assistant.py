@@ -1425,6 +1425,78 @@ class ChargeAssistant:
             self._identity_unsub()
             self._identity_unsub = None
 
+    # ------------------------------------------------------------------
+    # Multi-vehicle recommendation (P3) — which car to plug in next
+    # ------------------------------------------------------------------
+    def _car_target_pct(self, car: dict) -> float:
+        """SOC the assistant would charge this car to — its learned commute
+        target when commute mode is on, else its plain target."""
+        base = self._read_float_cg(car, CA_TARGET_PCT)
+        base = 80.0 if base is None else base
+        if self._cg(car, CA_COMMUTE_ENABLED):
+            ct = self._commute_target(car)
+            if ct is not None:
+                base = ct
+        return base
+
+    def _car_deficit_pct(self, car: dict) -> float | None:
+        """How far below its target this car is (0 if at/above). None w/o SOC."""
+        soc = self._read_float(self._cg(car, CA_SOC_ENTITY))
+        if soc is None:
+            return None
+        return max(0.0, self._car_target_pct(car) - soc)
+
+    def _car_urgency_key(self, car: dict):
+        """Sort key, most-urgent first: lowest days-to-reserve (won't-make-it
+        cars first), then larger deficit."""
+        d = self._days_until_reserve(car)
+        return (d if d is not None else 999.0, -(self._car_deficit_pct(car) or 0.0))
+
+    def recommended_plug_in(self) -> str | None:
+        """The car to plug in next: the most-urgent car that still needs charge
+        and isn't the one already on the cable. None when nothing needs it."""
+        cars = self._cars()
+        if len(cars) < 2:
+            return None
+        active = self._active_car().get(CA_CAR_NAME) if self._plugged_in() is True else None
+        needing = [
+            c for c in cars
+            if (self._car_deficit_pct(c) or 0.0) > 1.0 and c.get(CA_CAR_NAME) != active
+        ]
+        if not needing:
+            return None
+        needing.sort(key=self._car_urgency_key)
+        return needing[0].get(CA_CAR_NAME)
+
+    def recommended_plug_in_detail(self) -> dict:
+        """Attributes for the recommendation sensor: a friendly reason + a ranked
+        per-car status table (most-urgent first)."""
+        cars = self._cars()
+        ranked = []
+        for c in sorted(cars, key=self._car_urgency_key):
+            name = c.get(CA_CAR_NAME)
+            if not name:
+                continue
+            soc = self._read_float(self._cg(c, CA_SOC_ENTITY))
+            ranked.append({
+                "name": name,
+                "soc": None if soc is None else round(soc),
+                "target": round(self._car_target_pct(c)),
+                "deficit_pct": None if self._car_deficit_pct(c) is None else round(self._car_deficit_pct(c)),
+                "days_until_reserve": (lambda d: None if d is None else round(d, 1))(self._days_until_reserve(c)),
+            })
+        rec = self.recommended_plug_in()
+        reason = None
+        if rec:
+            top = next((r for r in ranked if r["name"] == rec), None)
+            if top:
+                dur = top["days_until_reserve"]
+                if dur is not None and dur <= 1:
+                    reason = f"{rec} runs to reserve in {dur} day(s) — plug it in next."
+                else:
+                    reason = f"{rec} needs the most charge ({top['deficit_pct']}% below target)."
+        return {"reason": reason, "ranked": ranked}
+
     def _price_blocks(self) -> bool:
         """True when a price cap is set and the current price exceeds it. The
         caller's departure floor overrides this so the car is still ready."""
