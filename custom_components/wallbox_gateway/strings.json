@@ -118,7 +118,16 @@
           "window_cost_warn": "Notify me when a charge runs outside the window",
           "rl_enabled": "Also send plug-in reminders (notifications only)",
           "rl_nightly_time": "Reminder time (nightly)",
-          "rl_notify": "Reminder notify service"
+          "rl_notify": "Reminder notify service",
+          "commute_enabled": "Charge for my daily commute (learned)",
+          "commute_source": "Learn daily use from",
+          "commute_odometer_entity": "Odometer entity (km)",
+          "commute_efficiency": "Efficiency (kWh/100km)",
+          "commute_reserve_pct": "Commute: always keep at least (%)",
+          "commute_margin_pct": "Commute: safety margin (%)",
+          "commute_cover_days": "Commute: days of driving to cover",
+          "commute_window_days": "Commute: learn over (days)",
+          "unknown_car": "When unsure which car is plugged in"
         }
       },
       "smart_solar": {
