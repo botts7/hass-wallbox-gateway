@@ -138,6 +138,18 @@ CA_COMMUTE_SOURCE_CHARGER = "charger"
 CA_COMMUTE_SOURCE_ODOMETER = "odometer"
 CA_COMMUTE_SOURCE_SOC = "soc"
 
+# ---- Multi-vehicle (P1) ----
+# One wallbox charges one car at a time, so this is a list of car PROFILES plus
+# a pointer to which one is currently on the cable. Each profile is a dict that
+# may carry the same per-car keys used at the top level (soc_entity, battery_kwh,
+# target_soc_pct, departure, the commute_* keys) PLUS a "name". When CA_CARS is
+# absent/empty the assistant runs single-car off the top-level keys (legacy), so
+# existing configs are unchanged. CA_ACTIVE_CAR is the name of the car currently
+# plugged in (set by the confirm-on-plug identity flow); defaults to the first.
+CA_CARS = "cars"                 # list[dict] — car profiles
+CA_ACTIVE_CAR = "active_car"     # str — name of the car on the cable now
+CA_CAR_NAME = "name"             # per-profile display name
+
 # ---- Dynamic current control (Phase 2) ----
 # Shared current bounds the assistant stays within when it sets the charge
 # current. The gateway clamps to 6-32 A regardless; these let the user narrow

@@ -891,12 +891,12 @@ def test_commute_source_dispatch_charger_default():
     ca, _ = build({C.CA_COMMUTE_ENABLED: True}, {})
     now = dt_util.utcnow().timestamp()
     ca._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 14000}]
-    assert ca._learn_source() == "charger"
+    assert ca._learn_source(ca._active_car()) == "charger"
     assert ca._avg_daily_use_kwh() is not None, "charger source computes live"
     # switch to a history source → sync path returns the (empty) cache, not charge-log
     ca._opts[C.CA_COMMUTE_SOURCE] = "odometer"
     assert ca._avg_daily_use_kwh() is None, "history source uses cache (None until refresh)"
-    ca._learned_daily_kwh = 12.0
+    ca._learned_daily_kwh = {"_default": 12.0}   # active car's per-car cache key
     assert ca._avg_daily_use_kwh() == 12.0, "history source returns the cached value"
 
 
@@ -929,6 +929,56 @@ def test_projected_soc_floors_and_none_without_inputs():
     ca2._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 16000}]
     assert ca2._projected_soc_after_days(1.0) is None
     assert ca2._days_until_reserve() is None
+
+
+@case
+def test_multicar_active_resolution_and_per_car_targets():
+    # Two cars: BYD (80 kWh, target 80) and Tesla (75 kWh, target 90), each on
+    # the SOC source so their per-car cache drives a distinct commute target.
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd_soc",
+         C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80, C.CA_COMMUTE_ENABLED: True,
+         C.CA_COMMUTE_SOURCE: "soc", C.CA_COMMUTE_RESERVE: 20,
+         C.CA_COMMUTE_MARGIN: 10, C.CA_COMMUTE_COVER_DAYS: 1},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla_soc",
+         C.CA_BATTERY_KWH: 75, C.CA_TARGET_PCT: 90, C.CA_COMMUTE_ENABLED: True,
+         C.CA_COMMUTE_SOURCE: "soc", C.CA_COMMUTE_RESERVE: 30,
+         C.CA_COMMUTE_MARGIN: 5, C.CA_COMMUTE_COVER_DAYS: 1},
+    ]
+    states = {"sensor.byd_soc": FakeState("60"), "sensor.tesla_soc": FakeState("70")}
+    ca, _ = build({C.CA_CARS: cars}, states)
+    # per-car learned cache (kWh/day): BYD 16 (=20%/80), Tesla 15 (=20%/75)
+    ca._learned_daily_kwh = {"BYD": 16.0, "Tesla": 15.0}
+
+    byd, tesla = ca._cars()[0], ca._cars()[1]
+    assert abs(ca._daily_use_pct(byd) - 20.0) < 0.1
+    assert abs(ca._daily_use_pct(tesla) - 20.0) < 0.1
+    # commute target = reserve + use×cover + margin, capped at the car's target
+    assert abs(ca._commute_target(byd) - 50.0) < 0.1, "BYD 20+20+10"      # cap 80
+    assert abs(ca._commute_target(tesla) - 55.0) < 0.1, "Tesla 30+20+5"   # cap 90
+    # projected SOC reads each car's own SOC entity
+    assert abs(ca._projected_soc_after_days(1.0, byd) - 40.0) < 0.1       # 60−20
+    assert abs(ca._projected_soc_after_days(1.0, tesla) - 50.0) < 0.1     # 70−20
+
+    # active car defaults to the first; CA_ACTIVE_CAR picks the other
+    assert ca._active_car().get(C.CA_CAR_NAME) == "BYD"
+    assert abs(ca._target_pct() - 50.0) < 0.1, "engine target = active (BYD)"
+    ca._opts[C.CA_ACTIVE_CAR] = "Tesla"
+    assert ca._active_car().get(C.CA_CAR_NAME) == "Tesla"
+    assert abs(ca._target_pct() - 55.0) < 0.1, "engine target follows active car"
+
+
+@case
+def test_single_car_legacy_unchanged():
+    # No CA_CARS → one legacy car ({}); reads fall straight through to top-level
+    ca, _ = build({C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80,
+                   C.CA_SOC_ENTITY: "sensor.soc", C.CA_COMMUTE_ENABLED: True},
+                  {"sensor.soc": FakeState("50")})
+    assert ca._cars() == [{}] and ca._active_car() == {}
+    now = dt_util.utcnow().timestamp()
+    ca._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 16000}]
+    assert ca._avg_daily_use_kwh() is not None, "legacy single-car still computes"
+    assert ca._target_pct() <= 80.0
 
 
 def main():

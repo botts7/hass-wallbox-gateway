@@ -98,6 +98,9 @@ from .const import (
     CA_COMMUTE_SOURCE_CHARGER,
     CA_COMMUTE_SOURCE_ODOMETER,
     CA_COMMUTE_SOURCE_SOC,
+    CA_CARS,
+    CA_ACTIVE_CAR,
+    CA_CAR_NAME,
     CA_TAP_PATH,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -217,8 +220,9 @@ class ChargeAssistant:
         self._auto_resume_last: datetime | None = None
         # Commute learner: cached avg daily use (kWh/day) for the history-backed
         # sources (odometer / SOC) which need an async recorder read, so the sync
-        # target math can stay sync. None until the first async refresh lands.
-        self._learned_daily_kwh: float | None = None
+        # target math can stay sync. Keyed per car so multi-vehicle each get their
+        # own learned value. Empty until the first async refresh lands.
+        self._learned_daily_kwh: dict[str, float] = {}
         self._learned_at: datetime | None = None
         self._learning = False
         # Solar-available reminder edge: True once we've nudged for the current
@@ -415,7 +419,7 @@ class ChargeAssistant:
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
         self._maybe_auto_resume(sc)
-        if self._opts.get(CA_COMMUTE_ENABLED):
+        if any(self._cg(c, CA_COMMUTE_ENABLED) for c in self._cars()):
             self._maybe_refresh_learned()
 
     def _maybe_auto_resume(self, controlling: bool) -> None:
@@ -1004,48 +1008,95 @@ class ChargeAssistant:
         target only until the trip deadline (auto-reverts by time). When commute
         mode is on, the everyday target is replaced by the learned adaptive
         target (still capped at CA_TARGET_PCT and overridable by a trip)."""
-        base = self._opts.get(CA_TARGET_PCT, 80)
-        if self._opts.get(CA_COMMUTE_ENABLED):
-            ct = self._commute_target()
+        car = self._active_car()
+        base = self._read_float_cg(car, CA_TARGET_PCT)
+        base = 80.0 if base is None else base
+        if self._cg(car, CA_COMMUTE_ENABLED):
+            ct = self._commute_target(car)
             if ct is not None:
                 base = ct
         return effective_target(
             base,
-            self._opts.get(CA_TRIP_TARGET),
-            self._parse_dt_local(self._opts.get(CA_TRIP_UNTIL)),
+            self._cg(car, CA_TRIP_TARGET),
+            self._parse_dt_local(self._cg(car, CA_TRIP_UNTIL)),
             dt_util.utcnow(),
         )
 
     # ------------------------------------------------------------------
+    # Car profiles — one wallbox charges one car at a time, so the learner /
+    # target / projection all resolve against the *active* car (the one on the
+    # cable). Single-car configs have no CA_CARS, so the active car is {} and
+    # every read falls back to the top-level key — behaviour is unchanged.
+    # ------------------------------------------------------------------
+    def _cars(self) -> list[dict]:
+        """Configured car profiles. Empty/absent → one legacy car ({}) so every
+        per-car read falls back to the top-level keys."""
+        cars = self._opts.get(CA_CARS)
+        if isinstance(cars, list) and cars:
+            return cars
+        return [{}]
+
+    def _active_car(self) -> dict:
+        """The car currently on the cable: the one named by CA_ACTIVE_CAR, else
+        the first profile. {} when single-car (full top-level fallback)."""
+        cars = self._cars()
+        if len(cars) == 1:
+            return cars[0]
+        name = self._opts.get(CA_ACTIVE_CAR)
+        if name:
+            for c in cars:
+                if c.get(CA_CAR_NAME) == name:
+                    return c
+        return cars[0]
+
+    @staticmethod
+    def _car_key(car: dict) -> str:
+        """Stable per-car cache key."""
+        return str(car.get(CA_CAR_NAME) or "_default")
+
+    def _cg(self, car: dict, key: str, default=None):
+        """Per-car config get — the car's own value, else the top-level default."""
+        return car[key] if key in car else self._opts.get(key, default)
+
+    def _read_float_cg(self, car: dict, key: str) -> float | None:
+        try:
+            v = self._cg(car, key)
+            return None if v in (None, "") else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    # ------------------------------------------------------------------
     # Commute-based adaptive target — learn daily use, charge just enough
     # ------------------------------------------------------------------
-    def _learn_window_days(self) -> int:
+    def _learn_window_days(self, car: dict) -> int:
         """Rolling learning window (days), clamped to [1, 60]."""
-        return max(1, min(int(self._read_float_opt(CA_COMMUTE_WINDOW_DAYS) or 7), 60))
+        return max(1, min(int(self._read_float_cg(car, CA_COMMUTE_WINDOW_DAYS) or 7), 60))
 
-    def _learn_source(self) -> str:
-        return str(self._opts.get(CA_COMMUTE_SOURCE) or CA_COMMUTE_SOURCE_CHARGER)
+    def _learn_source(self, car: dict) -> str:
+        return str(self._cg(car, CA_COMMUTE_SOURCE) or CA_COMMUTE_SOURCE_CHARGER)
 
-    def _avg_daily_use_kwh(self) -> float | None:
-        """Average daily energy use (kWh/day) from the configured learn-from
-        source. The charger source is computed live (cheap, in-memory); the
-        history-backed sources (odometer / SOC) return the cached value the async
-        refresh keeps fresh. None until there's enough data."""
-        if self._learn_source() == CA_COMMUTE_SOURCE_CHARGER:
-            return self._avg_daily_kwh_from_charger()
-        return self._learned_daily_kwh
+    def _avg_daily_use_kwh(self, car: dict | None = None) -> float | None:
+        """Average daily energy use (kWh/day) for `car` (default: the active car)
+        from its learn-from source. Charger source is computed live; the
+        history-backed sources (odometer / SOC) return the per-car cached value
+        the async refresh keeps fresh. None until there's enough data."""
+        if car is None:
+            car = self._active_car()
+        if self._learn_source(car) == CA_COMMUTE_SOURCE_CHARGER:
+            return self._avg_daily_kwh_from_charger(car)
+        return self._learned_daily_kwh.get(self._car_key(car))
 
-    def _avg_daily_kwh_from_charger(self) -> float | None:
-        """Energy the wallbox delivered per day, from the firmware charge-log
-        (energy added ≈ energy driven). Averaged over the actual data span so it's
-        sensible before a full window has accrued. None until any charge logged."""
+    def _avg_daily_kwh_from_charger(self, car: dict) -> float | None:
+        """Energy the wallbox delivered per day, from the firmware charge-log.
+        Charger-wide (only meaningful single-car). Averaged over the actual data
+        span so it's sensible before a full window. None until any charge logged."""
         coord = self._coordinator()
         if coord is None or not getattr(coord, "data", None):
             return None
         log = coord.data.get("charge_log") or []
         if not log:
             return None
-        window = self._learn_window_days()
+        window = self._learn_window_days(car)
         now = dt_util.utcnow().timestamp()
         cutoff = now - window * 86400
         in_win = [iv for iv in log if (iv.get("start") or 0) >= cutoff and (iv.get("wh") or 0) > 0]
@@ -1061,8 +1112,11 @@ class ChargeAssistant:
 
     def _maybe_refresh_learned(self) -> None:
         """Throttled trigger (from the coord tick) to recompute the history-backed
-        learner. No-op for the charger source (computed live)."""
-        if self._learn_source() == CA_COMMUTE_SOURCE_CHARGER or self._learning:
+        learner for every car on a history source. No-op when all cars use the
+        charger source (computed live)."""
+        if self._learning:
+            return
+        if not any(self._learn_source(c) != CA_COMMUTE_SOURCE_CHARGER for c in self._cars()):
             return
         now = dt_util.utcnow()
         if self._learned_at is not None and now - self._learned_at < self._LEARN_REFRESH:
@@ -1072,7 +1126,12 @@ class ChargeAssistant:
 
     async def _refresh_learned_use(self) -> None:
         try:
-            self._learned_daily_kwh = await self._compute_history_daily_kwh()
+            for car in self._cars():
+                if self._learn_source(car) == CA_COMMUTE_SOURCE_CHARGER:
+                    continue
+                val = await self._compute_history_daily_kwh(car)
+                if val is not None:
+                    self._learned_daily_kwh[self._car_key(car)] = val
             self._learned_at = dt_util.utcnow()
         except Exception as err:  # recorder missing / entity not recorded — degrade gracefully
             _LOGGER.debug("Charge Assistant: commute learner history read failed: %s", err)
@@ -1091,31 +1150,28 @@ class ChargeAssistant:
         )
         return list(res.get(entity_id, []))
 
-    async def _compute_history_daily_kwh(self) -> float | None:
-        source = self._learn_source()
-        start = dt_util.utcnow() - timedelta(days=self._learn_window_days())
+    async def _compute_history_daily_kwh(self, car: dict) -> float | None:
+        source = self._learn_source(car)
+        start = dt_util.utcnow() - timedelta(days=self._learn_window_days(car))
         if source == CA_COMMUTE_SOURCE_ODOMETER:
-            ent = self._opts.get(CA_COMMUTE_ODOMETER_ENTITY)
+            ent = self._cg(car, CA_COMMUTE_ODOMETER_ENTITY)
             if not ent:
                 return None
             km = self._daily_km_from_states(await self._history(ent, start))
             if km is None:
                 return None
-            eff = self._read_float_opt(CA_COMMUTE_EFFICIENCY)
+            eff = self._read_float_cg(car, CA_COMMUTE_EFFICIENCY)
             eff = 18.0 if eff is None or eff <= 0 else eff
             return km * eff / 100.0           # km/day × kWh/100km ÷ 100 = kWh/day
         if source == CA_COMMUTE_SOURCE_SOC:
-            ent = self._opts.get(CA_SOC_ENTITY)
+            ent = self._cg(car, CA_SOC_ENTITY)
             if not ent:
                 return None
             pct = self._daily_soc_drop_from_states(await self._history(ent, start))
             if pct is None:
                 return None
-            try:
-                batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            except (TypeError, ValueError):
-                return None
-            if batt <= 0:
+            batt = self._read_float_cg(car, CA_BATTERY_KWH)
+            if batt is None or batt <= 0:
                 return None
             return pct / 100.0 * batt          # %/day × kWh ÷ 100 = kWh/day
         return None
@@ -1157,59 +1213,62 @@ class ChargeAssistant:
         span_days = max(1.0, (pts[-1][0] - pts[0][0]) / 86400.0)
         return drop / span_days
 
-    def _daily_use_pct(self) -> float | None:
-        """Learned daily use as a % of the battery (kWh/day ÷ capacity). None
-        without learned use or a battery size."""
-        use_kwh = self._avg_daily_use_kwh()
+    def _daily_use_pct(self, car: dict | None = None) -> float | None:
+        """Learned daily use as a % of the battery (kWh/day ÷ capacity) for `car`
+        (default: active car). None without learned use or a battery size."""
+        if car is None:
+            car = self._active_car()
+        use_kwh = self._avg_daily_use_kwh(car)
         if use_kwh is None:
             return None
-        try:
-            batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-        except (TypeError, ValueError):
-            return None
-        if batt <= 0:
+        batt = self._read_float_cg(car, CA_BATTERY_KWH)
+        if batt is None or batt <= 0:
             return None
         return use_kwh / batt * 100.0
 
-    def _commute_target(self) -> float | None:
+    def _commute_target(self, car: dict | None = None) -> float | None:
         """Adaptive target SOC% from learned use: reserve + avg_use×cover + margin,
-        clamped to [30%, CA_TARGET_PCT]. None without enough data / battery size."""
-        use_pct = self._daily_use_pct()
+        clamped to [30%, the car's target]. None without enough data / battery."""
+        if car is None:
+            car = self._active_car()
+        use_pct = self._daily_use_pct(car)
         if use_pct is None:
             return None
-        reserve = self._read_float_opt(CA_COMMUTE_RESERVE)
-        margin = self._read_float_opt(CA_COMMUTE_MARGIN)
-        cover = self._read_float_opt(CA_COMMUTE_COVER_DAYS)
+        reserve = self._read_float_cg(car, CA_COMMUTE_RESERVE)
+        margin = self._read_float_cg(car, CA_COMMUTE_MARGIN)
+        cover = self._read_float_cg(car, CA_COMMUTE_COVER_DAYS)
         reserve = 20.0 if reserve is None else reserve
         margin = 10.0 if margin is None else margin
         cover = 1.0 if cover is None else max(0.5, cover)
-        try:
-            cap = float(self._opts.get(CA_TARGET_PCT, 80) or 80)
-        except (TypeError, ValueError):
-            cap = 80.0
+        cap = self._read_float_cg(car, CA_TARGET_PCT)
+        cap = 80.0 if cap is None else cap
         target = reserve + use_pct * cover + margin
         return max(30.0, min(cap, target))
 
     # ---- forward-looking insight: where SOC lands without charging ------
-    def _projected_soc_after_days(self, days: float = 1.0) -> float | None:
-        """Projected SOC% after `days` of typical driving with no charging:
-        current SOC − daily-use% × days, floored at 0. None without current SOC,
-        battery size, or learned use."""
-        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
-        use_pct = self._daily_use_pct()
+    def _projected_soc_after_days(self, days: float = 1.0, car: dict | None = None) -> float | None:
+        """Projected SOC% after `days` of typical driving with no charging for
+        `car` (default: active): current SOC − daily-use% × days, floored at 0.
+        None without current SOC, battery size, or learned use."""
+        if car is None:
+            car = self._active_car()
+        soc = self._read_float(self._cg(car, CA_SOC_ENTITY))
+        use_pct = self._daily_use_pct(car)
         if soc is None or use_pct is None:
             return None
         return max(0.0, soc - use_pct * days)
 
-    def _days_until_reserve(self) -> float | None:
-        """How many days of typical driving until SOC falls to the reserve floor,
-        from the current level with no charging. None without the inputs; 0 if
-        already at/below reserve."""
-        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
-        use_pct = self._daily_use_pct()
+    def _days_until_reserve(self, car: dict | None = None) -> float | None:
+        """How many days of typical driving until SOC falls to the reserve floor
+        for `car` (default: active), with no charging. None without the inputs;
+        0 if already at/below reserve."""
+        if car is None:
+            car = self._active_car()
+        soc = self._read_float(self._cg(car, CA_SOC_ENTITY))
+        use_pct = self._daily_use_pct(car)
         if soc is None or use_pct is None or use_pct <= 0:
             return None
-        reserve = self._read_float_opt(CA_COMMUTE_RESERVE)
+        reserve = self._read_float_cg(car, CA_COMMUTE_RESERVE)
         reserve = 20.0 if reserve is None else reserve
         return max(0.0, (soc - reserve) / use_pct)
 

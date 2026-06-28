@@ -36,19 +36,60 @@ per-profile from these — projected-SOC is the key signal the scheduler ranks o
 
 ## Identity — "which car is on the cable?"
 
-The charger can't tell you which car it is. Options, best→simplest:
+**There is no vehicle ID to read.** Standard AC charging (IEC 61851 Control-Pilot,
+what the Pulsar uses) is anonymous — no VIN/MAC is exchanged. ISO 15118 Plug &
+Charge *could* carry a unique ID but the Pulsar over our BLE/BAPI path doesn't
+expose it (and the basic Pulsar doesn't support PnC). Wallbox's RFID identifies
+the *user card*, not the *car*. The charger gives us a **plug-in event**
+(`car_connected` → true) and energy flow, nothing more — so identity must be
+supplied.
 
-1. **Per-car present/plug sensor** — if a car integration exposes "charging" or
-   "plugged in" or "charge cable connected" *and* it's reliable, the car whose
-   plug-sensor is on == the one on the cable.
-2. **SOC-rises correlation** — when the wallbox is delivering energy, whichever
-   mapped car's SOC is *rising* is the plugged car (debounced over a few minutes).
-3. **Manual selector** — an `input_select.charging_now` the user sets ("BYD" /
-   "Tesla"). Always works; one tap. Good default fallback.
-4. **Geofence + heuristic** — only one car home → it's that one.
+**Primary: confirm-on-plug notification (with a smart pre-filled guess).**
+1. `car_connected` flips true → *a* car plugged in.
+2. **Guess** the car: whichever mapped car's **SOC is rising** once charging
+   starts (most reliable), else "the car that's home", else most-urgent.
+3. Fire an **actionable notification**: *"🔌 Plugged in the BYD? [Yes] · [No — the
+   Tesla]"* — one tap confirms/corrects. If the SOC-rise guess holds for N minutes
+   with no reply, **auto-confirm** it (usually zero taps).
+4. The confirmed car becomes the **active car** for that plug-in session; all
+   per-car target / commute / projection logic applies to it. It stays active
+   until unplugged (`car_connected` → false), then re-asks on the next plug-in.
 
-Ship with **manual selector default**, auto-detect (1/2) when a confident signal
-exists.
+Better than a hardware ID: always works, any car/charger, and the SOC-rise
+cross-check self-corrects.
+
+**Fallbacks / upgrades:**
+- **Manual `input_select.charging_now`** — always-available override; also the
+  answer target of the notification.
+- **Per-car plug/charging sensor** — if exactly one car integration reports
+  "charging"/"plugged in", use it directly (no notification needed).
+- **Single car configured** → skip identity entirely (it's that car).
+
+### Safe fallback when identity *can't* be determined
+
+Resolution order, each step a fallback for the one above:
+1. **Single car** → it's that car. Done.
+2. **Confident auto-signal** — lone plug sensor, or SOC clearly rising on exactly
+   one car → use it.
+3. **Sticky last car** — assume the **last-confirmed** car (people usually charge
+   the same car) → use it, but still send the confirm notification so a wrong
+   guess is one tap to fix. (`_active_car()` already does this: CA_ACTIVE_CAR
+   else first profile.)
+4. **Genuinely unknown** (never confirmed, ambiguous signal, no reply) → the
+   `unknown_car` policy, configurable, safest first:
+   - **`ask` (default)** — do **not** autonomously start a car-specific charge;
+     send the "which car?" notification and wait. Native schedule + manual
+     charging still work, so the car isn't stranded — the assistant just doesn't
+     *guess* a target.
+   - **`conservative`** — charge to the **lowest** commute target / reserve across
+     all cars, so an unknown car is never *over*-charged (under-charge is
+     recoverable; a one-tap confirm raises it). Good for "always have some range".
+   - **`assume_last`** — trust the sticky car and act on its target.
+
+Safety invariant: when unsure the assistant only ever does the **reversible,
+conservative** thing (charge a little, or nothing) — never a high/forced charge
+on a guess. Worst case is a slightly-low battery the user tops up after
+confirming, never an over-charge or a stranded car.
 
 ## Scheduling protocol (best outcome)
 
