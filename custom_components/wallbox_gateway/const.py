@@ -124,6 +124,19 @@ CA_COMMUTE_RESERVE = "commute_reserve_pct"   # SOC floor to always keep (default
 CA_COMMUTE_MARGIN = "commute_margin_pct"     # buffer over the average (default 10)
 CA_COMMUTE_COVER_DAYS = "commute_cover_days"  # days of use to cover per charge (default 1)
 CA_COMMUTE_WINDOW_DAYS = "commute_window_days"  # rolling learning window (default 7)
+# Where the learner gets "energy used per day" from:
+#   "charger"  — energy the wallbox delivered/day (charge-log; default, no car
+#                integration needed). Proxy: what you charged ≈ what you drove.
+#   "odometer" — distance/day from a car odometer (km) × efficiency (kWh/100km).
+#                Distance-true; survives charging elsewhere. Reads recorder history.
+#   "soc"      — SOC drop/day from the battery-level sensor × battery_kwh.
+#                Most direct; reads recorder history.
+CA_COMMUTE_SOURCE = "commute_source"               # "charger" | "odometer" | "soc"
+CA_COMMUTE_ODOMETER_ENTITY = "commute_odometer_entity"  # total-km sensor (odometer source)
+CA_COMMUTE_EFFICIENCY = "commute_efficiency"       # kWh/100km (odometer source, default 18)
+CA_COMMUTE_SOURCE_CHARGER = "charger"
+CA_COMMUTE_SOURCE_ODOMETER = "odometer"
+CA_COMMUTE_SOURCE_SOC = "soc"
 
 # ---- Dynamic current control (Phase 2) ----
 # Shared current bounds the assistant stays within when it sets the charge

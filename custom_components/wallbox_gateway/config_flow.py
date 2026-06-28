@@ -51,6 +51,12 @@ from .const import (
     CA_COMMUTE_MARGIN,
     CA_COMMUTE_COVER_DAYS,
     CA_COMMUTE_WINDOW_DAYS,
+    CA_COMMUTE_SOURCE,
+    CA_COMMUTE_ODOMETER_ENTITY,
+    CA_COMMUTE_EFFICIENCY,
+    CA_COMMUTE_SOURCE_CHARGER,
+    CA_COMMUTE_SOURCE_ODOMETER,
+    CA_COMMUTE_SOURCE_SOC,
     CA_DEPARTURE,
     CA_GRID_ENTITY,
     CA_GRID_EXPORT_NEGATIVE,
@@ -769,6 +775,36 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=1, max=60, step=1, unit_of_measurement="days",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                # Where the learner gets daily use from. "charger" needs no car
+                # integration; "odometer"/"soc" read the car's history.
+                vol.Optional(
+                    CA_COMMUTE_SOURCE,
+                    default=cur.get(CA_COMMUTE_SOURCE, CA_COMMUTE_SOURCE_CHARGER),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=CA_COMMUTE_SOURCE_CHARGER, label="Charger energy delivered"),
+                            selector.SelectOptionDict(value=CA_COMMUTE_SOURCE_ODOMETER, label="Car odometer (km) + efficiency"),
+                            selector.SelectOptionDict(value=CA_COMMUTE_SOURCE_SOC, label="Car battery-level drop (SOC)"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
+                    CA_COMMUTE_ODOMETER_ENTITY,
+                    default=cur.get(CA_COMMUTE_ODOMETER_ENTITY, vol.UNDEFINED),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Optional(
+                    CA_COMMUTE_EFFICIENCY,
+                    default=cur.get(CA_COMMUTE_EFFICIENCY, 18),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=5, max=50, step=0.5, unit_of_measurement="kWh/100km",
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),

@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b8] - 2026-06-28
+
+### Added
+- **Commute learner "learn from" source.** The adaptive target can now be based
+  on what you actually drive, not just what the charger delivered:
+  - **Charger energy** (default, unchanged) — energy the wallbox delivered/day;
+    no car integration needed.
+  - **Car odometer + efficiency** — reads a total-km sensor's recorder history,
+    computes km/day, ×efficiency (kWh/100km, default 18). Distance-true and still
+    counts driving when you charge elsewhere.
+  - **Car battery-level (SOC)** — reads the SOC sensor's history and sums the
+    daily drops (driving), ×battery capacity.
+  History-backed sources are read off the recorder on a throttled 1-hour refresh
+  and cached, so the target math stays synchronous; they degrade gracefully to
+  the fixed target if the recorder/entity isn't available.
+
 ## [0.18.0b7] - 2026-06-28
 
 ### Added

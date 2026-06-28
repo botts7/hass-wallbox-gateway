@@ -849,6 +849,57 @@ def test_commute_target_capped_disabled_and_nodata():
     assert ca2._commute_target() is None and ca2._target_pct() == 80, "no data → fixed target"
 
 
+class _HistState:
+    """Minimal recorder-State stand-in: .state + .last_changed (datetime)."""
+    def __init__(self, value, days_ago):
+        from datetime import timedelta
+        self.state = value
+        self.last_changed = dt_util.utcnow() - timedelta(days=days_ago)
+
+
+def _hist(pairs):
+    # pairs: list of (days_ago, value), passed newest-first for readability;
+    # the learner expects oldest-first, so reverse.
+    return [_HistState(str(v), d) for d, v in sorted(pairs, key=lambda p: -p[0])]
+
+
+@case
+def test_commute_odometer_source_km_per_day():
+    ca, _ = build({C.CA_COMMUTE_ENABLED: True}, {})
+    # 1000 -> 1500 km across a 5-day span = 100 km/day
+    km = ca._daily_km_from_states(_hist([(5, 1000), (3, 1200), (0, 1500)]))
+    assert km is not None and 95 < km < 105, f"~100 km/day expected, got {km}"
+    assert ca._daily_km_from_states([]) is None, "no history → None"
+    # non-increasing / single point → None
+    assert ca._daily_km_from_states(_hist([(2, 500), (0, 500)])) is None
+
+
+@case
+def test_commute_soc_source_drop_per_day():
+    ca, _ = build({C.CA_COMMUTE_ENABLED: True}, {})
+    # 80->60 (drop 20), 60->90 (charge, ignored), 90->70 (20), 70->40 (30) = 70%
+    # across a 4-day span => 17.5 %/day
+    pct = ca._daily_soc_drop_from_states(_hist([(4, 80), (3, 60), (2, 90), (1, 70), (0, 40)]))
+    assert pct is not None and 16 < pct < 19, f"~17.5 %/day expected, got {pct}"
+    # only charging (monotonic up) → no consumption → None
+    assert ca._daily_soc_drop_from_states(_hist([(2, 40), (1, 60), (0, 80)])) is None
+
+
+@case
+def test_commute_source_dispatch_charger_default():
+    # default source is "charger" → uses the live charge-log, not the cache
+    ca, _ = build({C.CA_COMMUTE_ENABLED: True}, {})
+    now = dt_util.utcnow().timestamp()
+    ca._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 14000}]
+    assert ca._learn_source() == "charger"
+    assert ca._avg_daily_use_kwh() is not None, "charger source computes live"
+    # switch to a history source → sync path returns the (empty) cache, not charge-log
+    ca._opts[C.CA_COMMUTE_SOURCE] = "odometer"
+    assert ca._avg_daily_use_kwh() is None, "history source uses cache (None until refresh)"
+    ca._learned_daily_kwh = 12.0
+    assert ca._avg_daily_use_kwh() == 12.0, "history source returns the cached value"
+
+
 def main():
     if not _HA_OK:
         return

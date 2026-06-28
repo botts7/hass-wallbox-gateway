@@ -92,6 +92,12 @@ from .const import (
     CA_COMMUTE_MARGIN,
     CA_COMMUTE_COVER_DAYS,
     CA_COMMUTE_WINDOW_DAYS,
+    CA_COMMUTE_SOURCE,
+    CA_COMMUTE_ODOMETER_ENTITY,
+    CA_COMMUTE_EFFICIENCY,
+    CA_COMMUTE_SOURCE_CHARGER,
+    CA_COMMUTE_SOURCE_ODOMETER,
+    CA_COMMUTE_SOURCE_SOC,
     CA_TAP_PATH,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -209,6 +215,12 @@ class ChargeAssistant:
         # and when we last issued a resume (debounce + cooldown).
         self._auto_resume_since: datetime | None = None
         self._auto_resume_last: datetime | None = None
+        # Commute learner: cached avg daily use (kWh/day) for the history-backed
+        # sources (odometer / SOC) which need an async recorder read, so the sync
+        # target math can stay sync. None until the first async refresh lands.
+        self._learned_daily_kwh: float | None = None
+        self._learned_at: datetime | None = None
+        self._learning = False
         # Solar-available reminder edge: True once we've nudged for the current
         # surplus episode; re-armed when surplus drops back below the threshold.
         self._solar_reminded = False
@@ -403,6 +415,8 @@ class ChargeAssistant:
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
         self._maybe_auto_resume(sc)
+        if self._opts.get(CA_COMMUTE_ENABLED):
+            self._maybe_refresh_learned()
 
     def _maybe_auto_resume(self, controlling: bool) -> None:
         """Auto-unpause Eco-Smart / native schedule after a manual charge. When
@@ -1005,19 +1019,33 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     # Commute-based adaptive target — learn daily use, charge just enough
     # ------------------------------------------------------------------
+    def _learn_window_days(self) -> int:
+        """Rolling learning window (days), clamped to [1, 60]."""
+        return max(1, min(int(self._read_float_opt(CA_COMMUTE_WINDOW_DAYS) or 7), 60))
+
+    def _learn_source(self) -> str:
+        return str(self._opts.get(CA_COMMUTE_SOURCE) or CA_COMMUTE_SOURCE_CHARGER)
+
     def _avg_daily_use_kwh(self) -> float | None:
-        """Average daily energy use, learned from the firmware charge-log (energy
-        added per day ≈ energy driven). Averaged over the rolling learning window,
-        using the actual data span so it's sensible before a full window of data
-        has accrued. None until there's any charge logged."""
+        """Average daily energy use (kWh/day) from the configured learn-from
+        source. The charger source is computed live (cheap, in-memory); the
+        history-backed sources (odometer / SOC) return the cached value the async
+        refresh keeps fresh. None until there's enough data."""
+        if self._learn_source() == CA_COMMUTE_SOURCE_CHARGER:
+            return self._avg_daily_kwh_from_charger()
+        return self._learned_daily_kwh
+
+    def _avg_daily_kwh_from_charger(self) -> float | None:
+        """Energy the wallbox delivered per day, from the firmware charge-log
+        (energy added ≈ energy driven). Averaged over the actual data span so it's
+        sensible before a full window has accrued. None until any charge logged."""
         coord = self._coordinator()
         if coord is None or not getattr(coord, "data", None):
             return None
         log = coord.data.get("charge_log") or []
         if not log:
             return None
-        window = int(self._read_float_opt(CA_COMMUTE_WINDOW_DAYS) or 7)
-        window = max(1, min(window, 60))
+        window = self._learn_window_days()
         now = dt_util.utcnow().timestamp()
         cutoff = now - window * 86400
         in_win = [iv for iv in log if (iv.get("start") or 0) >= cutoff and (iv.get("wh") or 0) > 0]
@@ -1027,6 +1055,107 @@ class ChargeAssistant:
         earliest = min(iv["start"] for iv in in_win)
         span_days = max(1.0, min(float(window), (now - earliest) / 86400.0))
         return (total_wh / 1000.0) / span_days
+
+    # ---- history-backed sources (odometer / SOC) -----------------------
+    _LEARN_REFRESH = timedelta(hours=1)   # daily use changes slowly; don't hammer the recorder
+
+    def _maybe_refresh_learned(self) -> None:
+        """Throttled trigger (from the coord tick) to recompute the history-backed
+        learner. No-op for the charger source (computed live)."""
+        if self._learn_source() == CA_COMMUTE_SOURCE_CHARGER or self._learning:
+            return
+        now = dt_util.utcnow()
+        if self._learned_at is not None and now - self._learned_at < self._LEARN_REFRESH:
+            return
+        self._learning = True
+        self.hass.async_create_task(self._refresh_learned_use())
+
+    async def _refresh_learned_use(self) -> None:
+        try:
+            self._learned_daily_kwh = await self._compute_history_daily_kwh()
+            self._learned_at = dt_util.utcnow()
+        except Exception as err:  # recorder missing / entity not recorded — degrade gracefully
+            _LOGGER.debug("Charge Assistant: commute learner history read failed: %s", err)
+        finally:
+            self._learning = False
+
+    async def _history(self, entity_id: str, start: datetime) -> list:
+        """State history for entity_id from `start` to now, oldest-first.
+        Returns [] if the recorder is unavailable or nothing is recorded."""
+        from homeassistant.components.recorder import get_instance, history
+
+        inst = get_instance(self.hass)
+        res = await inst.async_add_executor_job(
+            history.state_changes_during_period,
+            self.hass, start, dt_util.utcnow(), entity_id, False, False, None, True,
+        )
+        return list(res.get(entity_id, []))
+
+    async def _compute_history_daily_kwh(self) -> float | None:
+        source = self._learn_source()
+        start = dt_util.utcnow() - timedelta(days=self._learn_window_days())
+        if source == CA_COMMUTE_SOURCE_ODOMETER:
+            ent = self._opts.get(CA_COMMUTE_ODOMETER_ENTITY)
+            if not ent:
+                return None
+            km = self._daily_km_from_states(await self._history(ent, start))
+            if km is None:
+                return None
+            eff = self._read_float_opt(CA_COMMUTE_EFFICIENCY)
+            eff = 18.0 if eff is None or eff <= 0 else eff
+            return km * eff / 100.0           # km/day × kWh/100km ÷ 100 = kWh/day
+        if source == CA_COMMUTE_SOURCE_SOC:
+            ent = self._opts.get(CA_SOC_ENTITY)
+            if not ent:
+                return None
+            pct = self._daily_soc_drop_from_states(await self._history(ent, start))
+            if pct is None:
+                return None
+            try:
+                batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
+            except (TypeError, ValueError):
+                return None
+            if batt <= 0:
+                return None
+            return pct / 100.0 * batt          # %/day × kWh ÷ 100 = kWh/day
+        return None
+
+    @staticmethod
+    def _num_states(states: list) -> list:
+        """(timestamp, value) for numeric, non-unknown states, oldest-first."""
+        out = []
+        for s in states or []:
+            try:
+                out.append((s.last_changed.timestamp(), float(s.state)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return out
+
+    def _daily_km_from_states(self, states: list) -> float | None:
+        """km/day from a monotonic odometer: (last − first) ÷ data-span days."""
+        pts = self._num_states(states)
+        if len(pts) < 2:
+            return None
+        dist = pts[-1][1] - pts[0][1]
+        if dist <= 0:
+            return None
+        span_days = max(1.0, (pts[-1][0] - pts[0][0]) / 86400.0)
+        return dist / span_days
+
+    def _daily_soc_drop_from_states(self, states: list) -> float | None:
+        """SOC %/day used: sum of the downward steps (driving) ÷ data-span days.
+        Ignores upward steps (charging) so only consumption is counted."""
+        pts = self._num_states(states)
+        if len(pts) < 2:
+            return None
+        drop = 0.0
+        for (_, a), (_, b) in zip(pts, pts[1:]):
+            if b < a:
+                drop += a - b
+        if drop <= 0:
+            return None
+        span_days = max(1.0, (pts[-1][0] - pts[0][0]) / 86400.0)
+        return drop / span_days
 
     def _commute_target(self) -> float | None:
         """Adaptive target SOC% from learned use: reserve + avg_use×cover + margin,
