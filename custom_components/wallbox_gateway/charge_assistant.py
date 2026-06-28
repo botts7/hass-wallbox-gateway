@@ -112,6 +112,9 @@ from .const import (
     TRIG_LEAD,
     TRIG_NIGHTLY,
     TRIG_TARIFF,
+    TRIG_SOLAR,
+    CA_SOLAR_REMIND_KW,
+    CA_HOME_ENTITY,
 )
 from . import ca_config
 from . import charge_window
@@ -187,6 +190,9 @@ class ChargeAssistant:
         # Suppression windows set by the Snooze / Skip notification actions.
         self._suppress_until: datetime | None = None
         self._escalations_left = 0
+        # Solar-available reminder edge: True once we've nudged for the current
+        # surplus episode; re-armed when surplus drops back below the threshold.
+        self._solar_reminded = False
         self._last_result: str = "(not run)"
         # Most recent reason the acting modes stood down (gateway owner isn't
         # us / manual override). Surfaced by the diagnostic sensor + Repair.
@@ -426,6 +432,20 @@ class ChargeAssistant:
             self._unsubs.append(
                 async_track_state_change_event(self.hass, [pre], self._on_price)
             )
+        if TRIG_SOLAR in triggers:
+            if not self._surplus_configured():
+                _LOGGER.warning(
+                    "Charge Assistant: 'Solar available' reminder on but no surplus "
+                    "source configured — set one in the solar settings"
+                )
+            else:
+                # Surplus is noisy + entity-driven → re-check on a steady tick so a
+                # rising-edge nudge fires once per surplus episode.
+                self._unsubs.append(
+                    async_track_time_interval(
+                        self.hass, self._on_solar_remind_tick, timedelta(seconds=60)
+                    )
+                )
 
         _LOGGER.info(
             "Charge Assistant: reminder active on %s (triggers=%s)",
@@ -530,6 +550,40 @@ class ChargeAssistant:
     def _on_lead(self, now: datetime) -> None:
         self._lead_unsub = None
         self._maybe_remind("lead")
+
+    # ------------------------------------------------------------------
+    # Solar-available reminder ("plug in — there's free solar")
+    # ------------------------------------------------------------------
+    def _solar_remind_threshold(self) -> float:
+        """Surplus level (in the surplus sensor's units) that triggers the nudge.
+        Defaults to the strategy's charge-start level, else 1.4."""
+        for key, src in ((CA_SOLAR_REMIND_KW, self._rem), (CA_SURPLUS_START, self._opts)):
+            v = src.get(key)
+            if v not in (None, ""):
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+        return 1.4
+
+    @callback
+    def _on_solar_remind_tick(self, now: datetime) -> None:
+        self._eval_solar_remind()
+
+    def _eval_solar_remind(self) -> None:
+        """Rising-edge 'solar available — plug in' nudge. Fires once when surplus
+        rises to/above the threshold, re-arms when it clearly drops. The
+        unplugged / home / quiet / SOC / suppression checks are in _maybe_remind."""
+        surplus = self._surplus_value()
+        if surplus is None:
+            return
+        thr = self._solar_remind_threshold()
+        if surplus >= thr:
+            if not self._solar_reminded:
+                self._solar_reminded = True
+                self._maybe_remind("solar")
+        elif surplus < thr * 0.7:
+            self._solar_reminded = False   # re-arm once surplus clearly drops
 
     # ------------------------------------------------------------------
     # Target-SOC (smart charge) mode
@@ -1774,6 +1828,9 @@ class ChargeAssistant:
         if plugged is not False:
             _LOGGER.debug("Charge Assistant: %s — car connected/unknown, no nudge", source)
             return
+        if not self._home_ok():
+            _LOGGER.debug("Charge Assistant: %s skipped — not home", source)
+            return
         if not self._soc_skip_ok():
             _LOGGER.debug("Charge Assistant: %s skipped — SOC at/above threshold", source)
             return
@@ -1884,10 +1941,16 @@ class ChargeAssistant:
                     plugged = self._plugged_in() is True
                 except Exception:  # noqa: BLE001
                     plugged = False
-                message = cfg.get(CA_MESSAGE) or (
-                    "Your car is plugged in." if plugged
-                    else "Your car isn't plugged in — plug it in to charge."
-                )
+                if source == "solar" and not cfg.get(CA_MESSAGE):
+                    # Solar-available nudge — say WHY (free solar) when no custom
+                    # message is set.
+                    message = ("☀️ Solar is flowing and your car isn't plugged in — "
+                               "plug in to charge for free.")
+                else:
+                    message = cfg.get(CA_MESSAGE) or (
+                        "Your car is plugged in." if plugged
+                        else "Your car isn't plugged in — plug it in to charge."
+                    )
                 soc_entity = cfg.get(CA_SOC_ENTITY)
                 if soc_entity and (st := self.hass.states.get(soc_entity)) and st.state not in _UNAVAILABLE:
                     message = f"{message} · battery {st.state}%"
@@ -1982,6 +2045,17 @@ class ChargeAssistant:
 
     def _suppressed(self) -> bool:
         return self._suppress_until is not None and dt_util.utcnow() < self._suppress_until
+
+    def _home_ok(self) -> bool:
+        """'Only when home' condition: True if no home gate is set, or the chosen
+        presence entity is `home`. Unknown presence doesn't suppress."""
+        eid = self._rem.get(CA_HOME_ENTITY)
+        if not eid:
+            return True
+        st = self.hass.states.get(eid)
+        if st is None or st.state in _UNAVAILABLE:
+            return True
+        return st.state == "home"
 
     def _charge_within(self) -> bool:
         """True if the next scheduled charge is within the configured window."""

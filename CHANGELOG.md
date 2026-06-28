@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b4] - 2026-06-27
+
+### Added
+- **"Solar available" plug-in reminder** — a new reminder trigger that nudges you
+  to plug in when there's spare solar and the car is unplugged, so you don't waste
+  free surplus. Uses your existing solar/surplus source; fires once on the rising
+  edge (re-arms when surplus drops). Configurable threshold (`solar_remind_kw`).
+- **"Only when home" condition** (`home_entity`) — an optional presence
+  entity (person/device_tracker) that must be `home` for any reminder to fire.
+  Pairs with the solar reminder ("plug in for free solar, but only when I'm home").
+
 ## [0.18.0b3] - 2026-06-27
 
 ### Added

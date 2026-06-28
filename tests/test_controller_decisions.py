@@ -731,6 +731,54 @@ def test_next_start_estimate_charging_and_target_and_off():
     assert build({C.CA_MODE: C.MODE_OFF}, {})[0].next_start_estimate()["state"] == "off"
 
 
+# ── solar-available reminder + "only when home" condition ───────────
+@case
+def test_solar_remind_rising_edge():
+    # Surplus crossing the threshold fires once; re-arms after it clearly drops.
+    opts = {C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus"}
+    ca, _ = build(opts, {"sensor.surplus": FakeState("2.0")})
+    ca._rem = {C.CA_SOLAR_REMIND_KW: 1.4}
+    fired = []
+    ca._maybe_remind = lambda src: fired.append(src)
+    ca._eval_solar_remind()                                   # 2.0 >= 1.4 → fire
+    assert fired == ["solar"] and ca._solar_reminded is True
+    ca._eval_solar_remind()                                   # still high → no re-fire
+    assert fired == ["solar"]
+    ca.hass.states._m["sensor.surplus"] = FakeState("0.5")    # below 0.7×1.4 → re-arm
+    ca._eval_solar_remind()
+    assert ca._solar_reminded is False
+    ca.hass.states._m["sensor.surplus"] = FakeState("2.0")    # rises again → fire
+    ca._eval_solar_remind()
+    assert fired == ["solar", "solar"]
+
+
+@case
+def test_home_ok_gate():
+    ca, _ = build({}, {"person.me": FakeState("home")})
+    ca._rem = {}
+    assert ca._home_ok() is True                              # no gate set
+    ca._rem = {C.CA_HOME_ENTITY: "person.me"}
+    assert ca._home_ok() is True                              # home
+    ca.hass.states._m["person.me"] = FakeState("not_home")
+    assert ca._home_ok() is False                             # away → blocked
+    ca.hass.states._m["person.me"] = FakeState("unknown")
+    assert ca._home_ok() is True                              # unknown → don't suppress
+
+
+@case
+def test_maybe_remind_respects_home_gate():
+    ca, _ = build({}, {"person.me": FakeState("not_home")})
+    ca._rem = {C.CA_HOME_ENTITY: "person.me"}
+    ca._plugged_in = lambda: False        # unplugged (would otherwise nudge)
+    ca._arm_escalation = lambda: None     # no real timers
+    ca._escalations_left = 0
+    ca._maybe_remind("solar")
+    assert ca._escalations_left == 0, "not home → no nudge"
+    ca.hass.states._m["person.me"] = FakeState("home")
+    ca._maybe_remind("solar")
+    assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "home → nudge"
+
+
 def main():
     if not _HA_OK:
         return

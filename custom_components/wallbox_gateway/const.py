@@ -153,16 +153,24 @@ TRIG_ARRIVAL = "arrival"   # presence entity -> home
 TRIG_NIGHTLY = "nightly"   # daily at a set time
 TRIG_LEAD = "lead"         # N hours before the next scheduled charge
 TRIG_TARIFF = "tariff"     # electricity price drops below a threshold
+TRIG_SOLAR = "solar"       # solar surplus available + car unplugged -> "plug in for free solar"
 
 CA_ARRIVAL_ENTITY = "arrival_entity"      # person / device_tracker
 CA_NIGHTLY_TIME = "nightly_time"          # "HH:MM:SS"
 CA_LEAD_HOURS = "lead_hours"              # float hours before charge
 CA_TARIFF_ENTITY = "tariff_entity"        # price sensor (e.g. Amber)
 CA_TARIFF_BELOW = "tariff_below"          # notify when price <= this
+# Solar-available reminder: uses the strategy's surplus source (_surplus_value).
+# Nudges once when surplus rises to/above this level (kW or the surplus sensor's
+# units) while the car is unplugged + you're home, then re-arms when it drops.
+CA_SOLAR_REMIND_KW = "solar_remind_kw"
 
 # Conditions
 CA_ONLY_IF_SCHEDULED = "only_if_scheduled"      # bool
 CA_SCHEDULED_WITHIN_H = "scheduled_within_h"    # hours window for "scheduled"
+# "Only when home": optional presence entity (person/device_tracker/group) that
+# must be `home` for any reminder to fire. Empty = no home gate.
+CA_HOME_ENTITY = "home_entity"
 
 # Notification behaviour
 CA_ACTIONABLE = "actionable"        # bool — add Start/Snooze/Skip buttons

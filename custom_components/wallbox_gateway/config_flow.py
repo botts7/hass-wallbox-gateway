@@ -96,6 +96,9 @@ from .const import (
     TRIG_LEAD,
     TRIG_NIGHTLY,
     TRIG_TARIFF,
+    TRIG_SOLAR,
+    CA_SOLAR_REMIND_KW,
+    CA_HOME_ENTITY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -758,6 +761,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                             {"value": TRIG_NIGHTLY, "label": "Each evening at a set time"},
                             {"value": TRIG_LEAD, "label": "Before a scheduled charge"},
                             {"value": TRIG_TARIFF, "label": "When electricity price drops (e.g. Amber)"},
+                            {"value": TRIG_SOLAR, "label": "When solar is available (plug in for free solar)"},
                         ],
                         multiple=True,
                         mode=selector.SelectSelectorMode.LIST,
@@ -806,6 +810,16 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             ] = selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=100, step=0.01, mode=selector.NumberSelectorMode.BOX
+                )
+            )
+        if TRIG_SOLAR in triggers:
+            # Surplus level (in the solar source's units) to nudge at. Uses the
+            # strategy's surplus source; defaults to its charge-start level.
+            fields[
+                vol.Optional(CA_SOLAR_REMIND_KW, default=cur.get(CA_SOLAR_REMIND_KW, 1.4))
+            ] = selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100000, step=0.1, mode=selector.NumberSelectorMode.BOX
                 )
             )
 
@@ -858,6 +872,13 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CA_QUIET_END, default=cur.get(CA_QUIET_END, "00:00:00")
                 ): selector.TimeSelector(),
+                # "Only when home": reminders fire only when this presence entity
+                # is home. Empty = no home gate.
+                vol.Optional(
+                    CA_HOME_ENTITY, default=cur.get(CA_HOME_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["person", "device_tracker"])
+                ),
             }
         )
         return self.async_show_form(step_id="conditions", data_schema=schema)
