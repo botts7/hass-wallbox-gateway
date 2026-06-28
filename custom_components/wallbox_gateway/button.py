@@ -39,6 +39,7 @@ async def async_setup_entry(
         RefreshNow(coordinator),
         ResumeSchedule(coordinator),
         RebootCharger(coordinator),
+        RebootGateway(coordinator),
     ])
 
 
@@ -102,3 +103,24 @@ class RebootCharger(GatewayEntity, ButtonEntity):
     async def async_press(self) -> None:
         await self.coordinator.client.get("/api/command?action=reboot")
         await self.coordinator.async_request_refresh()
+
+
+class RebootGateway(GatewayEntity, ButtonEntity):
+    """Reboot the ESP32 gateway itself (not the charger), via the auth-only
+    POST /api/reboot_gateway (no CSRF — the CSRF-gated /api/reboot is for the
+    web UI only). The gateway drops offline for ~10-20s while it restarts."""
+
+    entity_description = ButtonEntityDescription(
+        key="reboot_gateway",
+        translation_key="reboot_gateway",
+        name="Reboot gateway",
+        icon="mdi:restart-alert",
+        device_class=ButtonDeviceClass.RESTART,
+    )
+
+    def __init__(self, coordinator: GatewayCoordinator) -> None:
+        super().__init__(coordinator, "reboot_gateway")
+
+    async def async_press(self) -> None:
+        # No refresh after — the gateway is rebooting, so a poll would just fail.
+        await self.coordinator.client.post("/api/reboot_gateway")

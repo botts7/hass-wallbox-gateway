@@ -1,0 +1,117 @@
+# Commute Charging — Lovelace card for the Charge Assistant's three commute
+# sensors. Stock HA cards only (no HACS / custom cards needed).
+#
+# Entity IDs are auto-generated from the device name + each sensor's display
+# name, so they look like the examples below. Rename the `wallbox_01234567`
+# prefix to match your device, and confirm the exact IDs in Developer Tools →
+# States (the projected-SOC one is long because its name is long):
+#   sensor.wallbox_01234567_daily_use_average                  (kWh/day, learned)
+#   sensor.wallbox_01234567_commute_charge_target              (%, would charge to)
+#   sensor.wallbox_01234567_projected_soc_after_a_day_s_driving (%, after a day)
+#       attributes: daily_use_pct, days_until_reserve, below_reserve_tomorrow
+#
+# Add via Dashboard → Edit → "+ Add card" → "Manual", then paste this.
+# (Commute target + projected SOC read "unknown" until you set a battery-level
+#  entity and battery capacity in the Charge Assistant's Target mode.)
+
+type: vertical-stack
+cards:
+  - type: markdown
+    content: >
+      {% set proj = 'sensor.wallbox_01234567_projected_soc_after_a_day_s_driving' %}
+      {% set use = 'sensor.wallbox_01234567_daily_use_average' %}
+      {% set tgt = 'sensor.wallbox_01234567_commute_charge_target' %}
+      {% set p = states(proj) %}
+      {% set below = state_attr(proj, 'below_reserve_tomorrow') %}
+      {% set dur = state_attr(proj, 'days_until_reserve') %}
+
+      ## 🚗 Commute charging
+
+      {% if p in ['unknown', 'unavailable', none] %}
+      _Learning… pick a battery-level entity and set the battery capacity in the
+      Charge Assistant (Target mode) to see projections._
+      {% else %}
+      ### After a day's driving: **{{ p }}%**
+      {% if below %}
+      ⚠️ **Below your reserve tomorrow — charge soon.**
+      {% else %}
+      ✅ **You'll make it without charging.**
+      {% endif %}
+
+      {% if dur is not none -%}
+      Runs down to the reserve floor in **{{ dur }} day{{ 's' if dur != 1 else '' }}** of driving.
+      {%- endif %}
+
+      Typical use **{{ states(use) }} kWh/day** · commute target **{{ states(tgt) }}%**
+      {% endif %}
+
+      {% set av = states('sensor.wallbox_01234567_active_vehicle') %}
+      {% set rec = 'sensor.wallbox_01234567_plug_in_next' %}
+      {% if av not in ['unknown', 'unavailable', 'none', none] %}
+      ***
+      🚗 **On the cable:** {{ av }}
+      {% set pin = states(rec) %}
+      {% if pin not in ['unknown', 'unavailable', 'none', none] %}
+      🔌 **Plug in next:** **{{ pin }}** — {{ state_attr(rec, 'reason') }}
+      {% endif %}
+      {% set fn = state_attr(rec, 'feasibility_note') %}
+      {% if fn %}⚠️ {{ fn }}{% endif %}
+      {% endif %}
+  - type: horizontal-stack
+    cards:
+      - type: gauge
+        entity: sensor.wallbox_01234567_commute_charge_target
+        name: Commute target
+        unit: "%"
+        min: 0
+        max: 100
+        needle: true
+      - type: gauge
+        entity: sensor.wallbox_01234567_projected_soc_after_a_day_s_driving
+        name: After a day
+        unit: "%"
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 0
+          yellow: 20
+          green: 40
+  - type: entities
+    title: Learned
+    show_header_toggle: false
+    entities:
+      - entity: sensor.wallbox_01234567_daily_use_average
+        name: Daily use (average)
+        icon: mdi:car-electric
+      - entity: sensor.wallbox_01234567_commute_charge_target
+        name: Commute charge target
+        icon: mdi:battery-charging-medium
+      - entity: sensor.wallbox_01234567_projected_soc_after_a_day_s_driving
+        name: Projected SOC (tomorrow)
+        icon: mdi:battery-clock
+      - type: attribute
+        entity: sensor.wallbox_01234567_projected_soc_after_a_day_s_driving
+        attribute: days_until_reserve
+        name: Days until reserve
+        icon: mdi:calendar-clock
+        suffix: " days"
+  # Multi-vehicle rows — only useful when ≥2 cars are configured; hidden
+  # automatically (state "unknown") for single-car setups.
+  - type: conditional
+    conditions:
+      - entity: sensor.wallbox_01234567_active_vehicle
+        state_not: "unknown"
+      - entity: sensor.wallbox_01234567_active_vehicle
+        state_not: "unavailable"
+    card:
+      type: entities
+      title: Vehicles
+      show_header_toggle: false
+      entities:
+        - entity: sensor.wallbox_01234567_active_vehicle
+          name: On the cable now
+          icon: mdi:car-connected
+        - entity: sensor.wallbox_01234567_plug_in_next
+          name: Plug in next
+          icon: mdi:ev-plug-type2

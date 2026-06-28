@@ -30,8 +30,9 @@ def _ble_connected(entity: GatewayEntity) -> bool:
 
 
 def _charging(entity: GatewayEntity) -> bool:
-    # Charger status 1 = Charging per the BAPI enum in const.STATUS_CODES.
-    return entity._realtime().get("charger_status") == 1
+    # Charger status 1 = Charging in both the MAX (r_sta) and Zentri (r_dat.st)
+    # enums; _charger_status_code() picks the right source per charger family.
+    return entity._charger_status_code() == 1
 
 
 def _schedule_paused(entity: GatewayEntity) -> bool:
@@ -45,6 +46,33 @@ def _schedule_paused(entity: GatewayEntity) -> bool:
     # the schedule is paused will report status=1 (CHARGING) with
     # gen != 0.
     return (entity._status().get("gen") or 0) != 0
+
+
+def _plug_reminder(entity: GatewayEntity) -> bool | None:
+    # Charge-reminder engine (#127): ON when a charge is due within the
+    # configured lead window and the car is NOT plugged in. The gateway
+    # computes it; this is the single entity a notify blueprint binds to.
+    val = entity._status().get("plug_reminder")
+    return bool(val) if val is not None else None
+
+
+# Charger status codes that mean a vehicle is plugged in. Mirrors the
+# firmware's WallboxBLE::carConnected() r_dat.st set (+ 19 = locked-with-car
+# from r_sta). NB: /api/status "sta_connected" is the gateway's WiFi station
+# state, NOT the car — do not use it here.
+_CAR_CONNECTED_CODES = frozenset({1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 18, 19})
+
+
+def _car_connected(entity: GatewayEntity) -> bool | None:
+    # Prefer the gateway's own flag if a firmware build exposes it on
+    # /api/status; otherwise derive from the live charger status code.
+    val = entity._status().get("car_connected")
+    if isinstance(val, bool):
+        return val
+    code = entity._charger_status_code()
+    if code is None:
+        return None
+    return code in _CAR_CONNECTED_CODES
 
 
 BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
@@ -96,6 +124,21 @@ BINARY_SENSORS: tuple[GatewayBinaryDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda e: bool(e._status().get("ble_paused")) if "ble_paused" in e._status() else None,
+    ),
+    # Charge-reminder engine (#127)
+    GatewayBinaryDescription(
+        key="plug_reminder",
+        translation_key="plug_reminder",
+        name="Plug-in reminder",
+        icon="mdi:power-plug-off",
+        value_fn=_plug_reminder,
+    ),
+    GatewayBinaryDescription(
+        key="car_connected",
+        translation_key="car_connected",
+        name="Car connected",
+        device_class=BinarySensorDeviceClass.PLUG,
+        value_fn=_car_connected,
     ),
 )
 

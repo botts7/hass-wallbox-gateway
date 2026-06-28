@@ -1,0 +1,155 @@
+test_reminder:
+  name: Test charge reminder
+  description: >
+    Sends the Charge Assistant reminder notification immediately (ignoring
+    the schedule/SOC/quiet-hours conditions), so you can confirm the notify
+    target and setup are working.
+
+get_config:
+  name: Get gateway config
+  description: >
+    Returns the current options for the integration (Charge Assistant config
+    + tunables). Used by the Add-on's config GUI to pre-fill. Returns response
+    data.
+  fields:
+    host:
+      name: Gateway host
+      description: Match a specific gateway by host/IP. Omit if you have one.
+      required: false
+      example: "192.168.1.42"
+      selector:
+        text:
+
+set_config:
+  name: Set gateway config
+  description: >
+    Merge an options object into the integration's config and reload (restarts
+    the Charge Assistant with the new settings). Sub-objects you provide (e.g.
+    the whole charge_assistant config) replace the existing one wholesale.
+  fields:
+    options:
+      name: Options
+      description: A partial options object to merge into the entry options.
+      required: true
+      example: '{"charge_assistant": {"mode": "target_soc", "target_soc_pct": 80}}'
+      selector:
+        object:
+    host:
+      name: Gateway host
+      description: Match a specific gateway by host/IP. Omit if you have one.
+      required: false
+      example: "192.168.1.42"
+      selector:
+        text:
+
+set_schedule:
+  name: Set charge schedule
+  description: >
+    Create or update a charge schedule on the charger. Omit the schedule id
+    to create a new one; pass an existing id to update it. Times are local.
+  fields:
+    device_id:
+      name: Charger
+      description: Which charger (only needed if you have more than one).
+      selector:
+        device:
+          integration: wallbox_gateway
+    sid:
+      name: Schedule id
+      description: Leave blank to create a new schedule; set to update an existing one.
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 20
+          mode: box
+    start:
+      name: Start time
+      description: Local time charging may start.
+      required: true
+      example: "23:00"
+      selector:
+        time:
+    stop:
+      name: Stop time
+      description: Local time charging must stop.
+      required: true
+      example: "07:00"
+      selector:
+        time:
+    days:
+      name: Days
+      description: Days this schedule runs.
+      required: true
+      selector:
+        select:
+          multiple: true
+          options:
+            - { value: mon, label: Monday }
+            - { value: tue, label: Tuesday }
+            - { value: wed, label: Wednesday }
+            - { value: thu, label: Thursday }
+            - { value: fri, label: Friday }
+            - { value: sat, label: Saturday }
+            - { value: sun, label: Sunday }
+    max_current:
+      name: Max current (A)
+      description: Charging current limit for this schedule.
+      default: 32
+      selector:
+        number:
+          min: 6
+          max: 32
+          unit_of_measurement: A
+          mode: slider
+    enabled:
+      name: Enabled
+      description: Whether the schedule is active.
+      default: true
+      selector:
+        boolean:
+    energy_target_kwh:
+      name: Energy target (kWh)
+      description: Optional — stop after adding this many kWh (0 = no energy limit).
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.5
+          unit_of_measurement: kWh
+          mode: box
+
+delete_schedule:
+  name: Delete charge schedule
+  description: Delete one or more charge schedules by id.
+  fields:
+    device_id:
+      name: Charger
+      description: Which charger (only needed if you have more than one).
+      selector:
+        device:
+          integration: wallbox_gateway
+    sid:
+      name: Schedule id(s)
+      description: The schedule id(s) to delete.
+      required: true
+      example: "[0]"
+      selector:
+        object:
+
+import_native_schedules:
+  name: Import native schedules
+  description: >
+    Read the charger's own (native) charge schedules and mirror a copy into
+    Home Assistant. The native schedules are only paused — not deleted — while
+    the Charge Assistant controls charging, so this keeps a visible, persisted
+    backup so nothing is lost and you never have to re-create them. Returns the
+    decoded schedules.
+  fields:
+    device_id:
+      name: Charger
+      description: Which charger (only needed if you have more than one).
+      selector:
+        device:
+          integration: wallbox_gateway

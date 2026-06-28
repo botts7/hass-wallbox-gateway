@@ -14,6 +14,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import GatewayAuthError, GatewayClient, GatewayUnreachable
@@ -22,6 +23,7 @@ from .const import (
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     ENDPOINT_BOOT,
+    ENDPOINT_CHARGE_LOG,
     ENDPOINT_CHARGER,
     ENDPOINT_DIAG,
     ENDPOINT_HEALTH,
@@ -62,15 +64,18 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # with return_exceptions=True and silently fall back to the
         # previously-cached value when they fail.
         try:
-            status, charger, diag, health, boot = await asyncio.gather(
+            status, charger, diag, health, boot, charge_log = await asyncio.gather(
                 self.client.get(ENDPOINT_STATUS, timeout=4),
                 self.client.get(ENDPOINT_CHARGER, timeout=4),
                 self.client.get(ENDPOINT_DIAG, timeout=4),
                 self.client.get(ENDPOINT_HEALTH, timeout=4),
                 self.client.get(ENDPOINT_BOOT, timeout=4),
+                self.client.get(ENDPOINT_CHARGE_LOG, timeout=4),
             )
         except GatewayAuthError as e:
-            raise UpdateFailed(f"auth rejected by gateway: {e}") from e
+            # Surface as auth-failed so HA starts the reauth flow (prompts
+            # the user for new credentials) rather than just retrying.
+            raise ConfigEntryAuthFailed(f"auth rejected by gateway: {e}") from e
         except GatewayUnreachable as e:
             raise UpdateFailed(f"gateway unreachable: {e}") from e
 
@@ -116,6 +121,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "diag": diag or {},
             "health": health or {},
             "boot": boot or {},
+            "charge_log": (charge_log or {}).get("intervals", []) or prior.get("charge_log", []),
             "autolock": _parse_autolock(autolock_raw, prior.get("autolock")),
             "eco_smart": _parse_ecos(ecos_raw, prior.get("eco_smart")),
             "meter": _parse_dca(dca_raw, prior.get("meter")),
@@ -182,6 +188,10 @@ def _parse_dca(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         "voltage_v": int(v1) if isinstance(v1, (int, float)) else None,
         "house_power_w": int(p1) + int(p2) + int(p3),
+        # Per-phase power (EM340 / 3-phase Power Boost). Diagnostic.
+        "power_l1_w": int(p1),
+        "power_l2_w": int(p2),
+        "power_l3_w": int(p3),
         "house_current_a": int(c1) if isinstance(c1, (int, float)) else None,
         # Lifetime energy counter — Wh from charger, exposed as kWh
         "lifetime_kwh": (int(e) / 1000.0) if isinstance(e, (int, float)) else None,
