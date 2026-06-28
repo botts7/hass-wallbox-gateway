@@ -4,6 +4,16 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b10] - 2026-06-28
+
+### Added
+- **Multi-vehicle foundation (P1).** The learner / commute target / projected-SOC
+  now resolve against the *active* car (the one on the cable) via car profiles
+  (`cars` list + `active_car`). Each profile carries its own
+  soc_entity/battery_kwh/target/commute settings; anything unset falls back to
+  the top-level keys, so **single-car configs are unchanged**. Per-car learner
+  cache. (Config UI in add-on 0.37.0; identity/recommendation engine next.)
+
 ## [0.18.0b9] - 2026-06-28
 
 ### Added
