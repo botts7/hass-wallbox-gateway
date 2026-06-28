@@ -747,9 +747,13 @@ def test_solar_remind_rising_edge():
     ca.hass.states._m["sensor.surplus"] = FakeState("0.5")    # below 0.7×1.4 → re-arm
     ca._eval_solar_remind()
     assert ca._solar_reminded is False
-    ca.hass.states._m["sensor.surplus"] = FakeState("2.0")    # rises again → fire
+    ca.hass.states._m["sensor.surplus"] = FakeState("2.0")    # rises again, but within cooldown
     ca._eval_solar_remind()
-    assert fired == ["solar", "solar"]
+    assert fired == ["solar"], "anti-spam cooldown blocks the immediate re-nudge"
+    ca._solar_last_remind = dt_util.utcnow() - timedelta(hours=5)  # cooldown elapsed
+    ca._solar_reminded = False
+    ca._eval_solar_remind()
+    assert fired == ["solar", "solar"], "fires again once cooldown passes"
 
 
 @case

@@ -4,6 +4,21 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b5] - 2026-06-27
+
+### Fixed
+- **Solar charging got stuck after a stop and wouldn't re-charge when surplus
+  returned.** The Solar / Smart-Solar stops no longer "hand back" to the
+  charger's native control (a `resume` that left it stuck). The assistant now
+  keeps control and simply restarts on the next solar tick — so when surplus
+  comes back, it charges again. (Target-mode finish still hands back, unchanged.)
+
+### Changed
+- **"Solar available" reminder won't spam.** Even as surplus flaps up and down
+  (passing clouds), the nudge fires at most once every 4 hours. The
+  notification's **Skip** button still dismisses it for the rest of the day, and
+  **Snooze** holds it for an hour.
+
 ## [0.18.0b4] - 2026-06-27
 
 ### Added

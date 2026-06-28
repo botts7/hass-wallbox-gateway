@@ -128,6 +128,10 @@ _LOGGER = logging.getLogger(__name__)
 _UNAVAILABLE = (None, "", "unknown", "unavailable")
 _MAX_ESCALATIONS = 3
 _SNOOZE_MINUTES = 60
+# Anti-spam for the "solar available" reminder: even as surplus flaps up/down
+# (clouds), nudge at most once per this window. The notification's Skip button
+# still dismisses it for the rest of the day.
+_SOLAR_REMIND_COOLDOWN = timedelta(hours=4)
 # Target-SOC auto-start deadband: once we've stopped at target, don't auto-
 # restart until SOC has fallen this far below target (prevents flapping at the
 # cap). Only applies AFTER reaching target this session — a fresh plug-in below
@@ -193,6 +197,9 @@ class ChargeAssistant:
         # Solar-available reminder edge: True once we've nudged for the current
         # surplus episode; re-armed when surplus drops back below the threshold.
         self._solar_reminded = False
+        # Last time we fired a solar nudge — enforces the anti-spam cooldown so
+        # flapping surplus can't spam (the Skip button dismisses for the day).
+        self._solar_last_remind: datetime | None = None
         self._last_result: str = "(not run)"
         # Most recent reason the acting modes stood down (gateway owner isn't
         # us / manual override). Surfaced by the diagnostic sensor + Repair.
@@ -572,8 +579,9 @@ class ChargeAssistant:
 
     def _eval_solar_remind(self) -> None:
         """Rising-edge 'solar available — plug in' nudge. Fires once when surplus
-        rises to/above the threshold, re-arms when it clearly drops. The
-        unplugged / home / quiet / SOC / suppression checks are in _maybe_remind."""
+        rises to/above the threshold, re-arms when it clearly drops, and at most
+        once per cooldown so flapping surplus can't spam. The unplugged / home /
+        quiet / SOC / suppression checks are in _maybe_remind."""
         surplus = self._surplus_value()
         if surplus is None:
             return
@@ -581,6 +589,11 @@ class ChargeAssistant:
         if surplus >= thr:
             if not self._solar_reminded:
                 self._solar_reminded = True
+                now = dt_util.utcnow()
+                if (self._solar_last_remind is not None
+                        and now - self._solar_last_remind < _SOLAR_REMIND_COOLDOWN):
+                    return   # nudged recently — don't spam on flapping surplus
+                self._solar_last_remind = now
                 self._maybe_remind("solar")
         elif surplus < thr * 0.7:
             self._solar_reminded = False   # re-arm once surplus clearly drops
@@ -1059,14 +1072,6 @@ class ChargeAssistant:
         else:
             self._we_started = True
         self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
-
-    def _stop_and_handback(self) -> None:
-        """Stop our charge AND clear any lingering Eco/schedule pause so the
-        charger's own Solar + schedule control resumes. Used by the continuously-
-        managing modes (solar / smart+solar): when we stop, we're yielding, so we
-        must not leave the charger paused (which would block native solar too)."""
-        self._set_charging(False)
-        self.hass.async_create_task(self._resume_if_paused())
 
     async def _send_command(self, coord, action: str, value=None) -> None:
         # All charge control goes through the ChargerControl adapter — the seam
@@ -1629,7 +1634,10 @@ class ChargeAssistant:
                 self._deficit_since = now
             if charging and held(self._deficit_since):
                 _LOGGER.info("Charge Assistant: solar surplus %.2f below %.2f — stopping", surplus, stop_at)
-                self._stop_and_handback()   # hand back so native Solar/schedules resume
+                # Just stop — KEEP control so the next tick restarts on solar.
+                # (Handing back to native via resume left the charger stuck and
+                # not re-charging when surplus returned.)
+                self._set_charging(False)
                 self._deficit_since = None
                 self.hass.async_create_task(self._send_notification("solar", message_override=(
                     f"Solar charging paused — surplus dropped to {surplus:.2f}."
@@ -1780,7 +1788,10 @@ class ChargeAssistant:
             self._cost_warned = False
             if charging and self._we_started:
                 _LOGGER.info("Charge Assistant: smart+solar reached %.0f%% — stopping (no spare solar)", soc)
-                self._stop_and_handback()   # hand back so native Solar/schedules resume
+                # Just stop — KEEP control so the next tick restarts on solar.
+                # (Handing back to native via resume left the charger stuck and
+                # not re-charging when surplus returned.)
+                self._set_charging(False)
                 self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
                     f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
                 )))
@@ -1810,7 +1821,8 @@ class ChargeAssistant:
                 self._maybe_cost_warn(decision, target)
         elif charging and self._we_started:
             _LOGGER.info("Charge Assistant: smart+solar — no surplus and outside window, pausing")
-            self._stop_and_handback()   # hand back so native Solar/schedules resume
+            # Keep control so the next tick restarts on solar (no native handback).
+            self._set_charging(False)
         if decision.get("in_window"):
             self._cost_warned = False
 
