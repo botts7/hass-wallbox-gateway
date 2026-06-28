@@ -1157,9 +1157,9 @@ class ChargeAssistant:
         span_days = max(1.0, (pts[-1][0] - pts[0][0]) / 86400.0)
         return drop / span_days
 
-    def _commute_target(self) -> float | None:
-        """Adaptive target SOC% from learned use: reserve + avg_use×cover + margin,
-        clamped to [30%, CA_TARGET_PCT]. None without enough data / battery size."""
+    def _daily_use_pct(self) -> float | None:
+        """Learned daily use as a % of the battery (kWh/day ÷ capacity). None
+        without learned use or a battery size."""
         use_kwh = self._avg_daily_use_kwh()
         if use_kwh is None:
             return None
@@ -1169,7 +1169,14 @@ class ChargeAssistant:
             return None
         if batt <= 0:
             return None
-        use_pct = use_kwh / batt * 100.0
+        return use_kwh / batt * 100.0
+
+    def _commute_target(self) -> float | None:
+        """Adaptive target SOC% from learned use: reserve + avg_use×cover + margin,
+        clamped to [30%, CA_TARGET_PCT]. None without enough data / battery size."""
+        use_pct = self._daily_use_pct()
+        if use_pct is None:
+            return None
         reserve = self._read_float_opt(CA_COMMUTE_RESERVE)
         margin = self._read_float_opt(CA_COMMUTE_MARGIN)
         cover = self._read_float_opt(CA_COMMUTE_COVER_DAYS)
@@ -1182,6 +1189,29 @@ class ChargeAssistant:
             cap = 80.0
         target = reserve + use_pct * cover + margin
         return max(30.0, min(cap, target))
+
+    # ---- forward-looking insight: where SOC lands without charging ------
+    def _projected_soc_after_days(self, days: float = 1.0) -> float | None:
+        """Projected SOC% after `days` of typical driving with no charging:
+        current SOC − daily-use% × days, floored at 0. None without current SOC,
+        battery size, or learned use."""
+        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
+        use_pct = self._daily_use_pct()
+        if soc is None or use_pct is None:
+            return None
+        return max(0.0, soc - use_pct * days)
+
+    def _days_until_reserve(self) -> float | None:
+        """How many days of typical driving until SOC falls to the reserve floor,
+        from the current level with no charging. None without the inputs; 0 if
+        already at/below reserve."""
+        soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
+        use_pct = self._daily_use_pct()
+        if soc is None or use_pct is None or use_pct <= 0:
+            return None
+        reserve = self._read_float_opt(CA_COMMUTE_RESERVE)
+        reserve = 20.0 if reserve is None else reserve
+        return max(0.0, (soc - reserve) / use_pct)
 
     def _price_blocks(self) -> bool:
         """True when a price cap is set and the current price exceeds it. The

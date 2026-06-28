@@ -4,6 +4,15 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b9] - 2026-06-28
+
+### Added
+- **Projected SOC after a day's driving** sensor — a forward-looking "will I make
+  it?" insight: `current SOC − learned daily-use% × 1 day`, floored at 0. Shown
+  even when commute mode is off. Attributes: `daily_use_pct`,
+  `days_until_reserve` (how many days of driving until you hit the reserve floor
+  with no charging), and `below_reserve_tomorrow`.
+
 ## [0.18.0b8] - 2026-06-28
 
 ### Added

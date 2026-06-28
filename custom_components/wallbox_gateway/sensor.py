@@ -40,7 +40,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import time
 
 from . import cost_engine
-from .const import DOMAIN, STATUS_CODES, ZENTRI_STATUS_CODES
+from .const import CA_COMMUTE_RESERVE, DOMAIN, STATUS_CODES, ZENTRI_STATUS_CODES
 from .coordinator import GatewayCoordinator
 from .entity import GatewayEntity
 
@@ -165,6 +165,37 @@ def _commute_target(entity: GatewayEntity) -> float | None:
         return None
     v = a._commute_target()
     return round(v) if v is not None else None
+
+
+def _projected_soc(entity: GatewayEntity) -> float | None:
+    """Where SOC lands after one day's typical driving with no charging —
+    a forward-looking 'will I make it?' insight."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    v = a._projected_soc_after_days(1.0)
+    return round(v) if v is not None else None
+
+
+def _projected_soc_attrs(entity: GatewayEntity) -> dict | None:
+    """Context for the projected-SOC sensor: days until the reserve floor, the
+    learned daily use %, and whether tomorrow lands below reserve."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    use_pct = a._daily_use_pct()
+    days = a._days_until_reserve()
+    proj = a._projected_soc_after_days(1.0)
+    reserve = a._read_float_opt(CA_COMMUTE_RESERVE)
+    reserve = 20.0 if reserve is None else reserve
+    out: dict = {}
+    if use_pct is not None:
+        out["daily_use_pct"] = round(use_pct, 1)
+    if days is not None:
+        out["days_until_reserve"] = round(days, 1)
+    if proj is not None:
+        out["below_reserve_tomorrow"] = proj < reserve
+    return out or None
 
 
 def _control_owner(entity: GatewayEntity) -> str | None:
@@ -718,6 +749,16 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         native_unit_of_measurement="%",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_commute_target,
+    ),
+    GatewaySensorEntityDescription(
+        key="projected_soc",
+        translation_key="projected_soc",
+        name="Projected SOC after a day's driving",
+        icon="mdi:battery-clock",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=_projected_soc,
+        attrs_fn=_projected_soc_attrs,
     ),
     # ---- Charge-control owner (arbitration) ----------------------------
     # Who is allowed to autonomously drive charging (set on the gateway's

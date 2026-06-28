@@ -900,6 +900,37 @@ def test_commute_source_dispatch_charger_default():
     assert ca._avg_daily_use_kwh() == 12.0, "history source returns the cached value"
 
 
+@case
+def test_projected_soc_and_days_until_reserve():
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 80,
+            C.CA_COMMUTE_ENABLED: True, C.CA_COMMUTE_RESERVE: 20,
+            C.CA_SOC_ENTITY: "sensor.soc"}
+    ca, _ = build(opts, {"sensor.soc": FakeState("70")})
+    now = dt_util.utcnow().timestamp()
+    # 16 kWh/day over ~1-day span on an 80 kWh pack → 20%/day
+    ca._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 16000}]
+    assert abs(ca._daily_use_pct() - 20.0) < 1.0, ca._daily_use_pct()
+    proj = ca._projected_soc_after_days(1.0)              # 70 − 20 = 50
+    assert proj is not None and 49 < proj < 51, proj
+    days = ca._days_until_reserve()                        # (70 − 20) / 20 = 2.5
+    assert days is not None and 2.3 < days < 2.7, days
+
+
+@case
+def test_projected_soc_floors_and_none_without_inputs():
+    # SOC below a full day's use floors at 0, never negative
+    ca, _ = build({C.CA_BATTERY_KWH: 80, C.CA_SOC_ENTITY: "sensor.soc",
+                   C.CA_COMMUTE_ENABLED: True}, {"sensor.soc": FakeState("5")})
+    now = dt_util.utcnow().timestamp()
+    ca._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 16000}]  # 20%/day
+    assert ca._projected_soc_after_days(1.0) == 0.0, "floors at 0"
+    # no SOC entity → None
+    ca2, _ = build({C.CA_BATTERY_KWH: 80, C.CA_COMMUTE_ENABLED: True}, {})
+    ca2._coordinator().data["charge_log"] = [{"start": now - 86400, "wh": 16000}]
+    assert ca2._projected_soc_after_days(1.0) is None
+    assert ca2._days_until_reserve() is None
+
+
 def main():
     if not _HA_OK:
         return

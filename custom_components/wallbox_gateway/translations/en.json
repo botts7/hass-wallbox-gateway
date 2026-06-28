@@ -369,6 +369,9 @@
       "commute_target": {
         "name": "Commute charge target"
       },
+      "projected_soc": {
+        "name": "Projected SOC after a day's driving"
+      },
       "cost_week": {
         "name": "Charging cost (7 days)"
       },
