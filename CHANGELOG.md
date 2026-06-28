@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0b14] - 2026-06-28
+
+### Added
+- **`unknown_car` policy** — what to do while the plugged-in car is still a guess
+  (before you confirm / SOC-rise settles): **conservative** (default) charges only
+  to the lowest target across cars so an unknown car is never over-charged;
+  **ask** holds off auto-start (target = current SOC) until confirmed; **assume**
+  acts on the best guess immediately. Identity confidence resets on each plug-in
+  and clears when you confirm (tap) or the SOC-rise auto-confirms. Selectable in
+  the options flow (and the add-on Vehicles card).
+
 ## [0.18.0b13] - 2026-06-28
 
 ### Added

@@ -102,6 +102,9 @@ from .const import (
     CA_ACTIVE_CAR,
     CA_CAR_NAME,
     CA_CAR_ACTION_PREFIX,
+    CA_UNKNOWN_CAR,
+    CA_UNKNOWN_CONSERVATIVE,
+    CA_UNKNOWN_ASK,
     CA_TAP_PATH,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -237,6 +240,10 @@ class ChargeAssistant:
         # "Plug in car X next" nudge: last fired + which car (anti-spam).
         self._plug_rec_last: datetime | None = None
         self._plug_rec_car: str | None = None
+        # Identity confidence: True at startup (use the sticky/first car normally);
+        # a fresh plug-in drops it to False until the user confirms / SOC-rise
+        # settles — the `unknown_car` policy applies during that window.
+        self._identity_confirmed = True
         # Solar-available reminder edge: True once we've nudged for the current
         # surplus episode; re-armed when surplus drops back below the threshold.
         self._solar_reminded = False
@@ -1029,6 +1036,20 @@ class ChargeAssistant:
             ct = self._commute_target(car)
             if ct is not None:
                 base = ct
+        # Multi-vehicle safety: while the plugged-in car is still a guess, the
+        # `unknown_car` policy bounds what we charge it to (default conservative).
+        if self._uncertain():
+            pol = self._unknown_policy()
+            if pol == CA_UNKNOWN_ASK:
+                # Don't charge to a guess — target the current SOC so there's no
+                # deficit (no auto-start) until the car is confirmed.
+                soc = self._read_float(self._cg(car, CA_SOC_ENTITY))
+                if soc is not None:
+                    base = min(base, soc)
+            elif pol == CA_UNKNOWN_CONSERVATIVE:
+                cons = self._conservative_target()
+                if cons is not None:
+                    base = min(base, cons)
         return effective_target(
             base,
             self._cg(car, CA_TRIP_TARGET),
@@ -1078,6 +1099,20 @@ class ChargeAssistant:
             if c.get(CA_CAR_NAME) == name:
                 return c
         return None
+
+    def _unknown_policy(self) -> str:
+        return str(self._opts.get(CA_UNKNOWN_CAR) or CA_UNKNOWN_CONSERVATIVE)
+
+    def _uncertain(self) -> bool:
+        """True while the plugged-in car is still a guess (multi-car, not yet
+        confirmed by the user or a clear SOC-rise)."""
+        return len(self._cars()) >= 2 and not self._identity_confirmed
+
+    def _conservative_target(self) -> float | None:
+        """The lowest target across all cars — what to charge an unknown car to
+        so it's never over-charged."""
+        vals = [self._car_target_pct(c) for c in self._cars()]
+        return min(vals) if vals else None
 
     @staticmethod
     def _car_key(car: dict) -> str:
@@ -1324,6 +1359,7 @@ class ChargeAssistant:
             self._cancel_identity()
 
     def _on_plug_in(self) -> None:
+        self._identity_confirmed = False     # a guess until confirmed / SOC-rise
         # snapshot each car's SOC so a later rise reveals which one is charging
         self._plug_soc = {}
         for c in self._cars():
@@ -1397,6 +1433,7 @@ class ChargeAssistant:
         risen = self._soc_risen_cars()
         if risen:
             self._set_active_car(risen[0][1].get(CA_CAR_NAME), "SOC-rise auto-confirm")
+            self._identity_confirmed = True   # the charging car has revealed itself
 
     def _notify_services(self) -> list[str]:
         raw = self._opts.get(CA_NOTIFY_SERVICE) or self._rem.get(CA_NOTIFY_SERVICE) or ""
@@ -2656,6 +2693,7 @@ class ChargeAssistant:
             self._cancel_identity()
             self._active_override = None   # clear so _set_active_car always applies
             self._set_active_car(name, "user confirmed")
+            self._identity_confirmed = True
             return
         if action == CA_START_ACTION:
             # During a grace countdown, "Start now" skips the wait and begins.

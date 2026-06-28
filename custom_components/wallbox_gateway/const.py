@@ -177,11 +177,17 @@ CA_SKIP_ACTION = "WB_CA_SKIP"
 # Identity: confirm-on-plug "which car?" actions are "WB_CA_CAR|<name>".
 CA_CAR_ACTION_PREFIX = "WB_CA_CAR|"
 
-# Multi-vehicle identity fallback when the plugged-in car can't be determined:
-#   "ask"        — don't act on a car-specific target; notify + wait (safest).
-#   "conservative" — use the lowest target across cars (never over-charges).
-#   "assume_last" — trust the last-confirmed (sticky) car.
+# Multi-vehicle policy while the plugged-in car is still a GUESS (before the user
+# confirms / SOC-rise settles it):
+#   "conservative" (default) — charge only to the LOWEST target across cars, so an
+#                  unknown car is never over-charged; full target once confirmed.
+#   "ask"        — don't auto-start on a guess (hold until confirmed); native
+#                  schedule + manual still work.
+#   "assume_last" — act on the best guess immediately (the guessed car's target).
 CA_UNKNOWN_CAR = "unknown_car"
+CA_UNKNOWN_CONSERVATIVE = "conservative"
+CA_UNKNOWN_ASK = "ask"
+CA_UNKNOWN_ASSUME = "assume_last"
 
 # Field keys (shared across modes)
 CA_REMINDER_ENTITY = "reminder_entity"

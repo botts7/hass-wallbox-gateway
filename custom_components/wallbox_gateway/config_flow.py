@@ -57,6 +57,10 @@ from .const import (
     CA_COMMUTE_SOURCE_CHARGER,
     CA_COMMUTE_SOURCE_ODOMETER,
     CA_COMMUTE_SOURCE_SOC,
+    CA_UNKNOWN_CAR,
+    CA_UNKNOWN_CONSERVATIVE,
+    CA_UNKNOWN_ASK,
+    CA_UNKNOWN_ASSUME,
     CA_DEPARTURE,
     CA_GRID_ENTITY,
     CA_GRID_EXPORT_NEGATIVE,
@@ -806,6 +810,20 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                     selector.NumberSelectorConfig(
                         min=5, max=50, step=0.5, unit_of_measurement="kWh/100km",
                         mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                # Multi-vehicle: what to do while the plugged-in car is a guess.
+                vol.Optional(
+                    CA_UNKNOWN_CAR,
+                    default=cur.get(CA_UNKNOWN_CAR, CA_UNKNOWN_CONSERVATIVE),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=CA_UNKNOWN_CONSERVATIVE, label="Conservative — charge only to the lowest target until confirmed"),
+                            selector.SelectOptionDict(value=CA_UNKNOWN_ASK, label="Ask — don't auto-start on a guess; wait for confirmation"),
+                            selector.SelectOptionDict(value=CA_UNKNOWN_ASSUME, label="Assume — act on the best guess immediately"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
                 vol.Optional(

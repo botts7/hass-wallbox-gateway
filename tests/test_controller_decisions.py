@@ -1093,6 +1093,31 @@ def test_feasibility_flags_when_window_too_short():
     assert f2["feasible"] is True and f2["feasibility_note"] is None, f2
 
 
+@case
+def test_unknown_car_policy_targets():
+    cars = [
+        {C.CA_CAR_NAME: "BYD", C.CA_SOC_ENTITY: "sensor.byd", C.CA_BATTERY_KWH: 80, C.CA_TARGET_PCT: 90},
+        {C.CA_CAR_NAME: "Tesla", C.CA_SOC_ENTITY: "sensor.tesla", C.CA_BATTERY_KWH: 75, C.CA_TARGET_PCT: 60},
+    ]
+    states = {"sensor.byd": FakeState("50"), "sensor.tesla": FakeState("50")}
+    # Conservative (default): while the plugged car is a guess, cap at the lowest
+    # target (60) — never over-charge an unknown car. Confirmed → full target (90).
+    ca, _ = build({C.CA_CARS: cars}, states)
+    ca._identity_confirmed = False
+    assert ca._uncertain() is True
+    assert ca._target_pct() == 60.0, "conservative caps at the lowest target"
+    ca._identity_confirmed = True
+    assert ca._target_pct() == 90.0, "confirmed → active car's full target"
+    # Ask: target = current SOC → no deficit → won't auto-start until confirmed.
+    ca2, _ = build({C.CA_CARS: cars, C.CA_UNKNOWN_CAR: "ask"}, states)
+    ca2._identity_confirmed = False
+    assert ca2._target_pct() == 50.0, "ask holds at current SOC until confirmed"
+    # Assume: act on the best guess immediately (active car's full target).
+    ca3, _ = build({C.CA_CARS: cars, C.CA_UNKNOWN_CAR: "assume_last"}, states)
+    ca3._identity_confirmed = False
+    assert ca3._target_pct() == 90.0, "assume → the guessed car's target"
+
+
 def main():
     if not _HA_OK:
         return
