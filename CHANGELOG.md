@@ -4,6 +4,27 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0] - 2026-07-02
+
+First **stable** release of the Charge Assistant config bridge + multi-vehicle
+work that shipped through the 0.18.0b1–b15 betas. Promoted to stable so it's
+available on the HACS default channel (no pre-release toggle needed) — the
+Add-on's Charge Assistant page needs the `get_config`/`set_config` services this
+release exposes.
+
+### Compatibility
+- Pairs with the **Wallbox Gateway Add-on ≥ 0.40.0**. The Add-on will tell you to
+  update if it finds this integration older than 0.18.0.
+
+### Summary (since 0.14.x stable)
+- **Charge Assistant config bridge:** `get_config` / `set_config` services so the
+  Add-on GUI can read and write the integration's options (Charge Assistant +
+  tunables) and reload.
+- **Multi-vehicle charging** (advisory EDF scheduler): profiles, plugged-in
+  identity, per-car targets, unknown-car policy.
+- **Commute-based adaptive target** + projected-SOC, cost/charge-log sensors,
+  and the composable Charge Assistant (window + strategy modules).
+
 ## [0.18.0b15] - 2026-06-28
 
 ### Fixed
