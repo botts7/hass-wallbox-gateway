@@ -103,6 +103,19 @@ stable unique-id.
   endpoints landed in 3.0). The `last_burst_energy` / `charge_log_count`
   sensors need **v3.2.0+** (the charge-interval capture).
 
+### Integration ↔ Add-on
+
+The integration works standalone (entities + controls). The optional
+[Wallbox Gateway Add-on](https://github.com/botts7/wallbox-gateway-ha-addon)
+is the rich config GUI (Charge Assistant, multi-gateway) and reaches this
+integration over the `get_config`/`set_config` services. Keep them matched:
+
+| Integration | Pairs with Add-on | Notes |
+|------------:|:------------------|:------|
+| **≥ 0.18.0** | **≥ 0.40.0** | Config bridge on the HACS **default** channel — no pre-release toggle needed. |
+| 0.17.0b4 (beta) | 0.23.0 – 0.39.x | Bridge was beta-only; the Add-on's Charge Assistant needed it. |
+| ≤ 0.14.x | — | No config bridge; the Add-on's Charge Assistant page can't connect. |
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
