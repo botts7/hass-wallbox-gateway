@@ -150,8 +150,13 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         prior = self.data or {}
         return {
             "raw_status": status or {},
-            "charger_status": (charger or {}).get("status", {}).get("r", {}),
-            "charger_realtime": (charger or {}).get("realtime", {}).get("r", {}),
+            # `status`/`realtime` can be the JSON literal null (empty cache on a
+            # fresh boot or a marginal BLE link), so .get(x, {}) returns None,
+            # not the default — guard with `or {}` before the nested .get (#20,
+            # _Mike). Without this the whole coordinator crashes and every entity
+            # goes unavailable.
+            "charger_status": ((charger or {}).get("status") or {}).get("r", {}),
+            "charger_realtime": ((charger or {}).get("realtime") or {}).get("r", {}),
             "diag": diag or {},
             "health": health or {},
             "boot": boot or {},

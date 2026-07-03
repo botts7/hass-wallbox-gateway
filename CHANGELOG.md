@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.2] - 2026-07-03
+
+### Fixed
+- **Coordinator crash when the gateway returns an empty status cache.** On a
+  fresh boot or a marginal BLE link the gateway can return `{"status": null,
+  "realtime": null}`, and `.get("status", {})` returns `None` (not the default),
+  so the nested `.get("r")` raised `AttributeError: 'NoneType' object has no
+  attribute 'get'` — taking down the **entire** coordinator and making every
+  entity unavailable (looked like "the integration won't connect"). Now guarded
+  with `or {}`. (#20, reported by _Mike)
+
 ## [0.18.1] - 2026-07-03
 
 ### Added
