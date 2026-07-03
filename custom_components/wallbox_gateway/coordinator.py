@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -32,6 +33,20 @@ from .const import (
 
 LOGGER = logging.getLogger(__name__)
 
+# Minimum gateway firmware that emits the fields the entities read. Below this,
+# older firmware can leave entities blank; we warn once so it's diagnosable.
+MIN_GATEWAY_FW = "3.0.0"
+
+
+def _fw_tuple(v: str) -> tuple[int, int, int]:
+    """Parse 'v3.2.0-beta.7' / '3.0.0' / 'dev' to a comparable (maj, min, pat).
+    A non-numeric build (dev/unknown) yields (0, 0, 0)."""
+    parts = re.split(r"[.\-+]", (v or "").lstrip("v"))[:3]
+    nums = [int(m.group()) if (m := re.match(r"\d+", p)) else 0 for p in parts]
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
+
 
 class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the gateway, normalises responses, exposes one dict."""
@@ -44,6 +59,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         self.client = client
         self.entry = entry
+        self._fw_warned = False
         interval = entry.options.get(
             CONF_POLL_INTERVAL,
             entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
@@ -113,6 +129,24 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Carry forward the prior settings dict when the BAPI read failed
         # (BLE napping, charger asleep, transient timeout) so the entities
         # don't flap to Unknown every time BLE blinks.
+        # Warn once if the gateway firmware is older than what the entities need
+        # (gw_fw added in firmware v3.2.0-beta.8). Closes the firmware <-> HA
+        # compatibility axis: an old gateway can leave entities blank.
+        gw_fw = (status or {}).get("gw_fw")
+        if (
+            gw_fw
+            and not self._fw_warned
+            and _fw_tuple(gw_fw)[0] > 0
+            and _fw_tuple(gw_fw) < _fw_tuple(MIN_GATEWAY_FW)
+        ):
+            self._fw_warned = True
+            LOGGER.warning(
+                "Wallbox gateway firmware %s is older than %s — some entities may "
+                "stay unavailable until you update the gateway firmware.",
+                gw_fw,
+                MIN_GATEWAY_FW,
+            )
+
         prior = self.data or {}
         return {
             "raw_status": status or {},

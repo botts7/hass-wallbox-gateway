@@ -4,6 +4,14 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.1] - 2026-07-03
+
+### Added
+- **Gateway-firmware compatibility warning.** The coordinator reads `gw_fw` from
+  `/api/status` (firmware v3.2.0-beta.8+) and logs a one-time warning when the
+  gateway firmware is older than **v3.0.0** — below which older firmware can
+  leave entities blank. Closes the firmware ⇄ integration compatibility axis.
+
 ## [0.18.0] - 2026-07-02
 
 First **stable** release of the Charge Assistant config bridge + multi-vehicle

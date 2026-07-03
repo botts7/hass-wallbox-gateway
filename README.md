@@ -116,6 +116,12 @@ integration over the `get_config`/`set_config` services. Keep them matched:
 | 0.17.0b4 (beta) | 0.23.0 – 0.39.x | Bridge was beta-only; the Add-on's Charge Assistant needed it. |
 | ≤ 0.14.x | — | No config bridge; the Add-on's Charge Assistant page can't connect. |
 
+Keeping the **gateway firmware** current matters too: this integration reads
+`gw_fw` from `/api/status` (added in firmware v3.2.0-beta.8) and logs a one-time
+warning when the firmware is older than **v3.0.0** — below that, older firmware
+can leave entities blank. Known-good set: **firmware v3.2.0-beta.8+ · integration
+0.18.0+ · add-on 0.41.0+**.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
