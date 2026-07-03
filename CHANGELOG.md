@@ -4,6 +4,16 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.19.0] - 2026-07-03
+
+### Added
+- **Halo LED control** (requested by _Mike). Two new entities, read from
+  `g_halocfg` and written via `s_halocfg` (each write preserves the other
+  fields):
+  - **`switch.halo_standby`** — dim-the-ring-when-idle on/off.
+  - **`number.halo_brightness`** — LED brightness 0–100 %.
+  Verified end-to-end on real hardware (read + non-destructive write round-trip).
+
 ## [0.18.2] - 2026-07-03
 
 ### Fixed

@@ -104,6 +104,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tzn_raw,
             not_raw,
             lse_raw,
+            halo_raw,
         ) = await asyncio.gather(
             self.client.bapi("g_alo", wait_ms=2000),
             self.client.bapi("g_ecos", wait_ms=2000),
@@ -123,6 +124,8 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # control mode. user_id in the response is PII and dropped
             # by _parse_lse — never exposed as an entity.
             self.client.bapi("r_lse", wait_ms=2000),
+            # g_halocfg = LED halo config {bright %, mode 0/1 standby, time_s}.
+            self.client.bapi("g_halocfg", wait_ms=2000),
             return_exceptions=True,
         )
 
@@ -169,6 +172,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "timezone": _parse_tzn(tzn_raw, prior.get("timezone")),
             "notifications": _parse_not(not_raw, prior.get("notifications")),
             "lse": _parse_lse(lse_raw, prior.get("lse")),
+            "halo": _parse_halocfg(halo_raw, prior.get("halo")),
         }
 
 
@@ -204,6 +208,23 @@ def _parse_ecos(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None
         "mode": int(r.get("esm") or 0),
         "power_pct": int(r.get("esp") or 0),
         "active": bool(r.get("ese")),
+    }
+
+
+def _parse_halocfg(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
+    """g_halocfg returns {"r": {"bright": 0-100, "mode": 0|1, "time_s": N}}.
+    bright = LED brightness %, mode 1 = dim-when-idle (standby) on, time_s =
+    standby dim timeout (s). Best-effort — carry the prior value on a failed
+    read so the entities don't flap to Unknown when BLE blinks."""
+    if isinstance(raw, Exception) or not isinstance(raw, dict):
+        return prior
+    r = raw.get("r")
+    if not isinstance(r, dict) or "bright" not in r:
+        return prior
+    return {
+        "bright": int(r.get("bright") or 0),
+        "mode": int(r.get("mode") or 0),
+        "time_s": int(r.get("time_s") or 0),
     }
 
 

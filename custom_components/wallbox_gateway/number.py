@@ -6,6 +6,7 @@ One number in v0.2:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from homeassistant.components.number import (
@@ -34,6 +35,7 @@ async def async_setup_entry(
         MaxCurrent(coordinator),
         AutolockTime(coordinator),
         EcoSmartSolarTarget(coordinator),
+        HaloBrightness(coordinator),
     ])
 
 
@@ -152,4 +154,39 @@ class EcoSmartSolarTarget(GatewayEntity, NumberEntity):
             ',"esp":' + str(pct) + "}"
         )
         await self.coordinator.client.bapi("s_ecos", par=payload, wait_ms=5000)
+        await self.coordinator.async_request_refresh()
+
+
+class HaloBrightness(GatewayEntity, NumberEntity):
+    """LED halo brightness (0-100 %). Writes s_halocfg, preserving the current
+    standby mode + timeout so only the brightness changes."""
+
+    entity_description = NumberEntityDescription(
+        key="halo_brightness",
+        translation_key="halo_brightness",
+        name="Halo brightness",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=5,
+        native_unit_of_measurement=PERCENTAGE,
+        mode=NumberMode.SLIDER,
+    )
+
+    def __init__(self, coordinator: GatewayCoordinator) -> None:
+        super().__init__(coordinator, "halo_brightness")
+
+    @property
+    def native_value(self) -> float | None:
+        b = self._halo().get("bright")
+        return float(b) if isinstance(b, (int, float)) else None
+
+    async def async_set_native_value(self, value: float) -> None:
+        bright = max(0, min(100, int(round(value))))
+        halo = self._halo() or {}
+        payload = json.dumps({
+            "bright": bright,
+            "mode": int(halo.get("mode") or 0),
+            "time_s": int(halo.get("time_s") or 0),
+        })
+        await self.coordinator.client.bapi("s_halocfg", par=payload, wait_ms=5000)
         await self.coordinator.async_request_refresh()

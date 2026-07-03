@@ -11,6 +11,7 @@ Three switches in v0.2:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -106,6 +107,38 @@ async def _autolock_off(switch: "GatewaySwitch") -> Any:
     )
 
 
+def _halo_standby_value(entity: GatewayEntity) -> bool | None:
+    halo = entity._halo()
+    if not halo:
+        return None
+    # mode 1 = dim-when-idle (standby) on; 0 = always bright.
+    return int(halo.get("mode") or 0) == 1
+
+
+async def _halo_set_mode(switch: "GatewaySwitch", mode: int) -> Any:
+    # s_halocfg sets the whole config, so preserve the current brightness +
+    # timeout and only change the standby mode. Default 100 % if unknown so we
+    # never accidentally write the ring to 0.
+    halo = switch._halo() or {}
+    bright = halo.get("bright")
+    payload = json.dumps({
+        "bright": int(bright) if isinstance(bright, (int, float)) else 100,
+        "mode": mode,
+        "time_s": int(halo.get("time_s") or 0),
+    })
+    return await switch.coordinator.client.bapi(
+        "s_halocfg", par=payload, wait_ms=6000
+    )
+
+
+async def _halo_standby_on(switch: "GatewaySwitch") -> Any:
+    return await _halo_set_mode(switch, 1)
+
+
+async def _halo_standby_off(switch: "GatewaySwitch") -> Any:
+    return await _halo_set_mode(switch, 0)
+
+
 SWITCHES: tuple[GatewaySwitchEntityDescription, ...] = (
     GatewaySwitchEntityDescription(
         key="charging",
@@ -133,6 +166,15 @@ SWITCHES: tuple[GatewaySwitchEntityDescription, ...] = (
         value_fn=_autolock_value,
         turn_on_fn=_autolock_on,
         turn_off_fn=_autolock_off,
+    ),
+    GatewaySwitchEntityDescription(
+        key="halo_standby",
+        translation_key="halo_standby",
+        name="Halo standby",
+        device_class=SwitchDeviceClass.SWITCH,
+        value_fn=_halo_standby_value,
+        turn_on_fn=_halo_standby_on,
+        turn_off_fn=_halo_standby_off,
     ),
 )
 

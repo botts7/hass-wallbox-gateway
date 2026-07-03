@@ -403,6 +403,9 @@
       },
       "auto_lock_enabled": {
         "name": "Auto lock"
+      },
+      "halo_standby": {
+        "name": "Halo standby"
       }
     },
     "number": {
@@ -414,6 +417,9 @@
       },
       "eco_smart_solar_target": {
         "name": "Eco Smart solar %"
+      },
+      "halo_brightness": {
+        "name": "Halo brightness"
       }
     },
     "select": {

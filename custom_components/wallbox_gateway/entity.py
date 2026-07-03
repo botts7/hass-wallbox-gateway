@@ -107,3 +107,7 @@ class GatewayEntity(CoordinatorEntity[GatewayCoordinator]):
 
     def _lse(self) -> dict[str, Any]:
         return self.coordinator.data.get("lse") or {}
+
+    def _halo(self) -> dict[str, Any]:
+        """LED halo config: {"bright": %, "mode": 0/1 standby, "time_s": N}."""
+        return self.coordinator.data.get("halo") or {}
