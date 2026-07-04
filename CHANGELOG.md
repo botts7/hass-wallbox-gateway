@@ -4,7 +4,23 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.20.1] - 2026-07-04
+## [0.20.2] - 2026-07-04
+
+### Fixed
+- **Charge Assistant no longer starts a charge when it shouldn't** (Smart + Solar
+  mode). Two bugs let a *full* battery start a **grid** charge at **evening peak**:
+  1. When the SOC sensor briefly read `unavailable` (common with some car
+     integrations), an unknown SOC was treated as "below target", bypassing the
+     "already at target, don't start" guard. Grid top-up now requires a **known,
+     below-target SOC**; an unknown reading never initiates a grid charge (solar
+     surplus can still start on its own).
+  2. The **overrun** ("keep charging past the window") policy could *initiate* a
+     fresh charge outside the cheap window, not just *extend* a running one. It
+     now only extends an already-running charge — a below-target battery can no
+     longer start at peak hours.
+- **Wrong "cheap window" notification.** A start outside the window was hard-coded
+  as "Charging started from the cheap window"; it now reflects the real reason
+  (solar surplus / cheap window / grid outside window).
 
 ### Fixed
 - **Firmware Install no longer shows a spurious error.** The install action

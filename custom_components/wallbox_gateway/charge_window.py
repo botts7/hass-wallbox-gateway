@@ -57,6 +57,7 @@ def evaluate(
     target_met: bool = False,
     minutes_to_departure: int | None = None,
     minutes_needed: int | None = None,
+    already_charging: bool = False,
 ) -> dict:
     """Decide whether charging is allowed *right now* under the window policy.
 
@@ -96,8 +97,11 @@ def evaluate(
         return {"in_window": False, "allow_charge": True,
                 "reason": "prestart_for_departure", "cost_warn": True}
 
-    # Overrun: keep charging past the window to reach the target.
-    if overrun:
+    # Overrun: keep charging past the window to reach the target. This only
+    # EXTENDS an already-running charge — it must never INITIATE a fresh charge
+    # outside the cheap window (that would defeat the window entirely, letting a
+    # below-target battery start at peak hours). Requires already_charging.
+    if overrun and already_charging:
         return {"in_window": False, "allow_charge": True,
                 "reason": "overrun_to_target", "cost_warn": True}
 

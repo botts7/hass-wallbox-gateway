@@ -2368,6 +2368,7 @@ class ChargeAssistant:
             target_met=(soc is not None and target is not None and soc >= target),
             minutes_to_departure=mins_to_dep,
             minutes_needed=mins_needed,
+            already_charging=self._is_charging(),
         )
 
     def _maybe_cost_warn(self, decision: dict, target: float | None) -> None:
@@ -2486,12 +2487,23 @@ class ChargeAssistant:
         # window); grid top-up is gated by the cheap window (with pre-start /
         # overrun for the departure deadline).
         decision = self._window_decision(soc, target)
-        grid_ok = decision["allow_charge"] and not self._price_blocks()
+        # Grid top-up requires a KNOWN SOC that is actually below target. An
+        # unknown/unavailable SOC (e.g. the car integration dropped out for a
+        # tick) must NOT be treated as "below target" — otherwise a full battery
+        # could start a grid charge at evening peak the moment the SOC sensor
+        # blipped. Solar surplus can still start on its own (free energy).
+        below_target = soc is not None and soc < target
+        grid_ok = below_target and decision["allow_charge"] and not self._price_blocks()
         want = have_solar or grid_ok
 
         if want:
             if not charging:
-                src = "solar surplus" if have_solar else "the cheap window"
+                if have_solar:
+                    src = "solar surplus"
+                elif decision.get("in_window"):
+                    src = "the cheap window"
+                else:
+                    src = "grid (outside your cheap window)"
                 _LOGGER.info("Charge Assistant: smart+solar starting (%s)", src)
                 self._set_charging(True)
                 if not have_solar:

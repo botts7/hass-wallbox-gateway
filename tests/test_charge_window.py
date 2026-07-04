@@ -82,11 +82,23 @@ def test_eval_target_met_never_charges_outside():
 
 @case
 def test_eval_overrun_continues_past_window():
-    # 06:30, just past the 06:00 end, target not met, overrun on → keep going.
+    # 06:30, just past the 06:00 end, target not met, overrun on, ALREADY
+    # charging → keep going past the window to finish the job.
     r = w.evaluate(_m(6, 30), start="00:00", end="06:00", overrun=True,
-                   target_met=False)
+                   target_met=False, already_charging=True)
     assert r["allow_charge"] is True
     assert r["reason"] == "overrun_to_target" and r["cost_warn"] is True
+
+
+@case
+def test_eval_overrun_does_not_initiate_fresh_charge():
+    # Same window/target but NOT already charging → overrun must NOT start a
+    # fresh charge outside the cheap window (it only extends a running one).
+    # Guards against a below-target battery starting at peak hours when a SOC
+    # sensor blips, which let a full car charge at evening peak.
+    r = w.evaluate(_m(18, 41), start="00:00", end="06:00", overrun=True,
+                   target_met=False, already_charging=False)
+    assert r["allow_charge"] is False and r["reason"] == "outside_window"
 
 
 @case
