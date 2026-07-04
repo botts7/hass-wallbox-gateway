@@ -157,9 +157,9 @@ def _daily_use_avg(entity: GatewayEntity) -> float | None:
 
 
 def _commute_target(entity: GatewayEntity) -> float | None:
-    """The adaptive charge target (%) the commute feature would charge to
-    (reserve + learned use + margin, capped). Shown even when commute mode is off,
-    as advice."""
+    """The adaptive charge target (%) the commute feature charges to
+    (reserve + learned use + margin, capped). Unavailable when commute mode is
+    off for the active car, so it always matches what's actually enforced."""
     a = _assistant(entity)
     if a is None:
         return None

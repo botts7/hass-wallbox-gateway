@@ -26,6 +26,7 @@ MODULES = [
     "test_cost_engine",
     "test_charge_window",          # allowed-window + composable normalize
     "test_controller_decisions",   # needs HA importable; self-skips if not
+    "test_scenarios_e2e",          # exhaustive per-mode scenario matrix; self-skips
 ]
 
 

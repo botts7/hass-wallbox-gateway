@@ -1032,7 +1032,7 @@ class ChargeAssistant:
         car = self._active_car()
         base = self._read_float_cg(car, CA_TARGET_PCT)
         base = 80.0 if base is None else base
-        if self._cg(car, CA_COMMUTE_ENABLED):
+        if self._commute_enabled(car):
             ct = self._commute_target(car)
             if ct is not None:
                 base = ct
@@ -1122,6 +1122,24 @@ class ChargeAssistant:
     def _cg(self, car: dict, key: str, default=None):
         """Per-car config get — the car's own value, else the top-level default."""
         return car[key] if key in car else self._opts.get(key, default)
+
+    def _commute_enabled(self, car: dict) -> bool:
+        """Single source of truth for 'is commute-adaptive targeting active for
+        this car' — used by BOTH _target_pct (enforcement) and _commute_target
+        (the sensor) so the displayed target can never disagree with the enforced
+        one.
+
+        Hierarchy (most-specific wins, but no silent shadowing):
+          * Single-car (0/1 profiles): the GLOBAL commute toggle is
+            authoritative. A per-car commute flag stamped by the add-on's car
+            editor (which defaults it OFF) must not silently override the global
+            setting the user actually chose.
+          * Multi-car (>=2 profiles): the per-car flag is an explicit override
+            and wins, so a genuine per-car opt-out is honoured.
+        """
+        if len(self._cars()) < 2:
+            return bool(self._opts.get(CA_COMMUTE_ENABLED))
+        return bool(self._cg(car, CA_COMMUTE_ENABLED))
 
     def _read_float_cg(self, car: dict, key: str) -> float | None:
         try:
@@ -1295,9 +1313,17 @@ class ChargeAssistant:
 
     def _commute_target(self, car: dict | None = None) -> float | None:
         """Adaptive target SOC% from learned use: reserve + avg_use×cover + margin,
-        clamped to [30%, the car's target]. None without enough data / battery."""
+        clamped to [30%, the car's target]. None when commute isn't enabled for
+        this car, or without enough data / battery."""
         if car is None:
             car = self._active_car()
+        # Never advertise a commute target that isn't actually enforced. The
+        # sensor calls this without checking the flag; gating here keeps the
+        # displayed value identical to what _target_pct applies (both go through
+        # _commute_enabled), so a stray/leaked per-car commute_enabled can't show
+        # a phantom target.
+        if not self._commute_enabled(car):
+            return None
         use_pct = self._daily_use_pct(car)
         if use_pct is None:
             return None
@@ -1475,7 +1501,7 @@ class ChargeAssistant:
         target when commute mode is on, else its plain target."""
         base = self._read_float_cg(car, CA_TARGET_PCT)
         base = 80.0 if base is None else base
-        if self._cg(car, CA_COMMUTE_ENABLED):
+        if self._commute_enabled(car):
             ct = self._commute_target(car)
             if ct is not None:
                 base = ct
@@ -2590,11 +2616,18 @@ class ChargeAssistant:
         win = ""
         if opts.get(CA_WINDOW_ENABLED) and opts.get(CA_WINDOW_START) and opts.get(CA_WINDOW_END):
             win = f" in the {opts[CA_WINDOW_START]}–{opts[CA_WINDOW_END]} window"
-        tgt = opts.get(CA_TARGET_PCT)
+        # Show the ACTUAL enforced target (commute-adaptive / trip-adjusted when
+        # active), not just the fixed setting, so the promise never disagrees
+        # with what the assistant will really charge to.
         try:
-            tgt_s = f" to {int(float(tgt))}%" if tgt else ""
-        except (TypeError, ValueError):
-            tgt_s = ""
+            eff = self._target_pct()
+            tgt_s = f" to {int(round(eff))}%" if eff else ""
+        except Exception:  # noqa: BLE001 — never let a state read break a message
+            tgt = opts.get(CA_TARGET_PCT)
+            try:
+                tgt_s = f" to {int(float(tgt))}%" if tgt else ""
+            except (TypeError, ValueError):
+                tgt_s = ""
         if strat == MODE_TARGET:
             if opts.get(CA_TARGET_AUTOSTART):
                 if win:

@@ -1139,6 +1139,49 @@ def test_unknown_car_policy_targets():
     assert ca3._target_pct() == 90.0, "assume → the guessed car's target"
 
 
+# ── commute hierarchy: sensor can never disagree with enforcement ────
+def _commute_opts(global_on, cars):
+    return {
+        C.CA_TARGET_PCT: 80, C.CA_COMMUTE_ENABLED: global_on,
+        C.CA_COMMUTE_RESERVE: 40, C.CA_COMMUTE_MARGIN: 10, C.CA_COMMUTE_COVER_DAYS: 1,
+        C.CA_CARS: cars,
+    }
+
+
+@case
+def test_commute_single_car_global_authoritative():
+    # Single car carrying a LEAKED per-car commute_enabled:false (the add-on car
+    # editor stamps it) must NOT shadow the user's global commute:true.
+    opts = _commute_opts(True, [{C.CA_CAR_NAME: "BYD", C.CA_COMMUTE_ENABLED: False}])
+    ca, _ = build(opts, {})
+    ca._daily_use_pct = lambda car: 1.0        # target = 40 + 1*1 + 10 = 51
+    car = ca._active_car()
+    assert ca._commute_enabled(car) is True    # global wins for a single car
+    assert ca._commute_target(car) == 51.0     # sensor shows it
+    assert ca._target_pct() == 51.0            # and it's actually enforced
+
+
+@case
+def test_commute_disabled_sensor_none_no_phantom():
+    opts = _commute_opts(False, [{C.CA_CAR_NAME: "BYD"}])
+    ca, _ = build(opts, {})
+    ca._daily_use_pct = lambda car: 5.0
+    car = ca._active_car()
+    assert ca._commute_enabled(car) is False
+    assert ca._commute_target(car) is None     # no phantom sensor value
+    assert ca._target_pct() == 80.0            # fixed target enforced
+
+
+@case
+def test_commute_multicar_per_car_optout_honored():
+    cars = [{C.CA_CAR_NAME: "A"}, {C.CA_CAR_NAME: "B", C.CA_COMMUTE_ENABLED: False}]
+    ca, _ = build(_commute_opts(True, cars), {})
+    ca._daily_use_pct = lambda car: 1.0
+    a, b = ca._cars()[0], ca._cars()[1]
+    assert ca._commute_enabled(a) is True and ca._commute_target(a) == 51.0   # inherits global
+    assert ca._commute_enabled(b) is False and ca._commute_target(b) is None  # explicit opt-out
+
+
 def main():
     if not _HA_OK:
         return

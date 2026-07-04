@@ -22,6 +22,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as "Charging started from the cheap window"; it now reflects the real reason
   (solar surplus / cheap window / grid outside window).
 
+### Changed
+- **Commute-target hierarchy is now clear and consistent.** The `commute_charge_target`
+  sensor could show a value (e.g. 51%) that wasn't actually enforced (the fixed
+  target was). Root cause: a per-car `commute_enabled: false` (stamped by the
+  Add-on's car editor) silently shadowed the user's global commute toggle, and
+  the sensor ignored the flag entirely. Now:
+  - one shared resolver (`_commute_enabled`) drives **both** enforcement and the
+    sensor, so the displayed target can never disagree with what's charged;
+  - **single-car**: the global commute toggle is authoritative (a leaked per-car
+    flag can't shadow it); **multi-car**: an explicit per-car opt-out is honoured;
+  - the sensor reads **unavailable** when commute isn't active for the car;
+  - reminder/plan text shows the **actual enforced** target (commute-adaptive /
+    trip-adjusted), not just the fixed setting.
+
 ### Fixed
 - **Firmware Install no longer shows a spurious error.** The install action
   blocked for the whole download + OTA + reboot, so Home Assistant's service
