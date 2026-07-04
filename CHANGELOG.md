@@ -4,6 +4,16 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.20.1] - 2026-07-04
+
+### Fixed
+- **Firmware Install no longer shows a spurious error.** The install action
+  blocked for the whole download + OTA + reboot, so Home Assistant's service
+  call timed out and surfaced an error even though the flash succeeded. It now
+  reports progress (`in_progress`) and does the post-reboot settle/refresh in
+  the background, so the Install button returns promptly and the card reflects
+  the new version once the gateway is back.
+
 ## [0.20.0] - 2026-07-04
 
 ### Added

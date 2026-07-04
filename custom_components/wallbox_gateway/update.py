@@ -155,6 +155,7 @@ class WallboxFirmwareUpdate(GatewayEntity, UpdateEntity):
         self._latest_release: dict | None = None
         self._notes: str | None = None
         self._unsub = None
+        self._attr_in_progress = False
 
     @property
     def _channel(self) -> str:
@@ -255,14 +256,30 @@ class WallboxFirmwareUpdate(GatewayEntity, UpdateEntity):
             "OTA %s (%s, %d bytes) -> %s",
             rel.get("tag_name"), asset.get("name"), len(data), self._board,
         )
-        # 2) Push to the gateway over the LAN.
+        # 2) Push to the gateway over the LAN. Mark in-progress so the HA card
+        #    shows a spinner rather than blocking the Install action.
+        self._attr_in_progress = True
+        self.async_write_ha_state()
         try:
             await self.coordinator.client.ota(data, md5)
         except GatewayAuthError as e:
+            self._attr_in_progress = False
             raise HomeAssistantError(f"Gateway rejected auth during OTA: {e}") from e
         except (GatewayError, GatewayUnreachable) as e:
+            self._attr_in_progress = False
             raise HomeAssistantError(f"OTA upload failed: {e}") from e
-        # 3) The gateway reboots into the new image; give it a moment, then
-        #    refresh so installed_version (gw_fw) reflects the new build.
-        await asyncio.sleep(12)
-        await self.coordinator.async_request_refresh()
+        # 3) The gateway reboots into the new image. Do the settle-and-refresh
+        #    OFF the Install service call so HA returns promptly (blocking here
+        #    for the full reboot makes the frontend time out and show an error
+        #    even though the flash succeeded). The background task clears
+        #    in_progress once the new gw_fw is read back.
+        self.hass.async_create_task(self._finish_install())
+
+    async def _finish_install(self) -> None:
+        """Wait out the reboot, then refresh so installed_version updates."""
+        await asyncio.sleep(15)
+        self._attr_in_progress = False
+        try:
+            await self.coordinator.async_request_refresh()
+        finally:
+            self.async_write_ha_state()
