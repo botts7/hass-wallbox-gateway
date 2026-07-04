@@ -13,6 +13,21 @@ CONF_POLL_INTERVAL = "poll_interval"
 DEFAULT_USERNAME = "admin"
 DEFAULT_POLL_INTERVAL = 10  # seconds
 
+# ---- Firmware Update entity ----
+# The Update entity compares the running gateway firmware (gw_fw) against the
+# latest GitHub release and OTA-installs the matching .bin. HA is the middleman:
+# it downloads the release and uploads it to the gateway over the LAN.
+CONF_UPDATE_CHANNEL = "update_channel"
+UPDATE_CHANNEL_STABLE = "stable"
+UPDATE_CHANNEL_BETA = "beta"
+# Default to beta while the 3.2 line is in pre-release; users can pin to stable.
+DEFAULT_UPDATE_CHANNEL = UPDATE_CHANNEL_BETA
+# Fallback board when /api/status has no `board` field (firmware older than the
+# one that added it). esp32s3 is the only shipping target today.
+DEFAULT_BOARD = "esp32s3"
+GITHUB_FW_REPO = "botts7/esp32-wallbox"
+GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_FW_REPO}/releases"
+
 # ---- Guided Charge Assistant (Options flow + native controller) ----
 # Config lives under entry.options[CA_KEY] as a flat dict. See
 # docs/design/guided-charge-assistant.md. Phase 1 = Reminder mode.

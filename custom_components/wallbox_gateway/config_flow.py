@@ -91,7 +91,9 @@ from .const import (
     CA_TITLE,
     CA_TRIGGERS,
     CONF_POLL_INTERVAL,
+    CONF_UPDATE_CHANNEL,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_UPDATE_CHANNEL,
     DEFAULT_USERNAME,
     DOMAIN,
     MODE_OFF,
@@ -99,6 +101,8 @@ from .const import (
     MODE_SMART_SOLAR,
     MODE_SOLAR,
     MODE_TARGET,
+    UPDATE_CHANNEL_BETA,
+    UPDATE_CHANNEL_STABLE,
     CA_REMINDER,
     CA_REMINDER_ENABLED,
     CA_WINDOW_ENABLED,
@@ -348,8 +352,54 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         """The currently-saved Charge Assistant config (for defaults)."""
         return dict(self.config_entry.options.get(CA_KEY) or {})
 
-    # ---- step 1: mode ----
+    # ---- options menu ----
     async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Top-level options menu: Charge Assistant vs Firmware updates."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["charge_assistant", "firmware"],
+        )
+
+    # ---- Firmware update channel ----
+    async def async_step_firmware(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            # Merge into existing options (don't wipe CA config / poll_interval).
+            return self.async_create_entry(
+                title="",
+                data={
+                    **self.config_entry.options,
+                    CONF_UPDATE_CHANNEL: user_input[CONF_UPDATE_CHANNEL],
+                },
+            )
+        cur = self.config_entry.options.get(
+            CONF_UPDATE_CHANNEL, DEFAULT_UPDATE_CHANNEL
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_UPDATE_CHANNEL, default=cur
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": UPDATE_CHANNEL_STABLE, "label": "Stable only"},
+                            {
+                                "value": UPDATE_CHANNEL_BETA,
+                                "label": "Beta (include pre-releases)",
+                            },
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="firmware", data_schema=schema)
+
+    # ---- Charge Assistant · step 1: mode ----
+    async def async_step_charge_assistant(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
@@ -404,7 +454,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 )
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="charge_assistant", data_schema=schema)
 
     # ---- Solar-surplus ----
     async def async_step_solar(

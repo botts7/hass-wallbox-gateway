@@ -96,6 +96,40 @@ class GatewayClient:
         except TimeoutError as e:
             raise GatewayUnreachable(f"timeout on {path}") from e
 
+    async def ota(self, firmware: bytes, md5: str, timeout: float = 180.0) -> Any:
+        """Upload a firmware image to the gateway's OTA endpoint.
+
+        Multipart `firmware` field + an `X-Firmware-MD5` header (the gateway
+        verifies the MD5 before flashing, then reboots into the new image and
+        answers 200 first). Used by the Update entity to OTA a GitHub release
+        binary over the LAN.
+        """
+        url = self._config.base_url + "/api/ota"
+        form = aiohttp.FormData()
+        form.add_field(
+            "firmware", firmware,
+            filename="firmware.bin",
+            content_type="application/octet-stream",
+        )
+        try:
+            async with self._session.post(
+                url,
+                data=form,
+                auth=self._auth(),
+                headers={"X-Firmware-MD5": md5},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise GatewayAuthError(f"{resp.status} on /api/ota")
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise GatewayError(f"{resp.status} on /api/ota: {body[:200]}")
+                return await resp.json(content_type=None)
+        except aiohttp.ClientConnectorError as e:
+            raise GatewayUnreachable(str(e)) from e
+        except TimeoutError as e:
+            raise GatewayUnreachable("timeout on /api/ota") from e
+
     async def bapi(self, met: str, par: str = "null", wait_ms: int = 5000) -> Any:
         """Invoke a BAPI method via /api/command. Returns the parsed JSON
         body — caller decides what to do with `r:` / `error:` fields.

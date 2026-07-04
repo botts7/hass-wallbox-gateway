@@ -44,10 +44,27 @@
   "options": {
     "step": {
       "init": {
+        "title": "Wallbox Gateway",
+        "menu_options": {
+          "charge_assistant": "Charge Assistant",
+          "firmware": "Firmware updates"
+        }
+      },
+      "charge_assistant": {
         "title": "Charge Assistant",
         "description": "Pick what the assistant should do. Reminder nudges you to plug the car in.",
         "data": {
           "mode": "Mode"
+        }
+      },
+      "firmware": {
+        "title": "Firmware updates",
+        "description": "Choose which gateway firmware releases Home Assistant offers. HA downloads the release and installs it on the gateway over your network (the gateway needs no internet).",
+        "data": {
+          "update_channel": "Update channel"
+        },
+        "data_description": {
+          "update_channel": "Beta includes pre-releases (the current 3.2 line). Stable offers only full releases."
         }
       },
       "triggers": {
@@ -423,6 +440,11 @@
       },
       "reboot_gateway": {
         "name": "Reboot gateway"
+      }
+    },
+    "update": {
+      "firmware": {
+        "name": "Firmware"
       }
     }
   },

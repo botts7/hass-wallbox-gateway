@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.20.0] - 2026-07-04
+
+### Added
+- **Firmware Update entity** (requested by mo-harry / _Mike). Home Assistant now
+  shows a gateway-firmware update in **Settings → Updates** when a new release is
+  published, and installs it with one click — HA downloads the release `.bin`
+  from GitHub and OTAs it to the gateway over the LAN (the gateway needs no
+  internet). Manual-trigger only; never auto-installs. Picks the release by
+  semantic version (GitHub's release list isn't version-ordered) and the `.bin`
+  asset matching the gateway's build target (`board` from `/api/status`, falling
+  back to `esp32s3`). Shows the changelog as release notes.
+- **Update channel option** (Configure → *Firmware updates*): **Beta** (default,
+  includes pre-releases — the current 3.2 line) or **Stable** (full releases
+  only). The options flow now opens on a menu: *Charge Assistant* or
+  *Firmware updates*.
+
 ## [0.19.0] - 2026-07-03
 
 ### Added
