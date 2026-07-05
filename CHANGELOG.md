@@ -4,6 +4,24 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.22.0] - 2026-07-05
+
+### Added
+- **"Solar charging" on/off switch.** A convenience switch over the charger's
+  native Eco-Smart: **on** turns solar charging on (restoring the last flavour it
+  was in — Full Green or Eco Smart — else defaulting to **Full Green**), **off**
+  sets Eco-Smart to **Disabled**. It reports *on* whenever the charger is in a
+  solar mode (Full Green / Eco Smart) and *off* when Disabled/unknown. The
+  existing **Eco Smart mode** select still picks the flavour; both read the same
+  eco mode so they stay consistent. No-ops on chargers without Eco-Smart.
+- **"When a managed charge finishes" Eco-Smart preference** (Charge Assistant,
+  *Solar* and *Smart + Solar* option steps). Instead of only un-pausing the
+  charger (which returns it to whatever mode was already set), you can now force
+  a chosen native mode after a managed charge: **Keep current mode** (default —
+  unchanged behaviour), **Full Green**, **Eco Smart**, or **Disabled**. Only
+  applied when the charger actually exposes native Eco-Smart; the default is a
+  no-op so existing behaviour is preserved exactly.
+
 ## [0.21.0] - 2026-07-05
 
 ### Added

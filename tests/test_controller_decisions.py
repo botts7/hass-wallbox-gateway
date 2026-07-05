@@ -1312,6 +1312,65 @@ def test_ensure_eco_mode_noops_when_already_at_target():
     assert _json.loads(sent[-1][1])["ese"] == 0, sent
 
 
+# ── resume-to-a-specific-Eco-Smart-mode preference (post managed charge) ──
+def _async_noop():
+    async def _n():
+        return None
+    return _n
+
+
+def _async_spy(recorded):
+    async def _s(target):
+        recorded.append(target)
+    return _s
+
+
+@case
+def test_resume_restores_specific_eco_mode():
+    import asyncio
+    ca, _ = build({C.CA_RESUME_ECO_MODE: "full_green"}, {})
+    _with_eco(ca, mode=0)                       # charger exposes native Eco-Smart
+    ca._resume_native = _async_noop()           # isolate the mode-restore step
+    rec = []
+    ca._ensure_eco_mode = _async_spy(rec)
+    asyncio.run(ca._resume_and_restore_eco())
+    assert rec == [1], f"full_green should restore Eco mode 1, got {rec}"
+    # eco_smart → 2, disabled → 0.
+    for opt, want in (("eco_smart", 2), ("disabled", 0)):
+        ca2, _ = build({C.CA_RESUME_ECO_MODE: opt}, {})
+        _with_eco(ca2, mode=1)
+        ca2._resume_native = _async_noop()
+        rec2 = []
+        ca2._ensure_eco_mode = _async_spy(rec2)
+        asyncio.run(ca2._resume_and_restore_eco())
+        assert rec2 == [want], f"{opt} should restore {want}, got {rec2}"
+
+
+@case
+def test_resume_keep_or_absent_leaves_eco_untouched():
+    import asyncio
+    for opts in ({C.CA_RESUME_ECO_MODE: "keep"}, {}):
+        ca, _ = build(opts, {})
+        _with_eco(ca, mode=2)                   # eco supported, but "keep" → no-op
+        ca._resume_native = _async_noop()
+        rec = []
+        ca._ensure_eco_mode = _async_spy(rec)
+        asyncio.run(ca._resume_and_restore_eco())
+        assert rec == [], f"keep/absent must not touch eco (behaviour unchanged), got {rec}"
+
+
+@case
+def test_resume_specific_mode_noop_without_eco_support():
+    import asyncio
+    ca, _ = build({C.CA_RESUME_ECO_MODE: "disabled"}, {})
+    # No _with_eco → _eco_smart_supported() is False → nothing to restore.
+    ca._resume_native = _async_noop()
+    rec = []
+    ca._ensure_eco_mode = _async_spy(rec)
+    asyncio.run(ca._resume_and_restore_eco())
+    assert rec == [], f"no native eco → nothing to restore, got {rec}"
+
+
 def main():
     if not _HA_OK:
         return

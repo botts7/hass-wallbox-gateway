@@ -164,6 +164,7 @@
           "load_entity": "House load sensor (for 'solar − house load')",
           "surplus_start": "Start charging from solar at/above (surplus)",
           "solar_use_native": "Use the charger's built-in Eco-Smart (Full Green / Eco Smart) when it has it; otherwise Home Assistant emulates it by following your solar surplus.",
+          "resume_eco_mode": "When a managed charge finishes",
           "notify_service": "Notify me when it starts/stops (optional)",
           "window_enabled": "Only top up from grid during a set window (cheap hours)",
           "autostart_grace_min": "Grace before auto-start (minutes, 0 = start immediately)",
@@ -175,6 +176,9 @@
           "rl_enabled": "Also send plug-in reminders (notifications only)",
           "rl_nightly_time": "Reminder time (nightly)",
           "rl_notify": "Reminder notify service"
+        },
+        "data_description": {
+          "resume_eco_mode": "After the assistant finishes a managed charge and hands control back, force the charger's native Eco-Smart into this mode. \"Keep current mode\" leaves whatever was already set."
         }
       },
       "solar": {
@@ -191,6 +195,7 @@
           "solar_entity": "Solar production sensor (for 'solar − house load')",
           "load_entity": "House load sensor (for 'solar − house load')",
           "solar_use_native": "Use the charger's built-in Eco-Smart (Full Green / Eco Smart) when it has it; otherwise Home Assistant emulates it by following your solar surplus.",
+          "resume_eco_mode": "When a managed charge finishes",
           "solar_dynamic": "Follow surplus by adjusting charge current (advanced/experimental)",
           "min_current_a": "Minimum charge current (A)",
           "max_current_a": "Maximum charge current (A)",
@@ -209,6 +214,9 @@
           "rl_enabled": "Also send plug-in reminders (notifications only)",
           "rl_nightly_time": "Reminder time (nightly)",
           "rl_notify": "Reminder notify service"
+        },
+        "data_description": {
+          "resume_eco_mode": "After the assistant finishes a managed charge and hands control back, force the charger's native Eco-Smart into this mode. \"Keep current mode\" leaves whatever was already set."
         }
       }
     }
@@ -404,6 +412,9 @@
       },
       "halo_standby": {
         "name": "Halo standby"
+      },
+      "solar_charging": {
+        "name": "Solar charging"
       }
     },
     "number": {

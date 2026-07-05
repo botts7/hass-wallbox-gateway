@@ -73,6 +73,7 @@ from .const import (
     CA_PRICE_ENTITY,
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
+    CA_RESUME_ECO_MODE,
     CA_SOLAR_ENTITY,
     CA_SURPLUS_SOURCE,
     CA_SUPPLY_PHASES,
@@ -532,6 +533,22 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CA_SOLAR_USE_NATIVE, default=cur.get(CA_SOLAR_USE_NATIVE, True)
                 ): selector.BooleanSelector(),
+                # When a managed charge finishes, optionally force a specific
+                # native Eco-Smart mode (else "keep" leaves whatever was set).
+                vol.Optional(
+                    CA_RESUME_ECO_MODE,
+                    default=cur.get(CA_RESUME_ECO_MODE, "keep"),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value="keep", label="Keep current mode (default)"),
+                            selector.SelectOptionDict(value="full_green", label="Full Green (solar only)"),
+                            selector.SelectOptionDict(value="eco_smart", label="Eco Smart (solar + grid top-up)"),
+                            selector.SelectOptionDict(value="disabled", label="Disabled (grid, no solar gating)"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 # Phase 2 — dynamic current follow + house-load limit (advanced;
                 # the gateway clamps to 6-32 A and ignores live current on the
                 # original Pulsar).
@@ -718,6 +735,22 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CA_SOLAR_USE_NATIVE, default=cur.get(CA_SOLAR_USE_NATIVE, True)
                 ): selector.BooleanSelector(),
+                # When a managed charge finishes, optionally force a specific
+                # native Eco-Smart mode (else "keep" leaves whatever was set).
+                vol.Optional(
+                    CA_RESUME_ECO_MODE,
+                    default=cur.get(CA_RESUME_ECO_MODE, "keep"),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value="keep", label="Keep current mode (default)"),
+                            selector.SelectOptionDict(value="full_green", label="Full Green (solar only)"),
+                            selector.SelectOptionDict(value="eco_smart", label="Eco Smart (solar + grid top-up)"),
+                            selector.SelectOptionDict(value="disabled", label="Disabled (grid, no solar gating)"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 vol.Optional(CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)): selector.SelectSelector(
                     selector.SelectSelectorConfig(options=notify_opts, custom_value=True, mode=selector.SelectSelectorMode.DROPDOWN)
                 ),

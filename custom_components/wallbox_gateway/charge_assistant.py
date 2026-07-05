@@ -77,6 +77,7 @@ from .const import (
     CA_START_ACTION,
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
+    CA_RESUME_ECO_MODE,
     CA_SUPPLY_PHASES,
     CA_SUPPLY_VOLTAGE,
     CA_GRID_ENTITY,
@@ -143,6 +144,7 @@ from . import price_planner
 from .charge_guards import derive_surplus, effective_target, price_allows_charge
 from .charger_control import (
     WallboxGatewayCharger,
+    ECO_DISABLED,
     ECO_FULL_GREEN,
     ECO_SMART,
 )
@@ -162,6 +164,13 @@ _SOLAR_REMIND_COOLDOWN = timedelta(hours=4)
 # between resume attempts so a resume that doesn't immediately take isn't spammed.
 _AUTO_RESUME_DELAY = timedelta(minutes=3)
 _AUTO_RESUME_COOLDOWN = timedelta(minutes=10)
+# CA_RESUME_ECO_MODE option string -> native Eco-Smart int. "keep"/absent map to
+# None (leave whatever mode was already set — the default un-pause-only path).
+_RESUME_ECO_TO_INT = {
+    "full_green": ECO_FULL_GREEN,
+    "eco_smart": ECO_SMART,
+    "disabled": ECO_DISABLED,
+}
 # Target-SOC auto-start deadband: once we've stopped at target, don't auto-
 # restart until SOC has fallen this far below target (prevents flapping at the
 # cap). Only applies AFTER reaching target this session — a fresh plug-in below
@@ -472,7 +481,7 @@ class ChargeAssistant:
             return
         self._auto_resume_last = now
         _LOGGER.info("Charge Assistant: auto-resuming Eco-Smart/schedule (paused + idle)")
-        self.hass.async_create_task(self._resume_native())
+        self.hass.async_create_task(self._resume_and_restore_eco())
 
     def _update_repair(self) -> None:
         """Raise/clear an HA Repair when an acting mode is set but we aren't the
@@ -2057,6 +2066,21 @@ class ChargeAssistant:
             await WallboxGatewayCharger(coord).resume()
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Charge Assistant: resume before re-assert failed: %s", err)
+
+    async def _resume_and_restore_eco(self) -> None:
+        """Hand native control back (un-pause), then — if the user chose a
+        specific post-charge Eco-Smart mode — point the charger at it. The
+        default ("keep"/unset) leaves whatever mode was already set, i.e. it's
+        identical to the old un-pause-only behaviour."""
+        await self._resume_native()
+        target = _RESUME_ECO_TO_INT.get(
+            str(self._opts.get(CA_RESUME_ECO_MODE) or "keep")
+        )
+        if target is None:
+            return  # "keep"/absent/unknown → don't touch the eco mode
+        if not self._eco_smart_supported():
+            return  # charger has no native Eco-Smart — nothing to restore
+        await self._ensure_eco_mode(target)
 
     def _is_paused(self) -> bool:
         """Charger's sticky manual-override / pause flag (r_dat.gen != 0). When

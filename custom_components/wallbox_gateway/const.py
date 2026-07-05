@@ -179,6 +179,10 @@ CA_SOLAR_DYNAMIC = "solar_dynamic"          # bool
 # solar from HA. When the charger lacks it, HA emulates it by following surplus
 # and modulating the charge current. Default True ("use native when available").
 CA_SOLAR_USE_NATIVE = "solar_use_native"    # bool
+# After a managed charge finishes and native Eco/schedule control hands back,
+# optionally force a specific native Eco-Smart mode instead of leaving whatever
+# was already set. "keep" (default) preserves today's behaviour (just un-pause).
+CA_RESUME_ECO_MODE = "resume_eco_mode"      # keep|full_green|eco_smart|disabled
 # Supply geometry, used to convert a surplus *power* figure to a current.
 # amps ~= power_w / (voltage * phases). Surplus values in kW are auto-scaled.
 CA_SUPPLY_VOLTAGE = "supply_voltage"        # default 230 V
@@ -307,6 +311,12 @@ ECO_MODES = {
     2: "eco_smart",
 }
 ECO_MODE_TO_INT = {v: k for k, v in ECO_MODES.items()}
+
+# Eco-Smart mode ints, named for reuse by the platforms (switch/select) and the
+# Charge Assistant. Mirror charger_control.ECO_* (kept in sync — same values).
+ECO_DISABLED = 0
+ECO_FULL_GREEN = 1
+ECO_SMART = 2
 
 # Max current limits supported by the BAPI passthrough (matches the
 # dashboard slider). Real-world charger range is 6 – 32 A on a Pulsar.

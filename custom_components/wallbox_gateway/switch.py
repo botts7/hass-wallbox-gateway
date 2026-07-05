@@ -25,7 +25,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DEFAULT_AUTOLOCK_SECONDS, DOMAIN
+from .const import (
+    DEFAULT_AUTOLOCK_SECONDS,
+    DOMAIN,
+    ECO_DISABLED,
+    ECO_FULL_GREEN,
+    ECO_SMART,
+)
 from .coordinator import GatewayCoordinator
 from .entity import GatewayEntity
 
@@ -139,6 +145,55 @@ async def _halo_standby_off(switch: "GatewaySwitch") -> Any:
     return await _halo_set_mode(switch, 0)
 
 
+# ---------- Solar charging (Eco-Smart on/off convenience) ----------
+# A quick on/off over the charger's native Eco-Smart. The eco_smart_mode SELECT
+# still picks the flavour (Full Green vs Eco Smart); this switch just flips solar
+# charging on (restoring the last flavour) or off (Disabled). Both read the same
+# eco mode so they stay consistent.
+
+def _solar_charging_value(entity: GatewayEntity) -> bool | None:
+    eco = entity._eco_smart()
+    if not eco:
+        return None  # charger has no Eco-Smart / data not loaded → unknown
+    try:
+        mode = int(eco.get("mode"))
+    except (TypeError, ValueError):
+        return None
+    if mode in (ECO_FULL_GREEN, ECO_SMART):
+        # Remember the flavour so turn_on can restore it (per-entity attribute).
+        entity._last_solar_mode = mode
+        return True
+    return False
+
+
+async def _solar_write_mode(switch: "GatewaySwitch", mode: int) -> Any:
+    # Reuse the select/assistant s_ecos write shape: derive ese from the mode and
+    # preserve the current solar power target (esp). No-op when the charger has no
+    # Eco-Smart so we never write s_ecos to a charger that lacks the feature.
+    eco = switch._eco_smart()
+    if not eco:
+        return None
+    payload = {
+        "ese": 1 if mode > 0 else 0,
+        "esm": mode,
+        "esp": int(eco.get("power_pct") or 100),
+    }
+    return await switch.coordinator.client.bapi(
+        "s_ecos", par=json.dumps(payload), wait_ms=8000
+    )
+
+
+async def _solar_charging_on(switch: "GatewaySwitch") -> Any:
+    # Restore the last solar flavour we saw, else default to Full Green (1).
+    last = getattr(switch, "_last_solar_mode", None)
+    mode = last if last in (ECO_FULL_GREEN, ECO_SMART) else ECO_FULL_GREEN
+    return await _solar_write_mode(switch, mode)
+
+
+async def _solar_charging_off(switch: "GatewaySwitch") -> Any:
+    return await _solar_write_mode(switch, ECO_DISABLED)
+
+
 SWITCHES: tuple[GatewaySwitchEntityDescription, ...] = (
     GatewaySwitchEntityDescription(
         key="charging",
@@ -175,6 +230,15 @@ SWITCHES: tuple[GatewaySwitchEntityDescription, ...] = (
         value_fn=_halo_standby_value,
         turn_on_fn=_halo_standby_on,
         turn_off_fn=_halo_standby_off,
+    ),
+    GatewaySwitchEntityDescription(
+        key="solar_charging",
+        translation_key="solar_charging",
+        name="Solar charging",
+        device_class=SwitchDeviceClass.SWITCH,
+        value_fn=_solar_charging_value,
+        turn_on_fn=_solar_charging_on,
+        turn_off_fn=_solar_charging_off,
     ),
 )
 
