@@ -690,15 +690,18 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         value_fn=lambda e: _opt_int(e._status().get("wifi_rssi")),
     ),
     # ---- Live-session feed (r_lse), v0.3.1 ----------------------------
-    # Per-session solar/grid energy split + live solar surplus. MEASUREMENT
-    # (not TOTAL_INCREASING) because each value resets when a new session
-    # starts. user_id from r_lse is dropped in the coordinator — never here.
+    # Per-session solar/grid energy split + live solar surplus. Each value
+    # resets when a new session starts, so TOTAL_INCREASING (not MEASUREMENT):
+    # an ENERGY device_class can't be MEASUREMENT (HA rejects it), and
+    # total_increasing models the per-session reset correctly (HA detects it),
+    # matching the session_energy sensor above. user_id from r_lse is dropped
+    # in the coordinator — never here.
     GatewaySensorEntityDescription(
         key="green_energy_session",
         translation_key="green_energy_session",
         name="Green energy (session)",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda e: e._lse().get("green_energy_kwh"),
@@ -708,7 +711,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         translation_key="grid_energy_session",
         name="Grid energy (session)",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda e: e._lse().get("grid_energy_kwh"),
