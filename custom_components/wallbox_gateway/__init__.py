@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ClientConfig, GatewayClient
@@ -51,6 +52,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # One-time migration: re-enable sensors we used to ship disabled-by-default.
+    # Flipping entity_registry_enabled_default to True does NOT re-enable an
+    # entity that was already registered as disabled under an older version, so
+    # users who updated kept a disabled entity (e.g. "Max charging current",
+    # forum #75). We only clear an INTEGRATION disable — never a USER one — so a
+    # deliberate manual disable is preserved. Idempotent (no-op once enabled).
+    _reenable_default_disabled(hass, entry)
 
     # Serve + register the custom Lovelace cards (custom:wallbox-*), once per
     # HA start. Version-stamped from the manifest for cache-busting on upgrade.
@@ -156,6 +165,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     return True
+
+
+# Entities that were previously entity_registry_enabled_default=False and are
+# now enabled-by-default. If a user never touched them, an update leaves them
+# disabled; re-enable those (INTEGRATION-disabled only).
+_REENABLE_UNIQUE_ID_SUFFIXES = ("_max_charging_current",)
+
+
+def _reenable_default_disabled(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clear an integration-set disable on entities now enabled by default."""
+    registry = er.async_get(hass)
+    for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (
+            ent.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+            and ent.unique_id.endswith(_REENABLE_UNIQUE_ID_SUFFIXES)
+        ):
+            registry.async_update_entity(ent.entity_id, disabled_by=None)
+            _LOGGER.info(
+                "Re-enabled %s (was disabled by an older version's default)",
+                ent.entity_id,
+            )
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

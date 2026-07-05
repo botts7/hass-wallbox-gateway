@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.23.1] - 2026-07-05
+
+### Fixed
+- **"Max charging current" now appears for users who already had the
+  integration.** v0.22.1 enabled the sensor by default, but Home Assistant does
+  **not** retroactively enable an entity that was already registered as disabled
+  under an older version — so existing users still didn't see it (andypnz, forum
+  #75). The integration now re-enables it on update **only if it was disabled by
+  the integration's old default** — a deliberate manual disable is left alone.
+  (Fresh installs were already fine.)
+
 ## [0.23.0] - 2026-07-05
 
 ### Added
