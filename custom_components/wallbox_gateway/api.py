@@ -124,7 +124,19 @@ class GatewayClient:
                 if resp.status >= 400:
                     body = await resp.text()
                     raise GatewayError(f"{resp.status} on /api/ota: {body[:200]}")
-                return await resp.json(content_type=None)
+                # A 2xx means the image was accepted; the gateway reboots into it
+                # right after. Its response body is often EMPTY or plain text and
+                # the connection may drop mid-response — so do NOT parse it as
+                # JSON. Parsing an empty body raised "unexpected character: line 1
+                # column 1 (char 0)" on a flash that had actually succeeded.
+                try:
+                    await resp.read()
+                except aiohttp.ClientError:
+                    pass  # gateway rebooted before finishing the response — fine
+                return None
+        except aiohttp.ServerDisconnectedError:
+            # Disconnected right after accepting the upload (rebooting) — success.
+            return None
         except aiohttp.ClientConnectorError as e:
             raise GatewayUnreachable(str(e)) from e
         except TimeoutError as e:

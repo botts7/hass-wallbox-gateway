@@ -4,6 +4,27 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.23.2] - 2026-07-05
+
+### Fixed
+- **Firmware "Install" (OTA from HA) no longer shows a bogus error.** The gateway
+  reboots into the new image right after accepting the upload, so its HTTP
+  response is often empty or the connection drops. The client tried to parse
+  that as JSON and raised *"unexpected character: line 1 column 1 (char 0)"* —
+  on a flash that had actually **succeeded** (the update then "disappears"
+  because the gateway is now up to date). A 2xx is now treated as success without
+  parsing the body.
+- **Energy sensors no longer spam the log.** "Green energy (session)" and
+  "Grid energy (session)" were declared `state_class: measurement`, which HA
+  rejects for the `energy` device class — now `total_increasing` (they reset per
+  session; HA handles the reset). "Last charge burst" is a per-burst snapshot, so
+  it now carries no `state_class` (neither measurement nor total_increasing fits).
+
+### Added
+- **Test guard:** a suite check validates every sensor's `device_class` /
+  `state_class` combination against HA's own rules, so this class of bug can't
+  ship again.
+
 ## [0.23.1] - 2026-07-05
 
 ### Fixed

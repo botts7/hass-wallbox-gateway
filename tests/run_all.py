@@ -28,6 +28,7 @@ MODULES = [
     "test_controller_decisions",   # needs HA importable; self-skips if not
     "test_solar_switch",           # Solar-charging switch; needs HA; self-skips
     "test_scenarios_e2e",          # exhaustive per-mode scenario matrix; self-skips
+    "test_entity_descriptions",    # device_class/state_class validity; needs HA; self-skips
 ]
 
 

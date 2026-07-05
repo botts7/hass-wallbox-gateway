@@ -436,7 +436,9 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         translation_key="last_burst_energy",
         name="Last charge burst",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
+        # No state_class: this is a snapshot of the last completed burst, not a
+        # cumulative total — TOTAL_INCREASING would misread a smaller next burst
+        # as a rollover, and MEASUREMENT is invalid for the energy device_class.
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
         entity_registry_enabled_default=False,
@@ -690,15 +692,18 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         value_fn=lambda e: _opt_int(e._status().get("wifi_rssi")),
     ),
     # ---- Live-session feed (r_lse), v0.3.1 ----------------------------
-    # Per-session solar/grid energy split + live solar surplus. MEASUREMENT
-    # (not TOTAL_INCREASING) because each value resets when a new session
-    # starts. user_id from r_lse is dropped in the coordinator — never here.
+    # Per-session solar/grid energy split + live solar surplus. TOTAL_INCREASING
+    # (NOT MEASUREMENT): HA rejects MEASUREMENT for the energy device_class, and
+    # total_increasing is exactly right for a value that accumulates during a
+    # session and resets to 0 on a new session (HA detects the reset) — same as
+    # session_energy above and the MQTT discovery side (#14). user_id from r_lse
+    # is dropped in the coordinator — never here.
     GatewaySensorEntityDescription(
         key="green_energy_session",
         translation_key="green_energy_session",
         name="Green energy (session)",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda e: e._lse().get("green_energy_kwh"),
@@ -708,7 +713,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         translation_key="grid_energy_session",
         name="Grid energy (session)",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda e: e._lse().get("grid_energy_kwh"),
