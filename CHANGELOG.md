@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.23.3] - 2026-07-05
+
+### Fixed
+- **"Max current" number (and the Controls card slider) no longer reads
+  "unknown".** The settable max-current entity only read `charger_status.cm` /
+  `realtime.ic`, which some chargers (Pulsar Plus/MAX firmware) don't report —
+  leaving the setpoint blank even though the *sensor* showed a value. It now
+  falls back to `r_dat.cur` — the active max current the dashboard and the
+  max_charging_current sensor use — so it's populated everywhere. (Same #75-class
+  field gap; found while verifying the native Controls card on real hardware.)
+
 ## [0.23.2] - 2026-07-05
 
 ### Fixed

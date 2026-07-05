@@ -68,6 +68,13 @@ class MaxCurrent(GatewayEntity, NumberEntity):
         ic = self._realtime().get("ic")
         if isinstance(ic, (int, float)):
             return float(ic)
+        # Some chargers (e.g. Pulsar Plus/MAX firmware) report neither cm nor
+        # ic, leaving this "unknown". Fall back to r_dat.cur — the active max
+        # current the dashboard and the max_charging_current sensor show — so
+        # the setpoint is populated everywhere. (#75-class field gap)
+        cur = self._charger_status().get("cur")
+        if isinstance(cur, (int, float)):
+            return float(cur)
         return None
 
     async def async_set_native_value(self, value: float) -> None:
