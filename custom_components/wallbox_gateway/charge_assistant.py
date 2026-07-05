@@ -2307,6 +2307,43 @@ class ChargeAssistant:
     def _on_solar_tick(self, now: datetime) -> None:
         self._eval_solar()
 
+    def _solar_should_charge(self, charging: bool) -> bool:
+        """Sticky solar-availability decision with hysteresis + debounce, so
+        surplus hovering around the threshold can't flap the charger (and spam
+        "charging from solar" notifications). Used by Smart+Solar's `have_solar`
+        (pure Solar mode has its own inline copy). Rules, mirroring Solar mode:
+          - surplus >= start_at held for `debounce` min → True (turn on); once on,
+            stays on until the deficit rule fires;
+          - surplus <= stop_at held for `debounce` min → False (turn off);
+          - in the dead-band between (or before debounce elapses) → keep current
+            state. Unknown surplus also keeps the current state.
+        """
+        surplus = self._surplus_value()
+        if surplus is None:
+            return charging
+        try:
+            start_at = float(self._opts.get(CA_SURPLUS_START, 1.4) or 0)
+            stop_at = float(self._opts.get(CA_SURPLUS_STOP, 0) or 0)
+            debounce = float(self._opts.get(CA_SURPLUS_DEBOUNCE, 3) or 0)
+        except (TypeError, ValueError):
+            return charging
+        now = dt_util.utcnow()
+        held = lambda since: since is not None and (now - since).total_seconds() >= debounce * 60
+        if surplus >= start_at:
+            self._deficit_since = None
+            if self._surplus_since is None:
+                self._surplus_since = now
+            return True if (charging or held(self._surplus_since)) else charging
+        if surplus <= stop_at:
+            self._surplus_since = None
+            if self._deficit_since is None:
+                self._deficit_since = now
+            return False if (not charging or held(self._deficit_since)) else charging
+        # Dead-band between stop_at and start_at → hold; reset both timers.
+        self._surplus_since = None
+        self._deficit_since = None
+        return charging
+
     def _eval_solar(self) -> None:
         ok, reason = self._may_control()
         if not ok:
@@ -2469,12 +2506,11 @@ class ChargeAssistant:
         # Solar availability up-front: the SOC target caps GRID top-up, but free
         # solar should keep filling the battery past it — so we need to know
         # whether there's surplus before deciding the target is "reached".
-        surplus = self._surplus_value()
-        try:
-            start_at = float(self._opts.get(CA_SURPLUS_START, 1.4) or 0)
-        except (TypeError, ValueError):
-            start_at = 0.0
-        have_solar = surplus is not None and surplus >= start_at
+        # Sticky solar availability (hysteresis + debounce) so surplus hovering
+        # around the threshold can't flap the charger on/off every tick — which
+        # re-sent the "charging from spare solar" notification after each stop.
+        # Pure Solar mode already debounces; Smart+Solar used a raw threshold.
+        have_solar = self._solar_should_charge(charging)
         plugged = self._plugged_in() is True
 
         # At/above the grid target: don't waste free solar. Keep charging from
@@ -2502,9 +2538,15 @@ class ChargeAssistant:
                 # (Handing back to native via resume left the charger stuck and
                 # not re-charging when surplus returned.)
                 self._set_charging(False)
-                self.hass.async_create_task(self._send_notification("smart_solar", message_override=(
-                    f"Charging stopped — reached {soc:.0f}% (target {target:.0f}%)."
-                )))
+                # Distinguish "reached the grid target" from "was topping up on
+                # spare solar above target and the surplus ended" — the latter
+                # shouldn't claim it hit the target it's already well past.
+                stop_msg = (
+                    f"Solar surplus ended — stopped at {soc:.0f}% (above your {target:.0f}% target)."
+                    if soc > target + 1
+                    else f"Charging stopped — reached your {target:.0f}% target ({soc:.0f}%)."
+                )
+                self.hass.async_create_task(self._send_notification("smart_solar", message_override=stop_msg))
             return
         if not plugged:
             return

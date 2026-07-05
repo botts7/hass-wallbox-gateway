@@ -4,6 +4,20 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.20.3] - 2026-07-05
+
+### Fixed
+- **Smart + Solar no longer flaps the charger (and spams "charging from solar"
+  notifications).** When grabbing spare solar above the SOC target, availability
+  used a single raw threshold, so surplus hovering around it started/stopped the
+  charge every minute — and every restart re-sent the notification, which looked
+  like it was saying "charging" right after a stop. It now uses the same
+  **hysteresis (start/stop dead-band) + debounce** as pure Solar mode, so it
+  holds state instead of flapping.
+- **Clearer stop message:** when it stops because the solar surplus ended while
+  *above* your target, it now says "Solar surplus ended — stopped at X%" instead
+  of wrongly claiming it "reached" the (lower) target.
+
 ## [0.20.2] - 2026-07-04
 
 ### Fixed

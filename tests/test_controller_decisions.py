@@ -181,7 +181,7 @@ def test_smart_solar_starts_on_solar_even_outside_window():
     # Surplus available → charge from solar (free), ignoring the window.
     opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
             C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
-            C.CA_SURPLUS_START: 1.0, C.CA_WINDOW_ENABLED: True,
+            C.CA_SURPLUS_START: 1.0, C.CA_SURPLUS_DEBOUNCE: 0, C.CA_WINDOW_ENABLED: True,
             C.CA_WINDOW_START: _hhmm(2), C.CA_WINDOW_END: _hhmm(3)}
     ca, calls = build(opts, {"sensor.soc": FakeState("50"), "sensor.surplus": FakeState("2000")})
     ca._eval_smart_solar()
@@ -218,7 +218,7 @@ def test_smart_solar_charges_above_target_on_solar():
     # (the target only caps GRID top-up, never free solar).
     opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
             C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
-            C.CA_SURPLUS_START: 1.0}
+            C.CA_SURPLUS_START: 1.0, C.CA_SURPLUS_DEBOUNCE: 0}
     ca, calls = build(opts, {"sensor.soc": FakeState("85"), "sensor.surplus": FakeState("2000")})
     ca._eval_smart_solar()
     assert calls == [True], f"solar should charge past target, got {calls}"
@@ -229,7 +229,7 @@ def test_smart_solar_stops_above_target_without_solar():
     # Above target with no surplus → stop the (grid) charge.
     opts = {C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
             C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
-            C.CA_SURPLUS_START: 1.0}
+            C.CA_SURPLUS_START: 1.0, C.CA_SURPLUS_DEBOUNCE: 0}
     ca, calls = build(opts, {"sensor.soc": FakeState("85"), "sensor.surplus": FakeState("0")})
     ca._is_charging = lambda: True
     ca._we_started = True
@@ -1180,6 +1180,36 @@ def test_commute_multicar_per_car_optout_honored():
     a, b = ca._cars()[0], ca._cars()[1]
     assert ca._commute_enabled(a) is True and ca._commute_target(a) == 51.0   # inherits global
     assert ca._commute_enabled(b) is False and ca._commute_target(b) is None  # explicit opt-out
+
+
+# ── smart+solar solar-availability hysteresis + debounce (no flapping) ──
+@case
+def test_smart_solar_solar_hysteresis_debounce():
+    ca, _ = build({C.CA_SURPLUS_START: 1.4, C.CA_SURPLUS_STOP: 0.5,
+                   C.CA_SURPLUS_DEBOUNCE: 3}, {})
+    ca._surplus_since = None
+    ca._deficit_since = None
+    # Above start but debounce not elapsed → don't start yet (arms timer).
+    ca._surplus_value = lambda: 2.0
+    assert ca._solar_should_charge(False) is False
+    assert ca._solar_should_charge(False) is False
+    # Debounce elapsed → start.
+    ca._surplus_since = dt_util.utcnow() - timedelta(minutes=4)
+    assert ca._solar_should_charge(False) is True
+    # Once on, dead-band (between stop 0.5 and start 1.4) holds ON — no flap.
+    ca._surplus_value = lambda: 1.0
+    assert ca._solar_should_charge(True) is True
+    # At/below stop but debounce not elapsed → stays on (arms deficit timer).
+    ca._surplus_value = lambda: 0.4
+    ca._surplus_since = None
+    ca._deficit_since = None
+    assert ca._solar_should_charge(True) is True
+    ca._deficit_since = dt_util.utcnow() - timedelta(minutes=4)
+    assert ca._solar_should_charge(True) is False
+    # Unknown surplus keeps the current state either way.
+    ca._surplus_value = lambda: None
+    assert ca._solar_should_charge(True) is True
+    assert ca._solar_should_charge(False) is False
 
 
 def main():

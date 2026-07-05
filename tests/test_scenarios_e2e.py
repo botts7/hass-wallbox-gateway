@@ -348,9 +348,12 @@ def test_solar_surplus_unknown_does_nothing():
 # MODE SMART_SOLAR — _eval_smart_solar (solar-first, grid bounded by window)
 # ════════════════════════════════════════════════════════════════════
 def _smart_opts(**over):
+    # debounce 0 so these decision-tests act instantly; the hysteresis+debounce
+    # timing itself is covered by test_smart_solar_solar_hysteresis_debounce.
     o = {C.CA_MODE: C.MODE_SMART_SOLAR, C.CA_SOC_ENTITY: "sensor.soc",
          C.CA_TARGET_PCT: 80, C.CA_SURPLUS_SOURCE: "entity",
-         C.CA_SURPLUS_ENTITY: "sensor.surplus", C.CA_SURPLUS_START: 1.0}
+         C.CA_SURPLUS_ENTITY: "sensor.surplus", C.CA_SURPLUS_START: 1.0,
+         C.CA_SURPLUS_DEBOUNCE: 0}
     o.update(over)
     return o
 
