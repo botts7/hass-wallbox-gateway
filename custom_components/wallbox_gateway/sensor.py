@@ -417,8 +417,16 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        entity_registry_enabled_default=False,
-        value_fn=lambda e: _opt_int(e._realtime().get("max_charging_current")),
+        # Enabled by default for parity with the dashboard + MQTT discovery,
+        # which both surface the active max charge current. (andypnz, forum #75)
+        # r_sta.max_charging_current is absent on some chargers (e.g. Pulsar
+        # Plus firmware); fall back to r_dat.cur — the same value the dashboard
+        # shows — so the sensor populates everywhere. (andypnz, forum #75)
+        value_fn=lambda e: _opt_int(
+            e._realtime().get("max_charging_current")
+            if e._realtime().get("max_charging_current") is not None
+            else e._charger_status().get("cur")
+        ),
     ),
     # Charge-interval capture (#141): the gateway records each real charge
     # burst (cp>0). last_burst_wh = the most recent completed burst's energy;

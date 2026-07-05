@@ -4,6 +4,18 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.22.1] - 2026-07-05
+
+### Fixed
+- **"Max charging current" sensor now shows up and populates on all chargers.**
+  It was disabled by default (so it never appeared unless you went hunting for
+  it in the entity registry) **and** it read only `r_sta.max_charging_current`,
+  which some chargers — e.g. the Pulsar Plus — don't report, leaving it blank
+  even when enabled. It's now **enabled by default** (matching the dashboard and
+  MQTT discovery, which both surface it) and falls back to `r_dat.cur` — the
+  same active max-current value the dashboard shows — when `r_sta` omits the
+  field. (andypnz, forum #75)
+
 ## [0.22.0] - 2026-07-05
 
 ### Added
