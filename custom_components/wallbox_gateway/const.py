@@ -174,6 +174,11 @@ CA_MAX_CURRENT = "max_current_a"            # default MAX_CURRENT_A
 # Solar-follow: modulate the charge current to track surplus instead of plain
 # start/stop. When off, solar mode keeps the original hysteresis behaviour.
 CA_SOLAR_DYNAMIC = "solar_dynamic"          # bool
+# Capability-aware solar: when the charger has a native Eco-Smart feature
+# (BAPI g_ecos/s_ecos), defer to it (Full Green / Eco Smart) instead of driving
+# solar from HA. When the charger lacks it, HA emulates it by following surplus
+# and modulating the charge current. Default True ("use native when available").
+CA_SOLAR_USE_NATIVE = "solar_use_native"    # bool
 # Supply geometry, used to convert a surplus *power* figure to a current.
 # amps ~= power_w / (voltage * phases). Surplus values in kW are auto-scaled.
 CA_SUPPLY_VOLTAGE = "supply_voltage"        # default 230 V

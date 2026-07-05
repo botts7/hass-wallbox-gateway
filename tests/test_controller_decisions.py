@@ -1212,6 +1212,106 @@ def test_smart_solar_solar_hysteresis_debounce():
     assert ca._solar_should_charge(False) is False
 
 
+# ── capability-aware solar: native Eco-Smart vs HA emulation ────────
+def _with_eco(ca, mode=0, power_pct=100):
+    """Give the assistant's FakeCoord a native Eco-Smart block (charger exposes
+    g_ecos), so `_eco_smart_supported()` reports True."""
+    ca._coordinator().data["eco_smart"] = {"mode": mode, "power_pct": power_pct}
+    return ca
+
+
+def _spy_eco(ca):
+    """Record the eco target `_ensure_eco_mode` is asked for (the coro it would
+    return is irrelevant here — FakeHass.async_create_task swallows it)."""
+    recorded = []
+    ca._ensure_eco_mode = lambda target: recorded.append(target)
+    return recorded
+
+
+@case
+def test_solar_native_defers_to_full_green():
+    # Charger HAS Eco-Smart + use_native default → defer: request Full Green (1),
+    # and DON'T drive start/stop from HA.
+    opts = {C.CA_MODE: C.MODE_SOLAR, C.CA_SURPLUS_SOURCE: "entity",
+            C.CA_SURPLUS_ENTITY: "sensor.surplus", C.CA_SURPLUS_START: 1.0,
+            C.CA_SURPLUS_DEBOUNCE: 0}
+    ca, calls = build(opts, {"sensor.surplus": FakeState("2000")})
+    _with_eco(ca, mode=0)
+    rec = _spy_eco(ca)
+    ca._eval_solar()
+    assert calls == [], f"native solar must not start/stop from HA, got {calls}"
+    assert rec == [1], f"should request Full Green (1), got {rec}"
+
+
+@case
+def test_smart_solar_native_defers_to_eco_smart():
+    # Charger HAS Eco-Smart + use_native default → defer: request Eco Smart (2),
+    # no HA start/stop.
+    opts = {C.CA_MODE: C.MODE_SMART_SOLAR, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 80, C.CA_SURPLUS_SOURCE: "entity",
+            C.CA_SURPLUS_ENTITY: "sensor.surplus", C.CA_SURPLUS_START: 1.0,
+            C.CA_SURPLUS_DEBOUNCE: 0}
+    ca, calls = build(opts, {"sensor.soc": FakeState("50"), "sensor.surplus": FakeState("2000")})
+    _with_eco(ca, mode=0)
+    rec = _spy_eco(ca)
+    ca._eval_smart_solar()
+    assert calls == [], f"native smart+solar must not start/stop from HA, got {calls}"
+    assert rec == [2], f"should request Eco Smart (2), got {rec}"
+
+
+@case
+def test_solar_use_native_false_falls_through_to_emulate():
+    # Eco-Smart supported but the user opted OUT → emulate (HA drives the start).
+    opts = {C.CA_MODE: C.MODE_SOLAR, C.CA_SOLAR_USE_NATIVE: False,
+            C.CA_SURPLUS_SOURCE: "entity", C.CA_SURPLUS_ENTITY: "sensor.surplus",
+            C.CA_SURPLUS_START: 1.0, C.CA_SURPLUS_DEBOUNCE: 0}
+    ca, calls = build(opts, {"sensor.surplus": FakeState("2000")})
+    _with_eco(ca, mode=1)
+    rec = _spy_eco(ca)
+    ca._eval_solar()
+    assert calls == [True], f"opt-out should emulate (start), got {calls}"
+    assert rec == [], f"opt-out must not touch native eco, got {rec}"
+
+
+@case
+def test_solar_no_eco_support_emulates():
+    # No eco_smart data (charger lacks g_ecos) + use_native True → emulate.
+    opts = {C.CA_MODE: C.MODE_SOLAR, C.CA_SURPLUS_SOURCE: "entity",
+            C.CA_SURPLUS_ENTITY: "sensor.surplus", C.CA_SURPLUS_START: 1.0,
+            C.CA_SURPLUS_DEBOUNCE: 0}
+    ca, calls = build(opts, {"sensor.surplus": FakeState("2000")})
+    rec = _spy_eco(ca)                    # no _with_eco → unsupported
+    assert ca._eco_smart_supported() is False
+    ca._eval_solar()
+    assert calls == [True], f"no native → emulate (start), got {calls}"
+    assert rec == [], f"no native → no eco write, got {rec}"
+
+
+@case
+def test_ensure_eco_mode_noops_when_already_at_target():
+    import asyncio
+    import json as _json
+    sent = []
+
+    class _Client:
+        async def bapi(self, met, par=None, wait_ms=None):
+            sent.append((met, par))
+
+    ca, _ = build({}, {})
+    coord = ca._coordinator()
+    coord.data["eco_smart"] = {"mode": 2, "power_pct": 90}
+    coord.client = _Client()
+    asyncio.run(ca._ensure_eco_mode(2))
+    assert sent == [], "already at target → no s_ecos write"
+    asyncio.run(ca._ensure_eco_mode(1))
+    assert len(sent) == 1 and sent[0][0] == "s_ecos", sent
+    payload = _json.loads(sent[0][1])
+    assert payload["esm"] == 1 and payload["ese"] == 1 and payload["esp"] == 90, payload
+    # Disabling (0) → ese 0.
+    asyncio.run(ca._ensure_eco_mode(0))
+    assert _json.loads(sent[-1][1])["ese"] == 0, sent
+
+
 def main():
     if not _HA_OK:
         return

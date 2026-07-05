@@ -4,6 +4,26 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.21.0] - 2026-07-05
+
+### Added
+- **Capability-aware solar — use the charger's native Eco-Smart when it has it,
+  emulate it when it doesn't.** In *Solar* and *Smart + Solar* modes the Charge
+  Assistant now detects whether the charger exposes a built-in Eco-Smart feature
+  (BAPI `g_ecos`/`s_ecos`):
+  - **Has it →** the assistant *defers* to it — it sets the right native mode
+    (*Solar* → **Full Green** / solar-only; *Smart + Solar* → **Eco Smart** /
+    solar + grid top-up) and lets the charger follow the surplus itself, with no
+    Home-Assistant start/stop churn. Writes are idempotent (only on a real mode
+    change), so it never spams `s_ecos`.
+  - **Lacks it →** Home Assistant *emulates* it, following your solar surplus and
+    **modulating the charge current** (dynamic follow is now the default while
+    emulating, so it's as smooth as the native feature) instead of crude on/off.
+  - New option **"Use the charger's built-in Eco-Smart when available"**
+    (`solar_use_native`, default on) on both the Solar and Smart + Solar steps.
+    Turn it off to force Home-Assistant emulation even on a capable charger; an
+    explicit dynamic-current = off still forces plain on/off.
+
 ## [0.20.3] - 2026-07-05
 
 ### Fixed

@@ -72,6 +72,7 @@ from .const import (
     CA_PRICE_CAP,
     CA_PRICE_ENTITY,
     CA_SOLAR_DYNAMIC,
+    CA_SOLAR_USE_NATIVE,
     CA_SOLAR_ENTITY,
     CA_SURPLUS_SOURCE,
     CA_SUPPLY_PHASES,
@@ -526,6 +527,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
+                # Capability-aware solar: defer to the charger's built-in
+                # Eco-Smart when it has one; otherwise HA emulates it.
+                vol.Optional(
+                    CA_SOLAR_USE_NATIVE, default=cur.get(CA_SOLAR_USE_NATIVE, True)
+                ): selector.BooleanSelector(),
                 # Phase 2 — dynamic current follow + house-load limit (advanced;
                 # the gateway clamps to 6-32 A and ignores live current on the
                 # original Pulsar).
@@ -707,6 +713,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CA_SURPLUS_START, default=cur.get(CA_SURPLUS_START, 1.4)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0, max=100000, step=0.1, mode=selector.NumberSelectorMode.BOX)
                 ),
+                # Capability-aware solar: defer to the charger's built-in
+                # Eco-Smart when it has one; otherwise HA emulates it.
+                vol.Optional(
+                    CA_SOLAR_USE_NATIVE, default=cur.get(CA_SOLAR_USE_NATIVE, True)
+                ): selector.BooleanSelector(),
                 vol.Optional(CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)): selector.SelectSelector(
                     selector.SelectSelectorConfig(options=notify_opts, custom_value=True, mode=selector.SelectSelectorMode.DROPDOWN)
                 ),

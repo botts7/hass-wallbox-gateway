@@ -25,6 +25,7 @@ Scheduled / Prompt modes are reserved for later phases.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -75,6 +76,7 @@ from .const import (
     CA_TRIP_UNTIL,
     CA_START_ACTION,
     CA_SOLAR_DYNAMIC,
+    CA_SOLAR_USE_NATIVE,
     CA_SUPPLY_PHASES,
     CA_SUPPLY_VOLTAGE,
     CA_GRID_ENTITY,
@@ -139,7 +141,11 @@ from . import ca_config
 from . import charge_window
 from . import price_planner
 from .charge_guards import derive_surplus, effective_target, price_allows_charge
-from .charger_control import WallboxGatewayCharger
+from .charger_control import (
+    WallboxGatewayCharger,
+    ECO_FULL_GREEN,
+    ECO_SMART,
+)
 from .schedule_arbiter import NativeScheduleArbiter
 
 _LOGGER = logging.getLogger(__name__)
@@ -1799,6 +1805,90 @@ class ChargeAssistant:
             _LOGGER.warning("Charge Assistant: %s command failed: %s", action, err)
 
     # ------------------------------------------------------------------
+    # Capability-aware solar: defer to the charger's native Eco-Smart when it
+    # has one (g_ecos/s_ecos); otherwise HA emulates it (surplus-follow + amp
+    # modulation).
+    # ------------------------------------------------------------------
+    def _use_native(self) -> bool:
+        """User preference: use the charger's built-in Eco-Smart when available.
+        Default True."""
+        return bool(self._opts.get(CA_SOLAR_USE_NATIVE, True))
+
+    def _current_eco_mode(self) -> int | None:
+        """The charger's current native Eco-Smart mode (int), or None when the
+        charger doesn't expose g_ecos / the data isn't loaded yet."""
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        if not isinstance(data, dict):
+            return None
+        eco = data.get("eco_smart")
+        if not isinstance(eco, dict):
+            return None
+        m = eco.get("mode")
+        if isinstance(m, bool) or not isinstance(m, (int, float)):
+            return None
+        return int(m)
+
+    def _eco_smart_supported(self) -> bool:
+        """True iff the charger exposes a valid native Eco-Smart (g_ecos): an
+        `eco_smart` dict with an int `mode`. False when that data is absent —
+        which keeps chargers without the feature (and the pure-logic tests whose
+        FakeCoord has no `eco_smart`) on the emulate path."""
+        return self._current_eco_mode() is not None
+
+    async def _ensure_eco_mode(self, target: int) -> None:
+        """Point the charger's native Eco-Smart at `target` (0=Disabled,
+        1=Full Green, 2=Eco Smart). No-op when already there (don't spam s_ecos
+        writes). Preserves the solar power target (esp); ese follows the mode.
+        Fully guarded so a missing coordinator/client can't crash a tick."""
+        coord = self._coordinator()
+        if coord is None:
+            return
+        data = getattr(coord, "data", None)
+        eco = data.get("eco_smart") if isinstance(data, dict) else None
+        eco = eco if isinstance(eco, dict) else {}
+        if self._current_eco_mode() == int(target):
+            return
+        client = getattr(coord, "client", None)
+        if client is None:
+            return
+        payload = {
+            "ese": 1 if int(target) > 0 else 0,
+            "esm": int(target),
+            "esp": int(eco.get("power_pct") or 100),
+        }
+        try:
+            await client.bapi("s_ecos", par=json.dumps(payload), wait_ms=8000)
+            refresh = getattr(coord, "async_request_refresh", None)
+            if refresh is not None:
+                await refresh()
+        except Exception as err:  # noqa: BLE001 — never crash the eval loop
+            _LOGGER.warning(
+                "Charge Assistant: setting native Eco-Smart mode %s failed: %s",
+                target, err,
+            )
+
+    def _defer_to_native_eco(self, target: int) -> bool:
+        """If the charger has native Eco-Smart and the user wants to use it,
+        schedule the right native mode and report True (the charger drives solar
+        — the caller must return without any manual start/stop). Otherwise False
+        and the caller runs the emulated logic."""
+        if self._use_native() and self._eco_smart_supported():
+            self.hass.async_create_task(self._ensure_eco_mode(target))
+            return True
+        return False
+
+    def _emulating_solar_strategy(self) -> bool:
+        """True when the active strategy is a solar one AND we're emulating it in
+        HA (no usable native Eco-Smart to defer to). Used to make surplus-follow
+        current modulation the DEFAULT while emulating, so it's as smooth as the
+        native feature would be."""
+        strat = ca_config.strategy_of(self._opts)
+        if strat not in (MODE_SOLAR, MODE_SMART_SOLAR):
+            return False
+        return not (self._use_native() and self._eco_smart_supported())
+
+    # ------------------------------------------------------------------
     # Managed grid-override session: grace period + Eco/schedule handback
     # ------------------------------------------------------------------
     def _grace_minutes(self) -> int:
@@ -2214,8 +2304,17 @@ class ChargeAssistant:
         solar tick while charging. Incremental controller: nudge the commanded
         current toward the available surplus (keeping a margin so we don't pull
         from the grid), then clamp it so total house draw stays under the load
-        limit. Both are opt-in."""
-        dynamic = bool(self._opts.get(CA_SOLAR_DYNAMIC))
+        limit. Both are opt-in.
+
+        Dynamic modulation is the DEFAULT while emulating a solar strategy (no
+        native Eco-Smart to defer to) so emulation is as smooth as the native
+        feature — but an explicit CA_SOLAR_DYNAMIC=False still forces plain
+        on/off if the user really wants it."""
+        explicit = self._opts.get(CA_SOLAR_DYNAMIC)
+        if explicit is None:
+            dynamic = self._emulating_solar_strategy()
+        else:
+            dynamic = bool(explicit)
         try:
             load_limit = float(self._opts.get(CA_LOAD_LIMIT_W) or 0)
         except (TypeError, ValueError):
@@ -2350,6 +2449,10 @@ class ChargeAssistant:
             self._note_standby(reason)
             return
         self._note_standby(None)
+        # Capability-aware: if the charger has native Eco-Smart, defer to its
+        # Full Green (solar-only) mode and let the charger follow surplus itself.
+        if self._defer_to_native_eco(ECO_FULL_GREEN):
+            return
         surplus = self._surplus_value()
         if surplus is None:
             return
@@ -2499,6 +2602,10 @@ class ChargeAssistant:
             self._note_standby(reason)
             return
         self._note_standby(None)
+        # Capability-aware: if the charger has native Eco-Smart, defer to its
+        # Eco Smart (solar + grid top-up) mode and let the charger arbitrate.
+        if self._defer_to_native_eco(ECO_SMART):
+            return
         soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
         target = self._target_pct()
         charging = self._is_charging()
