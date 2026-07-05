@@ -4,6 +4,25 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.23.0] - 2026-07-05
+
+### Added
+- **Native Lovelace cards.** Four custom cards ship with the integration and are
+  **auto-registered** — no manual resource setup — so they show up in the card
+  picker as soon as you update:
+  - **Wallbox Energy Flow** (`custom:wallbox-energy-flow`) — the Solar/Grid →
+    Vehicle live power-flow visual.
+  - **Wallbox Controls** (`custom:wallbox-controls`) — Start/Stop, max-current
+    slider, Solar-charging toggle, Resume schedule.
+  - **Wallbox Status** (`custom:wallbox-status`) — charger state + quick stats
+    (power / session kWh / max current).
+  - **Wallbox Session** (`custom:wallbox-sessions`) — session energy with a
+    solar-vs-grid split.
+
+  Each card auto-finds your Wallbox device (or takes `device:` for multi-charger
+  setups) and resolves its entities, so no entity wiring is needed. The bundle is
+  version-stamped, so a browser refresh picks up new versions after an upgrade.
+
 ## [0.22.1] - 2026-07-05
 
 ### Fixed

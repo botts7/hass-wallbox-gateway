@@ -52,6 +52,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Serve + register the custom Lovelace cards (custom:wallbox-*), once per
+    # HA start. Version-stamped from the manifest for cache-busting on upgrade.
+    try:
+        from homeassistant.loader import async_get_integration
+
+        from .frontend import async_register_frontend
+
+        integration = await async_get_integration(hass, DOMAIN)
+        await async_register_frontend(hass, str(integration.version or ""))
+    except Exception as err:  # noqa: BLE001 - cards are optional, never block setup
+        _LOGGER.warning("Wallbox cards registration skipped: %s", err)
+
     # Guided Charge Assistant — runs the configured behaviour itself (no
     # generated automation). No-op until the user runs the Options flow.
     assistant = ChargeAssistant(hass, entry)
