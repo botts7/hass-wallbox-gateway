@@ -78,6 +78,11 @@ from .const import (
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
     CA_RESUME_ECO_MODE,
+    CA_RELEASE_DEFAULT,
+    RELEASE_KEEP,
+    RELEASE_STOP,
+    RELEASE_RESUME_SCHEDULE,
+    RELEASE_RESUME_ECO,
     CA_SUPPLY_PHASES,
     CA_SUPPLY_VOLTAGE,
     CA_GRID_ENTITY,
@@ -204,6 +209,22 @@ _START_ASSERT_RETRIES = 3
 _OWNER = "integration"
 _MANUAL_OVERRIDE_COOLDOWN_S = 1800  # 30 min
 
+
+def release_action(controlling: bool, default: str, owner: str, is_charging: bool) -> str | None:
+    """Pure decision for the release-default enforcer: what action to take now,
+    or None to do nothing. Safe-by-design — never acts unless the gateway still
+    credits US (integration/addon) as owner, so a manual or native-schedule
+    charge is untouched. See _maybe_release_default."""
+    if controlling or default == RELEASE_KEEP:
+        return None
+    if owner not in (_OWNER, "addon"):
+        return None
+    if default == RELEASE_STOP and not is_charging:
+        return None
+    if default in (RELEASE_STOP, RELEASE_RESUME_SCHEDULE, RELEASE_RESUME_ECO):
+        return default
+    return None
+
 # Acting strategies (drive start/stop/current). Reminder is a notify-only layer,
 # not an acting strategy, so it's excluded here.
 _ACTING = (MODE_TARGET, MODE_SOLAR, MODE_SMART_SOLAR)
@@ -237,6 +258,8 @@ class ChargeAssistant:
         # and when we last issued a resume (debounce + cooldown).
         self._auto_resume_since: datetime | None = None
         self._auto_resume_last: datetime | None = None
+        self._release_since: datetime | None = None
+        self._release_last: datetime | None = None
         # Commute learner: cached avg daily use (kWh/day) for the history-backed
         # sources (odometer / SOC) which need an async recorder read, so the sync
         # target math can stay sync. Keyed per car so multi-vehicle each get their
@@ -453,6 +476,7 @@ class ChargeAssistant:
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
         self._maybe_auto_resume(sc)
+        self._maybe_release_default(sc)
         self._maybe_identity()
         self._maybe_plug_recommendation()
         if any(self._cg(c, CA_COMMUTE_ENABLED) for c in self._cars()):
@@ -482,6 +506,59 @@ class ChargeAssistant:
         self._auto_resume_last = now
         _LOGGER.info("Charge Assistant: auto-resuming Eco-Smart/schedule (paused + idle)")
         self.hass.async_create_task(self._resume_and_restore_eco())
+
+    def _maybe_release_default(self, controlling: bool) -> None:
+        """Return the charger to the user's chosen default when the integration/
+        add-on has been the gateway's control owner but is NOT actively managing
+        charging — e.g. an acting mode was turned off, or a stray/leftover start
+        left it charging with nothing watching it.
+
+        Safety: only ever acts while the gateway STILL credits us (integration/
+        add-on) as owner. A manual start or a native-schedule charge is never
+        touched. Debounced + cooled down so it fires once per episode. Opt-in via
+        CA_RELEASE_DEFAULT (default 'keep' = today's behaviour)."""
+        default = str(self.entry.options.get(CA_RELEASE_DEFAULT, RELEASE_KEEP))
+        action = release_action(
+            controlling, default, self.control_owner(), self._is_charging()
+        )
+        if action is None:
+            self._release_since = None
+            return
+        now = dt_util.utcnow()
+        if self._release_since is None:
+            self._release_since = now
+            return
+        if now - self._release_since < _AUTO_RESUME_DELAY:
+            return
+        if self._release_last is not None and now - self._release_last < _AUTO_RESUME_COOLDOWN:
+            return
+        self._release_last = now
+        _LOGGER.info(
+            "Charge Assistant: applying release default '%s' (owner=%s, not controlling)",
+            default, self.control_owner(),
+        )
+        self.hass.async_create_task(self._apply_release_default(default))
+
+    async def _apply_release_default(self, default: str) -> None:
+        """Carry out the chosen release default, then hand ownership back to the
+        charger (owner=none) so the gateway stops crediting us and this can't
+        re-fire."""
+        coord = self._coordinator()
+        if coord is None:
+            return
+        charger = WallboxGatewayCharger(coord)
+        try:
+            if default == RELEASE_STOP:
+                if self._is_charging():
+                    await charger.stop()
+            elif default == RELEASE_RESUME_SCHEDULE:
+                # Un-pause so the charger's own schedule + Eco loops take over.
+                await self._resume_native()
+            elif default == RELEASE_RESUME_ECO:
+                await self._resume_and_restore_eco()
+            await charger.release_owner()
+        except Exception as err:  # noqa: BLE001 — never crash the eval loop
+            _LOGGER.warning("Charge Assistant: release default '%s' failed: %s", default, err)
 
     def _update_repair(self) -> None:
         """Raise/clear an HA Repair when an acting mode is set but we aren't the

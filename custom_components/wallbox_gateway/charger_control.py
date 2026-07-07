@@ -106,6 +106,12 @@ class WallboxGatewayCharger(ChargerControl):
         # the charger's schedule + Eco-Smart loops control it again.
         await self._coord.client.get("/api/command?action=resume")
 
+    async def release_owner(self) -> None:
+        # Hand charge-control ownership back to the charger (owner=none) so the
+        # gateway no longer credits the integration/add-on with control. POST-only
+        # endpoint (a stray browser GET can't fire it).
+        await self._coord.client.post("/api/control_owner?owner=none")
+
     def eco_mode(self) -> int | None:
         eco = self.eco_state()
         m = eco.get("mode")

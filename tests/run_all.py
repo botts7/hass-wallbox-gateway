@@ -29,6 +29,7 @@ MODULES = [
     "test_solar_switch",           # Solar-charging switch; needs HA; self-skips
     "test_scenarios_e2e",          # exhaustive per-mode scenario matrix; self-skips
     "test_entity_descriptions",    # device_class/state_class validity; needs HA; self-skips
+    "test_release_default",        # release-default enforcer gating; needs HA; self-skips
 ]
 
 

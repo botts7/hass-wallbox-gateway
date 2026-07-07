@@ -4,6 +4,26 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.24.0] - 2026-07-07
+
+### Added
+- **"Return to a default when the Assistant/Add-on stops controlling."** A new
+  option (Charge Assistant page) for what the charger should do once the
+  integration/add-on has been the control owner but is no longer actively
+  managing charging — e.g. an acting mode was turned off, or a stray/leftover
+  start left it charging with nothing watching it:
+  - **Leave as-is** (default — unchanged behaviour)
+  - **Stop charging** — stop and hand control back
+  - **Resume the charger's own schedule**
+  - **Resume Eco-Smart / Solar**
+
+  It only ever acts while the gateway still credits the integration/add-on as
+  owner, so a **manual** start or a **native-schedule** charge is never touched.
+  Prevents a charge being left running outside any window when nothing is
+  managing it. (The charger's own schedule *enable* flags are already restored
+  automatically when an acting mode hands back — this adds the charging-state
+  half.)
+
 ## [0.23.3] - 2026-07-05
 
 ### Fixed

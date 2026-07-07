@@ -19,7 +19,18 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ClientConfig, GatewayClient
 from .charge_assistant import ChargeAssistant
-from .const import CA_AUTO_RESUME, CA_KEY, CONF_POLL_INTERVAL, DEFAULT_USERNAME, DOMAIN
+from .const import (
+    CA_AUTO_RESUME,
+    CA_KEY,
+    CA_RELEASE_DEFAULT,
+    CONF_POLL_INTERVAL,
+    DEFAULT_USERNAME,
+    DOMAIN,
+    RELEASE_KEEP,
+    RELEASE_RESUME_ECO,
+    RELEASE_RESUME_SCHEDULE,
+    RELEASE_STOP,
+)
 from .coordinator import GatewayCoordinator
 from .schedule import async_setup_schedule_services
 
@@ -140,6 +151,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _LOGGER.warning("set_config: ignoring %s (expected an object)", key)
                 elif key == CA_AUTO_RESUME:
                     clean[key] = bool(val)
+                elif key == CA_RELEASE_DEFAULT:
+                    if val in (RELEASE_KEEP, RELEASE_STOP,
+                               RELEASE_RESUME_SCHEDULE, RELEASE_RESUME_ECO):
+                        clean[key] = val
+                    else:
+                        _LOGGER.warning("set_config: ignoring invalid release_default %r", val)
                 else:
                     _LOGGER.warning("set_config: ignoring unknown option key %r", key)
             if not clean:

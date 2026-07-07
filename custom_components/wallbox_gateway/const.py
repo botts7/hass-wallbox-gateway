@@ -183,6 +183,17 @@ CA_SOLAR_USE_NATIVE = "solar_use_native"    # bool
 # optionally force a specific native Eco-Smart mode instead of leaving whatever
 # was already set. "keep" (default) preserves today's behaviour (just un-pause).
 CA_RESUME_ECO_MODE = "resume_eco_mode"      # keep|full_green|eco_smart|disabled
+# What the charger should return to when the integration/add-on has been the
+# control owner but is NOT actively managing charging (an acting mode was turned
+# off, or a stray/leftover start left it charging with nothing watching it). Only
+# ever acts while the gateway still credits US (integration/addon) as owner — a
+# manual or native-schedule charge is never touched. Prevents a charge being
+# left running outside any window when nothing is managing it.
+CA_RELEASE_DEFAULT = "release_default"       # keep|stop|resume_schedule|resume_eco
+RELEASE_KEEP = "keep"                        # leave as-is (today's behaviour)
+RELEASE_STOP = "stop"                        # stop charging + hand control back
+RELEASE_RESUME_SCHEDULE = "resume_schedule"  # un-pause the charger's own schedule
+RELEASE_RESUME_ECO = "resume_eco"            # un-pause + restore chosen Eco-Smart
 # Supply geometry, used to convert a surplus *power* figure to a current.
 # amps ~= power_w / (voltage * phases). Surplus values in kW are auto-scaled.
 CA_SUPPLY_VOLTAGE = "supply_voltage"        # default 230 V
