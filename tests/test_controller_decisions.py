@@ -816,6 +816,44 @@ def test_maybe_remind_cooldown_blocks_flapping():
     assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "post-plug unplug nudges"
 
 
+# ── odometer efficiency: fixed / sensor / auto ──────────────────────
+@case
+def test_efficiency_from_pure():
+    f = ca_mod.ChargeAssistant._efficiency_from
+    assert f(50, 9.0) == 18.0            # 9 kWh over 50 km -> 18 kWh/100km
+    assert f(100, 18.0) == 18.0
+    assert f(0, 9) is None               # no distance
+    assert f(50, 0) is None              # no energy
+    assert f(None, 9) is None
+    assert f(50, None) is None
+
+
+@case
+def test_efficiency_source_default():
+    # explicit choice always wins
+    for choice in ("fixed", "sensor", "auto"):
+        ca, _ = build({C.CA_COMMUTE_EFFICIENCY_SOURCE: choice}, {})
+        assert ca._efficiency_source({}) == choice, f"explicit {choice}"
+    # unset + all learn inputs present -> auto
+    ca, _ = build({
+        C.CA_COMMUTE_ODOMETER_ENTITY: "sensor.odo",
+        C.CA_SOC_ENTITY: "sensor.soc",
+        C.CA_BATTERY_KWH: 60,
+    }, {})
+    assert ca._efficiency_source({}) == "auto", "all inputs -> auto default"
+    # unset + missing an input -> fixed
+    ca, _ = build({
+        C.CA_COMMUTE_ODOMETER_ENTITY: "sensor.odo",
+        C.CA_BATTERY_KWH: 60,
+    }, {})
+    assert ca._efficiency_source({}) == "fixed", "missing SOC -> fixed default"
+    # fixed value falls back to 18 when unset/invalid
+    ca, _ = build({}, {})
+    assert ca._fixed_efficiency({}) == 18.0
+    ca, _ = build({C.CA_COMMUTE_EFFICIENCY: 15.5}, {})
+    assert ca._fixed_efficiency({}) == 15.5
+
+
 # ── auto-resume Eco-Smart/schedule after a manual charge ────────────
 @case
 def test_auto_resume_when_paused_and_idle():

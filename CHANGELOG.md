@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.28.0] - 2026-07-10
+
+### Added
+- **Self-learning commute efficiency (kWh/100km).** The odometer commute source
+  no longer needs a hand-entered efficiency guess — it can now:
+  - **Auto** (new default when odometer + SOC + battery are all set): learn your
+    real kWh/100km from actual driving (SOC-drop × battery capacity over the
+    odometer distance across the learning window). Self-calibrates for season,
+    driving style, etc.
+  - **Sensor**: read a consumption/efficiency sensor from your car integration.
+  - **Fixed**: the manually entered value (previous behaviour), used as the
+    fallback whenever Sensor/Auto can't produce a value.
+  New keys `commute_efficiency_source` / `commute_efficiency_entity`. (Add-on
+  picker for choosing the source lands in a following add-on release; until then
+  it auto-selects sensibly.)
+
 ## [0.27.0] - 2026-07-10
 
 ### Fixed

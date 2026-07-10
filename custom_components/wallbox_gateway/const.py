@@ -148,7 +148,13 @@ CA_COMMUTE_WINDOW_DAYS = "commute_window_days"  # rolling learning window (defau
 #                Most direct; reads recorder history.
 CA_COMMUTE_SOURCE = "commute_source"               # "charger" | "odometer" | "soc"
 CA_COMMUTE_ODOMETER_ENTITY = "commute_odometer_entity"  # total-km sensor (odometer source)
-CA_COMMUTE_EFFICIENCY = "commute_efficiency"       # kWh/100km (odometer source, default 18)
+CA_COMMUTE_EFFICIENCY = "commute_efficiency"       # kWh/100km (odometer source, fixed default 18)
+# Where the odometer source's kWh/100km efficiency comes from:
+CA_COMMUTE_EFFICIENCY_SOURCE = "commute_efficiency_source"   # "fixed" | "sensor" | "auto"
+CA_COMMUTE_EFFICIENCY_ENTITY = "commute_efficiency_entity"   # kWh/100km sensor (sensor source)
+EFFICIENCY_FIXED = "fixed"      # use the manually entered kWh/100km
+EFFICIENCY_SENSOR = "sensor"    # read a car consumption/efficiency sensor
+EFFICIENCY_AUTO = "auto"        # learn it from odometer distance vs SOC-drop x battery
 CA_COMMUTE_SOURCE_CHARGER = "charger"
 CA_COMMUTE_SOURCE_ODOMETER = "odometer"
 CA_COMMUTE_SOURCE_SOC = "soc"

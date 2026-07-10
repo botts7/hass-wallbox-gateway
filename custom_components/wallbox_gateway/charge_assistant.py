@@ -103,6 +103,11 @@ from .const import (
     CA_COMMUTE_SOURCE,
     CA_COMMUTE_ODOMETER_ENTITY,
     CA_COMMUTE_EFFICIENCY,
+    CA_COMMUTE_EFFICIENCY_SOURCE,
+    CA_COMMUTE_EFFICIENCY_ENTITY,
+    EFFICIENCY_FIXED,
+    EFFICIENCY_SENSOR,
+    EFFICIENCY_AUTO,
     CA_COMMUTE_SOURCE_CHARGER,
     CA_COMMUTE_SOURCE_ODOMETER,
     CA_COMMUTE_SOURCE_SOC,
@@ -1358,8 +1363,7 @@ class ChargeAssistant:
             km = self._daily_km_from_states(await self._history(ent, start))
             if km is None:
                 return None
-            eff = self._read_float_cg(car, CA_COMMUTE_EFFICIENCY)
-            eff = 18.0 if eff is None or eff <= 0 else eff
+            eff = await self._resolve_efficiency(car, start)
             return km * eff / 100.0           # km/day × kWh/100km ÷ 100 = kWh/day
         if source == CA_COMMUTE_SOURCE_SOC:
             ent = self._cg(car, CA_SOC_ENTITY)
@@ -1373,6 +1377,61 @@ class ChargeAssistant:
                 return None
             return pct / 100.0 * batt          # %/day × kWh ÷ 100 = kWh/day
         return None
+
+    # ---- odometer-source efficiency (kWh/100km): fixed / sensor / auto ----
+    def _efficiency_source(self, car: dict) -> str:
+        """Where the odometer source's kWh/100km comes from. Explicit choice
+        wins; otherwise default to 'auto' when we have the inputs to learn it
+        (odometer + SOC + battery), else 'fixed'."""
+        src = self._cg(car, CA_COMMUTE_EFFICIENCY_SOURCE)
+        if src in (EFFICIENCY_FIXED, EFFICIENCY_SENSOR, EFFICIENCY_AUTO):
+            return src
+        if (self._cg(car, CA_COMMUTE_ODOMETER_ENTITY)
+                and self._cg(car, CA_SOC_ENTITY)
+                and self._read_float_cg(car, CA_BATTERY_KWH)):
+            return EFFICIENCY_AUTO
+        return EFFICIENCY_FIXED
+
+    def _fixed_efficiency(self, car: dict) -> float:
+        eff = self._read_float_cg(car, CA_COMMUTE_EFFICIENCY)
+        return 18.0 if eff is None or eff <= 0 else eff
+
+    @staticmethod
+    def _efficiency_from(daily_km: float | None, daily_kwh: float | None) -> float | None:
+        """kWh/100km from a day's distance + energy. None when either is missing
+        or non-positive (so the caller falls back to the fixed value)."""
+        if not daily_km or daily_km <= 0 or not daily_kwh or daily_kwh <= 0:
+            return None
+        return daily_kwh / (daily_km / 100.0)
+
+    async def _computed_efficiency(self, car: dict, start: datetime) -> float | None:
+        """Learn kWh/100km from real driving: SOC-drop×battery (energy) over the
+        odometer distance across the learning window. None when the inputs aren't
+        all present, so _resolve_efficiency falls back to the fixed value."""
+        odo = self._cg(car, CA_COMMUTE_ODOMETER_ENTITY)
+        soc = self._cg(car, CA_SOC_ENTITY)
+        batt = self._read_float_cg(car, CA_BATTERY_KWH)
+        if not (odo and soc and batt and batt > 0):
+            return None
+        km = self._daily_km_from_states(await self._history(odo, start))
+        pct = self._daily_soc_drop_from_states(await self._history(soc, start))
+        if pct is None:
+            return None
+        return self._efficiency_from(km, pct / 100.0 * batt)
+
+    async def _resolve_efficiency(self, car: dict, start: datetime) -> float:
+        """kWh/100km to apply to the odometer source, per the efficiency source.
+        Sensor/auto fall back to the fixed value when they can't produce one."""
+        src = self._efficiency_source(car)
+        if src == EFFICIENCY_SENSOR:
+            v = self._read_float(self._cg(car, CA_COMMUTE_EFFICIENCY_ENTITY))
+            if v is not None and v > 0:
+                return v
+        elif src == EFFICIENCY_AUTO:
+            v = await self._computed_efficiency(car, start)
+            if v is not None and v > 0:
+                return v
+        return self._fixed_efficiency(car)
 
     @staticmethod
     def _num_states(states: list) -> list:
