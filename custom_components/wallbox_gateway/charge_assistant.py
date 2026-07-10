@@ -229,6 +229,11 @@ def release_action(controlling: bool, default: str, owner: str, is_charging: boo
 # not an acting strategy, so it's excluded here.
 _ACTING = (MODE_TARGET, MODE_SOLAR, MODE_SMART_SOLAR)
 
+# Default release-default when the user hasn't chosen one: hand the charger back
+# to its own control (un-pause schedule + solar) rather than leaving it paused.
+# Graceful on non-solar chargers — the un-pause still resumes their schedule.
+_DEFAULT_RELEASE = RELEASE_RESUME_ECO
+
 
 class ChargeAssistant:
     """Runs the configured charge-assist behaviour for one config entry."""
@@ -515,9 +520,15 @@ class ChargeAssistant:
 
         Safety: only ever acts while the gateway STILL credits us (integration/
         add-on) as owner. A manual start or a native-schedule charge is never
-        touched. Debounced + cooled down so it fires once per episode. Opt-in via
-        CA_RELEASE_DEFAULT (default 'keep' = today's behaviour)."""
-        default = str(self.entry.options.get(CA_RELEASE_DEFAULT, RELEASE_KEEP))
+        touched. Debounced + cooled down so it fires once per episode.
+
+        Default is 'resume_eco' (CA_RELEASE_DEFAULT unset): hand the charger back
+        to its OWN control — un-pause so its schedule + solar loops take over, and
+        (if it has Eco-Smart) restore the chosen mode. This avoids the dormant-
+        paused trap of a bare 'stop', and degrades gracefully on chargers without
+        solar (the un-pause still resumes their schedule; the eco-mode restore is
+        a no-op). See release_action / _resume_and_restore_eco."""
+        default = str(self.entry.options.get(CA_RELEASE_DEFAULT, _DEFAULT_RELEASE))
         action = release_action(
             controlling, default, self.control_owner(), self._is_charging()
         )

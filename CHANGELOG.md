@@ -4,6 +4,26 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.26.0] - 2026-07-10
+
+### Changed
+- **The Charge Assistant's "return to a default when it stops controlling" now
+  defaults to _resume_ (Eco-Smart / Solar) instead of doing nothing.** When the
+  integration/add-on has owned charging and then stops managing it (a mode was
+  turned off, or a stray/leftover start left it running), the charger is handed
+  back to its **own** control — un-paused so its schedule + solar loops take back
+  over. Previously the default was "keep" (do nothing), which could leave a
+  charge running with nothing watching it. This only ever acts on charges the
+  integration/add-on owned — manual and native-schedule charges are never
+  touched. Verified end-to-end on hardware (owner=integration + charging →
+  handed back after the 3-min grace).
+- Degrades gracefully on chargers **without** solar: the un-pause still resumes
+  the charger's schedule; the Eco-Smart mode restore is simply a no-op. So the
+  new default is safe on every charger, not just solar-equipped ones.
+- Add-on Charge Assistant page: the handback dropdown now defaults to **Resume
+  Eco-Smart / Solar**, and the option labels clarify that *Resume* hands the
+  charger back to its own schedule/solar while *Stop* leaves it idle/paused.
+
 ## [0.25.0] - 2026-07-10
 
 ### Added

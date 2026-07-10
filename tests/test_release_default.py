@@ -19,7 +19,10 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 try:
-    from custom_components.wallbox_gateway.charge_assistant import release_action
+    from custom_components.wallbox_gateway.charge_assistant import (
+        release_action,
+        _DEFAULT_RELEASE,
+    )
     from custom_components.wallbox_gateway.const import (
         RELEASE_KEEP,
         RELEASE_RESUME_ECO,
@@ -75,7 +78,14 @@ def main():
         assert got == expected, (
             f"release_action{args} -> {got!r}, expected {expected!r}"
         )
+    # Default-when-unset is resume_eco (hand the charger back to its own
+    # schedule/solar rather than leaving it paused). Degrades gracefully on
+    # non-solar chargers — see _resume_and_restore_eco.
+    assert _DEFAULT_RELEASE == RELEASE_RESUME_ECO, (
+        f"default release should be resume_eco, got {_DEFAULT_RELEASE!r}"
+    )
     print(f"  ok  release_action gating — {len(CASES)} combinations")
+    print("  ok  default release-default is resume_eco")
 
 
 if __name__ == "__main__":
