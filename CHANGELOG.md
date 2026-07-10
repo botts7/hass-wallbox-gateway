@@ -4,6 +4,17 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.27.0] - 2026-07-10
+
+### Fixed
+- **Plug-in reminder spam.** The arrival / lead / nightly / tariff reminders had
+  no cooldown, so a flappy presence entity (a phone `device_tracker` bouncing
+  `home → away → home`, common with GPS/Wi-Fi) fired a fresh notification on
+  every re-arrival — e.g. three notifications within the same minute. A
+  30-minute cooldown now gates brand-new reminders (the escalation cycle is
+  still the intended re-nudge). The cooldown resets when the car is next seen
+  plugged in, so a genuinely new unplugged episode still nudges promptly.
+
 ## [0.26.0] - 2026-07-10
 
 ### Changed

@@ -160,6 +160,13 @@ _LOGGER = logging.getLogger(__name__)
 _UNAVAILABLE = (None, "", "unknown", "unavailable")
 _MAX_ESCALATIONS = 3
 _SNOOZE_MINUTES = 60
+# Anti-spam for the plug-in reminders (arrival / lead / nightly / tariff): a
+# flappy presence entity (home->away->home, common with phone GPS/Wi-Fi) or
+# repeated triggers must not fire a fresh notification more than once per this
+# window. The escalation cycle (_arm_escalation) is the intended re-nudge; this
+# only gates brand-new reminders. Reset when the car is seen plugged in, so a
+# genuinely new unplugged episode can nudge again promptly.
+_REMIND_COOLDOWN = timedelta(minutes=30)
 # Anti-spam for the "solar available" reminder: even as surplus flaps up/down
 # (clouds), nudge at most once per this window. The notification's Skip button
 # still dismisses it for the rest of the day.
@@ -258,6 +265,9 @@ class ChargeAssistant:
         self._deficit_since: datetime | None = None
         # Suppression windows set by the Snooze / Skip notification actions.
         self._suppress_until: datetime | None = None
+        # Last time a fresh plug-in reminder fired — enforces _REMIND_COOLDOWN so
+        # a flappy presence entity / repeated triggers can't spam notifications.
+        self._remind_last: datetime | None = None
         self._escalations_left = 0
         # Auto-resume Eco-Smart/schedule: when the paused-and-idle state began,
         # and when we last issued a resume (debounce + cooldown).
@@ -2820,6 +2830,10 @@ class ChargeAssistant:
             return
         plugged = self._plugged_in()
         if plugged is not False:
+            # Car connected (or unknown) — no nudge. If it's genuinely plugged in,
+            # clear the cooldown so a later unplugged episode can remind promptly.
+            if plugged is True:
+                self._remind_last = None
             _LOGGER.debug("Charge Assistant: %s — car connected/unknown, no nudge", source)
             return
         if not self._home_ok():
@@ -2834,6 +2848,14 @@ class ChargeAssistant:
         if self._rem.get(CA_ONLY_IF_SCHEDULED) and not self._charge_within():
             _LOGGER.debug("Charge Assistant: %s skipped — no charge scheduled in window", source)
             return
+        now = dt_util.utcnow()
+        if self._remind_last is not None and now - self._remind_last < _REMIND_COOLDOWN:
+            _LOGGER.debug(
+                "Charge Assistant: %s skipped — within %s reminder cooldown (last %s)",
+                source, _REMIND_COOLDOWN, self._remind_last,
+            )
+            return
+        self._remind_last = now
         _LOGGER.info("Charge Assistant: reminding (trigger=%s)", source)
         self._escalations_left = _MAX_ESCALATIONS
         self.hass.async_create_task(self._send_notification(source))

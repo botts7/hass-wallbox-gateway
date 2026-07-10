@@ -783,6 +783,39 @@ def test_maybe_remind_respects_home_gate():
     assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "home → nudge"
 
 
+@case
+def test_maybe_remind_cooldown_blocks_flapping():
+    # A flappy presence entity (home->away->home) re-firing arrival must not
+    # spam a fresh notification each time — the cooldown gates repeats.
+    ca, _ = build({}, {"person.me": FakeState("home")})
+    ca._rem = {C.CA_HOME_ENTITY: "person.me"}
+    ca._plugged_in = lambda: False        # unplugged (would otherwise nudge)
+    ca._arm_escalation = lambda: None     # no real timers
+    # 1st arrival nudges
+    ca._escalations_left = 0
+    ca._maybe_remind("arrival")
+    assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "first arrival nudges"
+    assert ca._remind_last is not None
+    # flapping re-arrivals within the cooldown are suppressed
+    ca._escalations_left = 0
+    ca._maybe_remind("arrival")
+    ca._maybe_remind("arrival")
+    assert ca._escalations_left == 0, "re-arrivals within cooldown suppressed"
+    # a genuinely new episode past the cooldown nudges again
+    ca._remind_last = dt_util.utcnow() - ca_mod._REMIND_COOLDOWN - timedelta(minutes=1)
+    ca._escalations_left = 0
+    ca._maybe_remind("arrival")
+    assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "past cooldown nudges again"
+    # seeing the car plugged in clears the cooldown so a later unplug nudges
+    ca._plugged_in = lambda: True
+    ca._maybe_remind("arrival")
+    assert ca._remind_last is None, "plugged-in clears the cooldown"
+    ca._plugged_in = lambda: False
+    ca._escalations_left = 0
+    ca._maybe_remind("arrival")
+    assert ca._escalations_left == ca_mod._MAX_ESCALATIONS, "post-plug unplug nudges"
+
+
 # ── auto-resume Eco-Smart/schedule after a manual charge ────────────
 @case
 def test_auto_resume_when_paused_and_idle():
