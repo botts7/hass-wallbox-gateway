@@ -841,6 +841,14 @@ def test_efficiency_source_default():
         C.CA_BATTERY_KWH: 60,
     }, {})
     assert ca._efficiency_source({}) == "auto", "all inputs -> auto default"
+    # backward-compat: unset source but a fixed efficiency already set -> fixed
+    ca, _ = build({
+        C.CA_COMMUTE_ODOMETER_ENTITY: "sensor.odo",
+        C.CA_SOC_ENTITY: "sensor.soc",
+        C.CA_BATTERY_KWH: 60,
+        C.CA_COMMUTE_EFFICIENCY: 18,
+    }, {})
+    assert ca._efficiency_source({}) == "fixed", "existing fixed value -> keep fixed"
     # unset + missing an input -> fixed
     ca, _ = build({
         C.CA_COMMUTE_ODOMETER_ENTITY: "sensor.odo",

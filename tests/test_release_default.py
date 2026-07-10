@@ -51,7 +51,7 @@ def _build_cases():
         # 'stop' — only when we own it AND it's charging
         ((False, S, "integration", True), S),
         ((False, S, "integration", False), None),   # nothing to stop
-        ((False, S, "addon", True), S),             # add-on owner also acts
+        ((False, S, "addon", True), None),          # add-on = config layer → defer
         ((False, S, "manual", True), None),         # manual charge — never touch
         ((False, S, "none", True), None),
         ((False, S, "wallbox_schedule", True), None),  # native schedule — never touch
@@ -61,7 +61,7 @@ def _build_cases():
         ((False, SCH, "integration", True), SCH),
         ((False, SCH, "manual", False), None),
         ((False, ECO, "integration", False), ECO),
-        ((False, ECO, "addon", True), ECO),
+        ((False, ECO, "addon", True), None),        # add-on = config layer → defer
         ((False, ECO, "none", False), None),
     ]
 

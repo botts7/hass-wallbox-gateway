@@ -224,12 +224,15 @@ _MANUAL_OVERRIDE_COOLDOWN_S = 1800  # 30 min
 
 def release_action(controlling: bool, default: str, owner: str, is_charging: bool) -> str | None:
     """Pure decision for the release-default enforcer: what action to take now,
-    or None to do nothing. Safe-by-design — never acts unless the gateway still
-    credits US (integration/addon) as owner, so a manual or native-schedule
-    charge is untouched. See _maybe_release_default."""
+    or None to do nothing. Safe-by-design — only acts while the gateway still
+    credits the INTEGRATION as owner (`_OWNER`). A manual, native-schedule, or
+    add-on-owned charge is never touched: the add-on is only a config layer over
+    this integration (it never runs an independent control brain), and everywhere
+    else the integration defers to a non-integration owner (`_should_control` /
+    `_may_control`), so the enforcer must too. See _maybe_release_default."""
     if controlling or default == RELEASE_KEEP:
         return None
-    if owner not in (_OWNER, "addon"):
+    if owner != _OWNER:
         return None
     if default == RELEASE_STOP and not is_charging:
         return None
@@ -1363,7 +1366,7 @@ class ChargeAssistant:
             km = self._daily_km_from_states(await self._history(ent, start))
             if km is None:
                 return None
-            eff = await self._resolve_efficiency(car, start)
+            eff = await self._resolve_efficiency(car, start, km)
             return km * eff / 100.0           # km/day × kWh/100km ÷ 100 = kWh/day
         if source == CA_COMMUTE_SOURCE_SOC:
             ent = self._cg(car, CA_SOC_ENTITY)
@@ -1380,12 +1383,17 @@ class ChargeAssistant:
 
     # ---- odometer-source efficiency (kWh/100km): fixed / sensor / auto ----
     def _efficiency_source(self, car: dict) -> str:
-        """Where the odometer source's kWh/100km comes from. Explicit choice
-        wins; otherwise default to 'auto' when we have the inputs to learn it
-        (odometer + SOC + battery), else 'fixed'."""
+        """Where the odometer source's kWh/100km comes from. An explicit choice
+        always wins. With no explicit choice: an install that ALREADY set a fixed
+        efficiency keeps using it (backward-compat — don't silently switch an
+        existing user to auto-learning); 'auto' is the default only for a fresh
+        config (no fixed value) that has the inputs to learn (odometer + SOC +
+        battery); otherwise 'fixed'."""
         src = self._cg(car, CA_COMMUTE_EFFICIENCY_SOURCE)
         if src in (EFFICIENCY_FIXED, EFFICIENCY_SENSOR, EFFICIENCY_AUTO):
             return src
+        if self._read_float_cg(car, CA_COMMUTE_EFFICIENCY) is not None:
+            return EFFICIENCY_FIXED
         if (self._cg(car, CA_COMMUTE_ODOMETER_ENTITY)
                 and self._cg(car, CA_SOC_ENTITY)
                 and self._read_float_cg(car, CA_BATTERY_KWH)):
@@ -1404,31 +1412,34 @@ class ChargeAssistant:
             return None
         return daily_kwh / (daily_km / 100.0)
 
-    async def _computed_efficiency(self, car: dict, start: datetime) -> float | None:
+    async def _computed_efficiency(self, car: dict, start: datetime,
+                                   km: float | None) -> float | None:
         """Learn kWh/100km from real driving: SOC-drop×battery (energy) over the
-        odometer distance across the learning window. None when the inputs aren't
-        all present, so _resolve_efficiency falls back to the fixed value."""
-        odo = self._cg(car, CA_COMMUTE_ODOMETER_ENTITY)
+        odometer distance (`km`, already computed by the caller — do NOT re-read
+        the odometer history) across the learning window. None when the inputs
+        aren't all present, so _resolve_efficiency falls back to the fixed value."""
         soc = self._cg(car, CA_SOC_ENTITY)
         batt = self._read_float_cg(car, CA_BATTERY_KWH)
-        if not (odo and soc and batt and batt > 0):
+        if not (soc and batt and batt > 0) or not km or km <= 0:
             return None
-        km = self._daily_km_from_states(await self._history(odo, start))
         pct = self._daily_soc_drop_from_states(await self._history(soc, start))
         if pct is None:
             return None
         return self._efficiency_from(km, pct / 100.0 * batt)
 
-    async def _resolve_efficiency(self, car: dict, start: datetime) -> float:
+    async def _resolve_efficiency(self, car: dict, start: datetime,
+                                  km: float | None) -> float:
         """kWh/100km to apply to the odometer source, per the efficiency source.
-        Sensor/auto fall back to the fixed value when they can't produce one."""
+        `km` is the daily distance the caller already read (reused by 'auto' so
+        the odometer history isn't fetched twice). Sensor/auto fall back to the
+        fixed value when they can't produce one."""
         src = self._efficiency_source(car)
         if src == EFFICIENCY_SENSOR:
             v = self._read_float(self._cg(car, CA_COMMUTE_EFFICIENCY_ENTITY))
             if v is not None and v > 0:
                 return v
         elif src == EFFICIENCY_AUTO:
-            v = await self._computed_efficiency(car, start)
+            v = await self._computed_efficiency(car, start, km)
             if v is not None and v > 0:
                 return v
         return self._fixed_efficiency(car)

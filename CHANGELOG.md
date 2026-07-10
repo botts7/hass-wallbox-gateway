@@ -4,6 +4,29 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.28.2] - 2026-07-10
+
+### Fixed
+- **Release-default enforcer now defers to an add-on-owned charge** (code-review
+  fix). It treated `owner=="addon"` as "us" and would act, even though everywhere
+  else the integration defers to a non-integration owner — so with the resume_eco
+  default it could hand control back from an add-on-owned charge. It now only ever
+  acts while the **integration** owns control (the add-on is just a config layer).
+- **Auto-efficiency no longer silently switches existing users.** The odometer
+  efficiency stays **Fixed** for any install that already has a fixed
+  `commute_efficiency` value; Auto is the default only for a *new* config (no
+  fixed value) with the inputs to learn (odometer + SOC + battery).
+- **House current (L1)** is now enabled by default (was hidden) and renders at 1
+  decimal place, consistent with the new L2/L3 phase sensors.
+- Auto-efficiency no longer reads the odometer history **twice** per learn refresh.
+
+## [0.28.1] - 2026-07-10
+
+### Fixed
+- Hassfest (CI) validation: declared the `http` dependency + `recorder`
+  after-dependency in the manifest, and removed HTML (`<gateway-ip>`) from the
+  "not_control_owner" repair-issue text. No functional change from 0.28.0.
+
 ## [0.28.0] - 2026-07-10
 
 ### Added

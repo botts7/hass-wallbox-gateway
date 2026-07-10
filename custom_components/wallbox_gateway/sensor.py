@@ -359,7 +359,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        entity_registry_enabled_default=False,
+        suggested_display_precision=1,
         value_fn=lambda e: e._meter().get("house_current_a"),
         requires_meter=True,
     ),
