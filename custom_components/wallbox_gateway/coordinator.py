@@ -48,6 +48,14 @@ def _fw_tuple(v: str) -> tuple[int, int, int]:
     return (nums[0], nums[1], nums[2])
 
 
+# Rarely-changing config BAPI reads (g_alo/g_ecos/g_psh/g_phsw/g_tzn/g_halocfg)
+# are refreshed only every Nth poll cycle instead of every cycle. Each BAPI read
+# is a live BLE round-trip on the gateway; a burst of ~9 concurrent reads every
+# 10 s kept the gateway's BLE pipeline saturated (429 storm + task-watchdog risk,
+# gateway #168). Live reads (r_dca/r_not/r_lse) stay on every cycle.
+_SLOW_POLL_EVERY = 6
+
+
 class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the gateway, normalises responses, exposes one dict."""
 
@@ -72,13 +80,13 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
-        # The 4 endpoint reads are pure HTTP and always succeed/fail
-        # the coordinator as a unit. The 2 BAPI reads (g_alo, g_ecos)
-        # are best-effort: they only work when BLE is connected, and we
-        # don't want a charger sleep window to mark the whole coordinator
-        # as failed and trip every sensor's availability. So gather them
-        # with return_exceptions=True and silently fall back to the
-        # previously-cached value when they fail.
+        # The endpoint reads below are pure HTTP and succeed/fail the coordinator
+        # as a unit. The BAPI passthroughs (further down) each trigger a live BLE
+        # round-trip on the gateway; they're best-effort (only work when BLE is
+        # connected) and gathered with return_exceptions=True so a charger sleep
+        # window falls back to the prior value instead of tripping every sensor.
+        # They're also rate-shaped — live reads every cycle, config reads on a
+        # slow cadence — so we don't saturate the gateway BLE pipeline (#168).
         try:
             status, charger, diag, health, boot, charge_log = await asyncio.gather(
                 self.client.get(ENDPOINT_STATUS, timeout=4),
@@ -95,39 +103,42 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except GatewayUnreachable as e:
             raise UpdateFailed(f"gateway unreachable: {e}") from e
 
-        (
-            autolock_raw,
-            ecos_raw,
-            dca_raw,
-            psh_raw,
-            phsw_raw,
-            tzn_raw,
-            not_raw,
-            lse_raw,
-            halo_raw,
-        ) = await asyncio.gather(
-            self.client.bapi("g_alo", wait_ms=2000),
-            self.client.bapi("g_ecos", wait_ms=2000),
-            # r_dca = realtime power meter: per-phase voltage + power.
-            # Required for the mains_voltage + house_power sensors.
-            # /api/status doesn't include these — they live behind BAPI.
+        # Live BAPI reads — every cycle. These change continuously while charging:
+        #   r_dca = realtime power meter (per-phase voltage + power; not in /status)
+        #   r_not = charger notifications/alerts
+        #   r_lse = live session energy (solar/grid kWh split, surplus, control
+        #           mode; user_id PII is dropped by _parse_lse — never an entity)
+        dca_raw, not_raw, lse_raw = await asyncio.gather(
             self.client.bapi("r_dca", wait_ms=2000),
-            # Additional settings for full MQTT-discovery parity (v0.3.0).
-            # All best-effort with the same fallback semantics as the
-            # original three: prior value carried forward on failure.
-            self.client.bapi("g_psh", wait_ms=2000),
-            self.client.bapi("g_phsw", wait_ms=2000),
-            self.client.bapi("g_tzn", wait_ms=2000),
             self.client.bapi("r_not", wait_ms=2000),
-            # r_lse = live session energy feed (v0.3.1): per-session
-            # solar/grid kWh split, surplus power, active feature,
-            # control mode. user_id in the response is PII and dropped
-            # by _parse_lse — never exposed as an entity.
             self.client.bapi("r_lse", wait_ms=2000),
-            # g_halocfg = LED halo config {bright %, mode 0/1 standby, time_s}.
-            self.client.bapi("g_halocfg", wait_ms=2000),
             return_exceptions=True,
         )
+
+        # Rarely-changing config reads — only every _SLOW_POLL_EVERY cycles (and
+        # always on the first cycle so entities populate at startup). Skipped
+        # cycles pass None → the _parse_* helpers return the prior value, so
+        # entities never flap. Cuts the steady-state BAPI burst 9→3 per cycle.
+        self._poll_cycle = getattr(self, "_poll_cycle", 0) + 1
+        if self._poll_cycle % _SLOW_POLL_EVERY == 1:
+            (
+                autolock_raw,
+                ecos_raw,
+                psh_raw,
+                phsw_raw,
+                tzn_raw,
+                halo_raw,  # g_halocfg = LED halo config {bright %, mode, time_s}
+            ) = await asyncio.gather(
+                self.client.bapi("g_alo", wait_ms=2000),
+                self.client.bapi("g_ecos", wait_ms=2000),
+                self.client.bapi("g_psh", wait_ms=2000),
+                self.client.bapi("g_phsw", wait_ms=2000),
+                self.client.bapi("g_tzn", wait_ms=2000),
+                self.client.bapi("g_halocfg", wait_ms=2000),
+                return_exceptions=True,
+            )
+        else:
+            autolock_raw = ecos_raw = psh_raw = phsw_raw = tzn_raw = halo_raw = None
 
         # Carry forward the prior settings dict when the BAPI read failed
         # (BLE napping, charger asleep, transient timeout) so the entities

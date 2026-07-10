@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.29.0] - 2026-07-11
+
+### Changed
+- **Gateway polling rate-shaped to stop overloading the BLE pipeline.** The
+  coordinator issued ~9 concurrent `action=bapi` passthroughs every poll cycle —
+  each a live BLE round-trip on the gateway — which kept the gateway's command
+  pipeline saturated (token-bucket 429 storm + a contributor to the gateway's
+  `task-watchdog` reboots). Now only the live reads (`r_dca`/`r_not`/`r_lse`)
+  run every cycle; the rarely-changing config reads (`g_alo`/`g_ecos`/`g_psh`/
+  `g_phsw`/`g_tzn`/`g_halocfg`) refresh every 6th cycle (and always on the first
+  cycle). Skipped cycles carry the prior value forward — no entity flapping.
+
+### Fixed
+- Corrected the `reboot_gateway` button's docstring (it still claimed the feature
+  was deferred; it has shipped since fw v3.2 beta.8).
+
 ## [0.28.2] - 2026-07-10
 
 ### Fixed

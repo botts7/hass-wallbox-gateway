@@ -1,14 +1,16 @@
 """Button platform for the Wallbox Gateway integration.
 
-One button in v0.2:
-  - refresh_now  (forces the coordinator to poll immediately)
+Buttons:
+  - refresh_now      (forces the coordinator to poll immediately)
+  - resume_schedule  (clears the manual-override flag; schedule/Eco resume)
+  - reboot_charger   (reboots the charger via BAPI over BLE)
+  - reboot_gateway   (reboots the ESP32 gateway itself)
 
-reboot_gateway is intentionally deferred to v0.3 — POST /api/reboot on
-the gateway requires a CSRF token paired with the browser session, and
-the stateless integration can't obtain one without a session preflight.
-A clean implementation needs a small firmware-side addition (auth-only
-/api/v2/reboot or an integration-friendly token endpoint), which can't
-land before 3.0's frozen firmware branch.
+reboot_gateway posts to the firmware's auth-only POST /api/reboot_gateway
+(added in fw v3.2 beta.8). That endpoint deliberately skips CSRF — Basic
+Auth is the unforgeable secret for a stateless caller — so the integration
+needs no browser-session token. The CSRF-gated POST /api/reboot remains the
+web-UI-only path.
 """
 
 from __future__ import annotations
