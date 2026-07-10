@@ -285,6 +285,18 @@
       "grid_power_l3": {
         "name": "Grid power L3"
       },
+      "mains_voltage_l2": {
+        "name": "Mains voltage L2"
+      },
+      "mains_voltage_l3": {
+        "name": "Mains voltage L3"
+      },
+      "house_current_l2": {
+        "name": "House current L2"
+      },
+      "house_current_l3": {
+        "name": "House current L3"
+      },
       "max_available_current": {
         "name": "Max available current"
       },

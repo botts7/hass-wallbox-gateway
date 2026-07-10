@@ -4,6 +4,23 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.25.0] - 2026-07-10
+
+### Added
+- **Per-phase mains voltage + house current sensors** (`Mains voltage L2/L3`,
+  `House current L2/L3`), matching the per-phase Grid power L1/L2/L3 already
+  present — so an EM340 / 3-phase Power-Boost meter now exposes full per-phase
+  voltage, current and power in the integration, at parity with MQTT discovery.
+  Diagnostic category, meter-gated (hidden when no meter is fitted); L2/L3 read
+  0 on single-phase.
+
+### Fixed
+- **House current was reading ~10× too high.** The meter's per-phase current
+  (`r_dca` `c1..c3`) is reported in **deci-amps**; the firmware's MQTT templates
+  divide by 10, but the integration was surfacing the raw value as amps. It is
+  now scaled correctly (e.g. a 16 A load reads `16.0 A`, not `160 A`), so the
+  integration's House current matches the MQTT/dashboard value.
+
 ## [0.24.0] - 2026-07-07
 
 ### Added

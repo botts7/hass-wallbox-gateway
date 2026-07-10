@@ -399,6 +399,56 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         value_fn=lambda e: e._meter().get("power_l3_w"),
         requires_meter=True,
     ),
+    # Per-phase mains voltage + house current (EM340 / 3-phase Power Boost).
+    # Diagnostic category, enabled by default to match the MQTT discovery
+    # entities. L1 is the existing mains_voltage / house_current above; these
+    # add L2/L3. On single-phase, L2/L3 read 0.
+    GatewaySensorEntityDescription(
+        key="mains_voltage_l2",
+        translation_key="mains_voltage_l2",
+        name="Mains voltage L2",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda e: e._meter().get("voltage_l2_v"),
+        requires_meter=True,
+    ),
+    GatewaySensorEntityDescription(
+        key="mains_voltage_l3",
+        translation_key="mains_voltage_l3",
+        name="Mains voltage L3",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda e: e._meter().get("voltage_l3_v"),
+        requires_meter=True,
+    ),
+    GatewaySensorEntityDescription(
+        key="house_current_l2",
+        translation_key="house_current_l2",
+        name="House current L2",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda e: e._meter().get("house_current_l2_a"),
+        requires_meter=True,
+    ),
+    GatewaySensorEntityDescription(
+        key="house_current_l3",
+        translation_key="house_current_l3",
+        name="House current L3",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda e: e._meter().get("house_current_l3_a"),
+        requires_meter=True,
+    ),
     # Live charger status (numeric counterparts of the existing enum)
     GatewaySensorEntityDescription(
         key="max_available_current",

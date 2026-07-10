@@ -229,30 +229,45 @@ def _parse_halocfg(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | N
 
 
 def _parse_dca(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
-    """r_dca returns {"r": {"v1": V, "p1": W, "p2": W, "p3": W,
-    "c1": A, ..., "e": Wh}} where v1 is L1 voltage, p1+p2+p3 sum to
-    house power, c1 is per-phase current, and e is lifetime energy
-    counter in Wh.
+    """r_dca returns {"r": {"v1"/"v2"/"v3": V, "p1"/"p2"/"p3": W,
+    "c1"/"c2"/"c3": deci-A, ..., "e": Wh}} where v1..v3 are per-phase
+    mains voltage (volts, direct), p1+p2+p3 sum to house power, c1..c3
+    are per-phase house current in **deci-amps** (tenths of an amp — the
+    firmware MQTT templates divide by 10, so we do the same), and e is
+    the lifetime energy counter in Wh.
     """
     if isinstance(raw, Exception) or not isinstance(raw, dict):
         return prior
     r = raw.get("r")
     if not isinstance(r, dict):
         return prior
-    v1 = r.get("v1")
+
+    def _volts(x: Any) -> int | None:
+        return int(x) if isinstance(x, (int, float)) else None
+
+    def _amps(x: Any) -> float | None:
+        # c1..c3 are deci-amps; /10 → amps, matching the firmware
+        # `(value_json.r.cN / 10) | round(1)` discovery templates.
+        return round(int(x) / 10.0, 1) if isinstance(x, (int, float)) else None
+
     p1 = r.get("p1") or 0
     p2 = r.get("p2") or 0
     p3 = r.get("p3") or 0
-    c1 = r.get("c1")
     e = r.get("e")
     return {
-        "voltage_v": int(v1) if isinstance(v1, (int, float)) else None,
+        "voltage_v": _volts(r.get("v1")),
+        # Per-phase mains voltage (EM340 / 3-phase Power Boost). Diagnostic.
+        "voltage_l2_v": _volts(r.get("v2")),
+        "voltage_l3_v": _volts(r.get("v3")),
         "house_power_w": int(p1) + int(p2) + int(p3),
         # Per-phase power (EM340 / 3-phase Power Boost). Diagnostic.
         "power_l1_w": int(p1),
         "power_l2_w": int(p2),
         "power_l3_w": int(p3),
-        "house_current_a": int(c1) if isinstance(c1, (int, float)) else None,
+        # Per-phase house current (deci-amps → amps).
+        "house_current_a": _amps(r.get("c1")),
+        "house_current_l2_a": _amps(r.get("c2")),
+        "house_current_l3_a": _amps(r.get("c3")),
         # Lifetime energy counter — Wh from charger, exposed as kWh
         "lifetime_kwh": (int(e) / 1000.0) if isinstance(e, (int, float)) else None,
     }
