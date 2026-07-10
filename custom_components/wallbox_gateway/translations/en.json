@@ -497,7 +497,7 @@
   "issues": {
     "not_control_owner": {
       "title": "Charge Assistant isn't the charge-control owner",
-      "description": "You've set up a smart-charge / solar mode, but the gateway's **Charge Control Owner** is set to `{owner}`, so the Charge Assistant is standing down and won't start or stop charging.\n\nTo let it take over, open the gateway's config page (http://<gateway-ip>/config) and set **Charge Control Owner** to **Home Assistant Integration**."
+      "description": "You've set up a smart-charge / solar mode, but the gateway's **Charge Control Owner** is set to `{owner}`, so the Charge Assistant is standing down and won't start or stop charging.\n\nTo let it take over, open the gateway's config page (http://your-gateway-ip/config) and set **Charge Control Owner** to **Home Assistant Integration**."
     }
   }
 }
