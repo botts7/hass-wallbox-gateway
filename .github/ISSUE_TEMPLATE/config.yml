@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Gateway / ESP32 firmware
+    url: https://github.com/botts7/esp32-wallbox
+    about: If the problem is with the BLE gateway device or its firmware (not the Home Assistant integration), please report it there instead.
+  - name: Question or usage help
+    url: https://community.home-assistant.io/
+    about: For "how do I set this up" questions, the Home Assistant Community forum is the best place.

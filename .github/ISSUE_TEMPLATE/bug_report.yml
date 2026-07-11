@@ -1,0 +1,78 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report. The version numbers and logs below are what make a bug actually fixable — please fill in as much as you can.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I've searched existing issues and this isn't a duplicate
+          required: true
+        - label: I'm on the latest version of the integration
+          required: true
+        - label: The Wallbox BLE gateway is powered on and reachable on my network (its local HTTP API responds)
+          required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what actually happened?
+      placeholder: e.g. "Setting the charging current has no effect — the charger stays at the previous value."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: Integration version
+      placeholder: e.g. 0.28.2
+    validations:
+      required: true
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: e.g. 2026.7.0
+    validations:
+      required: true
+  - type: input
+    id: charger
+    attributes:
+      label: Wallbox charger model
+      placeholder: e.g. Pulsar Plus, Copper SB
+    validations:
+      required: true
+  - type: input
+    id: fw
+    attributes:
+      label: BLE gateway firmware version
+      placeholder: e.g. esp32-wallbox 1.x.x
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Turn on debug logging, reproduce the problem, then paste the `custom_components.wallbox_gateway` lines. To enable it, add this to `configuration.yaml` and restart:
+
+        ```yaml
+        logger:
+          logs:
+            custom_components.wallbox_gateway: debug
+        ```
+
+        This box is formatted automatically — no backticks needed.
+      render: text
