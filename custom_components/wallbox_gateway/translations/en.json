@@ -390,6 +390,9 @@
       "wifi_rssi": {
         "name": "WiFi signal"
       },
+      "gateway_temperature": {
+        "name": "Gateway temperature"
+      },
       "green_energy_session": {
         "name": "Green energy (session)"
       },

@@ -32,6 +32,7 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfInformation,
     UnitOfPower,
+    UnitOfTemperature,
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
@@ -740,6 +741,21 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda e: _opt_int(e._status().get("wifi_rssi")),
+    ),
+    # ESP32-S3 internal die temperature (°C) — diagnostic. Reads warmer than the
+    # enclosure air; useful for spotting thermal stress (e.g. a hot garage box)
+    # and correlating crashes with heat. Mirrors the MQTT "Gateway Temperature"
+    # entity (#162). Requires gateway fw with chip_temp in /api/status (v3.2.0+).
+    GatewaySensorEntityDescription(
+        key="gateway_temperature",
+        translation_key="gateway_temperature",
+        name="Gateway temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        suggested_display_precision=1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda e: _opt_float(e._status().get("chip_temp")),
     ),
     # ---- Live-session feed (r_lse), v0.3.1 ----------------------------
     # Per-session solar/grid energy split + live solar surplus. TOTAL_INCREASING

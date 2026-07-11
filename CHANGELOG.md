@@ -6,6 +6,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.29.0] - 2026-07-11
 
+### Added
+- **Gateway temperature** diagnostic sensor — the ESP32-S3 internal die
+  temperature (°C), for spotting thermal stress (hot enclosure/garage) and
+  correlating crashes with heat. Mirrors the MQTT "Gateway Temperature" entity.
+  Shows *unavailable* on gateway hardware without a real internal sensor
+  (classic ESP32). Requires gateway fw ≥ v3.2.0 (chip_temp in /api/status).
+
 ### Changed
 - **Gateway polling rate-shaped to stop overloading the BLE pipeline.** The
   coordinator issued ~9 concurrent `action=bapi` passthroughs every poll cycle —
