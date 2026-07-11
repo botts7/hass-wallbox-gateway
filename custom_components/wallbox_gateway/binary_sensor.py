@@ -36,16 +36,16 @@ def _charging(entity: GatewayEntity) -> bool:
 
 
 def _schedule_paused(entity: GatewayEntity) -> bool:
-    # r_dat.gen is the sticky manual-override flag the Wallbox app
-    # surfaces as "Schedule paused" / "Solar charging paused":
-    #   gen == 0 -> schedule armed (will fire normally)
-    #   gen != 0 -> schedule paused (override active, persists across
-    #               Start/Stop until the Wallbox app's Resume button
-    #               is pressed)
-    # Independent of charger_status: a manually-started charge while
-    # the schedule is paused will report status=1 (CHARGING) with
-    # gen != 0.
-    return (entity._status().get("gen") or 0) != 0
+    # Manual override active — schedules / Eco-Smart suspended (the Wallbox app's
+    # "Resume" state). The gateway computes this authoritatively in /api/status
+    # from r_lse.control_mode == 1 (0 = automatic), which is model-agnostic.
+    #
+    # This used to read r_dat.gen != 0, which was doubly wrong: /api/status never
+    # carried a `gen` field (so it was always False), and on the MAX Pro `gen` is
+    # accumulated green energy, not an override flag. control_mode is the real
+    # signal. (Firmware falls back to gen != 0 only for chargers without r_lse,
+    # e.g. Zentri/original Pulsar, where gen genuinely is the flag.)
+    return bool(entity._status().get("schedule_paused"))
 
 
 def _plug_reminder(entity: GatewayEntity) -> bool | None:

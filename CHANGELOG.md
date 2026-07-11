@@ -17,6 +17,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cycle). Skipped cycles carry the prior value forward — no entity flapping.
 
 ### Fixed
+- **`schedule_paused` binary sensor now actually works.** It read `r_dat.gen`
+  from `/api/status`, which never contained a `gen` field — so it was always
+  `off`. It now reads the gateway's authoritative `schedule_paused` flag
+  (firmware computes it from `r_lse.control_mode == 1`, per-model — `gen` is green
+  energy on the MAX Pro, not an override flag). Requires gateway fw ≥ v3.2.0-rc.4.
 - Corrected the `reboot_gateway` button's docstring (it still claimed the feature
   was deferred; it has shipped since fw v3.2 beta.8).
 
