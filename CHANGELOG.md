@@ -4,6 +4,19 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.30.0] - 2026-07-30
+
+### Fixed
+- **Orphaned gateway devices can now be deleted from the UI.** A leftover
+  "gateway instance" could be disabled but not removed because the integration
+  never implemented Home Assistant's device-removal hook — so HA showed no
+  Delete button (reported on the HA forum). Orphans arise when a device was
+  first created
+  keyed by the config entry_id (the fallback used before the charger serial is
+  known) and then re-homed to a serial-keyed device once the serial appeared.
+  The integration now allows deleting any stale device while refusing the live
+  one, so the working device can't be removed by mistake.
+
 ## [0.29.0] - 2026-07-11
 
 ### Added

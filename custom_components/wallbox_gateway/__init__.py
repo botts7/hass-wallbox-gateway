@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -208,6 +209,32 @@ def _reenable_default_disabled(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the entry when the Charge Assistant options change."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow deleting a stale / orphaned gateway device from the UI.
+
+    HA only shows a per-device "Delete" button for a config-entry-owned
+    device when the integration implements this hook. Without it a leftover
+    device can be disabled but not removed (reported on the HA forum).
+
+    An orphan appears when a device was first created keyed by the config
+    entry_id — the fallback GatewayEntity uses before the charger serial is
+    known (see entity.py) — and then re-homed to a serial-keyed device once
+    the serial arrived. We allow removing any device that is NOT the one the
+    coordinator is currently reporting, and refuse the live device so the
+    working one can't be deleted by mistake (HA would just recreate it).
+    """
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    live_ids: set[tuple[str, str]] = set()
+    if coordinator is not None and coordinator.data:
+        serial = (coordinator.data.get("raw_status") or {}).get("chg_sn")
+        # The live device is serial-keyed once the serial is known, otherwise
+        # it is still the entry_id-keyed fallback — protect whichever applies.
+        live_ids.add((DOMAIN, serial) if serial else (DOMAIN, entry.entry_id))
+    return not any(ident in live_ids for ident in device_entry.identifiers)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
