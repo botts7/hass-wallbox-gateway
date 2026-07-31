@@ -26,6 +26,9 @@ set_config:
     Merge an options object into the integration's config and reload (restarts
     the Charge Assistant with the new settings). Sub-objects you provide (e.g.
     the whole charge_assistant config) replace the existing one wholesale.
+    Only these top-level keys are accepted — poll_interval, charge_assistant,
+    tariff, auto_resume_eco, release_default; any other top-level key is ignored,
+    so nest new settings under charge_assistant.
   fields:
     options:
       name: Options

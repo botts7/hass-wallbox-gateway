@@ -20,6 +20,7 @@ HERE = os.path.dirname(__file__)
 sys.path.insert(0, HERE)
 
 MODULES = [
+    "test_config_bridge",          # set_config allow-list contract (HA-free)
     "test_price_planner",
     "test_charger_control",
     "test_charge_guards",
