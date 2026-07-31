@@ -17,7 +17,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from custom_components.wallbox_gateway.ca_config import (  # noqa: E402
+    remove_car,
     sanitize_options,
+    upsert_car,
 )
 
 # (label, incoming, expected_clean, expected_ignored_count)
@@ -92,6 +94,26 @@ def main():
     print(f"  ok  sanitize_options allow-list — {len(CASES)} cases")
     print("  ok  charge_assistant passes through wholesale (no merge/leak)")
     print("  ok  each dropped key emits one log message")
+
+    # ---- Vehicles editor list surgery (Options flow, #130 1b) ----
+    a, b = {"name": "A"}, {"name": "B"}
+    # append when index is None
+    assert upsert_car([a], None, b) == [a, b]
+    # replace at an existing index
+    assert upsert_car([a, b], 0, {"name": "A2"}) == [{"name": "A2"}, b]
+    # out-of-range index is a no-op (stale flow can't crash)
+    assert upsert_car([a], 5, b) == [a]
+    # None/empty base list
+    assert upsert_car(None, None, a) == [a]
+    # new list, not the same object (no in-place mutation of entry.options)
+    base = [a]
+    assert upsert_car(base, None, b) is not base and base == [a]
+    # remove
+    assert remove_car([a, b], 0) == [b]
+    assert remove_car([a, b], 9) == [a, b]      # out of range → unchanged
+    assert remove_car([a], None) == [a]         # None index → unchanged
+    assert remove_car(None, 0) == []
+    print("  ok  upsert_car / remove_car list surgery (append/replace/remove/guard)")
 
 
 if __name__ == "__main__":

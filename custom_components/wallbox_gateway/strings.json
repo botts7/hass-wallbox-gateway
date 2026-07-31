@@ -47,7 +47,8 @@
         "title": "Wallbox Gateway",
         "menu_options": {
           "charge_assistant": "Charge Assistant",
-          "firmware": "Firmware updates"
+          "firmware": "Firmware updates",
+          "vehicles": "Vehicles"
         }
       },
       "charge_assistant": {
@@ -217,6 +218,30 @@
         },
         "data_description": {
           "resume_eco_mode": "After the assistant finishes a managed charge and hands control back, force the charger's native Eco-Smart into this mode. \"Keep current mode\" leaves whatever was already set."
+        }
+      },
+      "vehicles": {
+        "title": "Vehicles",
+        "description": "Map the cars this charger charges. Pick one to edit, or add a new one. (The Add-on offers a richer editor.)",
+        "data": {
+          "vehicle": "Vehicle",
+          "remove": "Remove the selected vehicle"
+        }
+      },
+      "vehicle_edit": {
+        "title": "Vehicle details",
+        "data": {
+          "name": "Name",
+          "battery_kwh": "Battery capacity (kWh)",
+          "soc_entity": "Battery level sensor",
+          "commute_enabled": "Adaptive commute target",
+          "commute_source": "Commute learning source",
+          "commute_odometer_entity": "Odometer sensor"
+        },
+        "data_description": {
+          "soc_entity": "Optional. The car's state-of-charge sensor, used for target/deficit math.",
+          "commute_source": "How daily use is learned: the charger's own energy log, an odometer sensor, or the drop in battery SOC.",
+          "commute_odometer_entity": "Required only when the commute source is Odometer."
         }
       }
     }

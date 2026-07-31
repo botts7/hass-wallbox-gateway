@@ -76,6 +76,30 @@ def reminder_enabled(opts: dict | None) -> bool:
     return bool(reminder_config(opts).get(CA_TRIGGERS))
 
 
+def upsert_car(cars: list | None, index: int | None, car: dict) -> list:
+    """Insert (index is None) or replace (existing index) a car profile.
+
+    Pure list surgery for the native Options flow's Vehicles editor — returns a
+    new list of shallow-copied dicts so the caller never mutates entry.options
+    in place. An out-of-range index is ignored (returns the list unchanged
+    rather than raising, so a stale flow can't crash).
+    """
+    out = [dict(c) for c in (cars or [])]
+    if index is None:
+        out.append(dict(car))
+    elif 0 <= index < len(out):
+        out[index] = dict(car)
+    return out
+
+
+def remove_car(cars: list | None, index: int | None) -> list:
+    """Drop the car at ``index`` (no-op if None / out of range). New list."""
+    out = [dict(c) for c in (cars or [])]
+    if index is not None and 0 <= index < len(out):
+        del out[index]
+    return out
+
+
 def sanitize_options(incoming: dict | None) -> tuple[dict, list[str]]:
     """Filter a ``set_config`` options payload down to the accepted keys.
 
