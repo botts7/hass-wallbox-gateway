@@ -1146,17 +1146,27 @@ class ChargeAssistant:
     # Battery care + cost cap (Phase 4)
     # ------------------------------------------------------------------
     def _target_pct(self) -> float:
-        """The active SOC target: the everyday care target, raised to the trip
-        target only until the trip deadline (auto-reverts by time). When commute
-        mode is on, the everyday target is replaced by the learned adaptive
-        target (still capped at CA_TARGET_PCT and overridable by a trip)."""
+        """The active SOC target (value half of _resolve_target). Kept as the
+        one implementation so the effective-target sensor can never disagree
+        with what's actually enforced."""
+        return self._resolve_target()[0]
+
+    def _resolve_target(self) -> tuple[float, str]:
+        """The active SOC target and the source that set it.
+
+        The everyday care target, replaced by the learned adaptive target when
+        commute mode is on, bounded by the unknown-car policy while the plugged
+        car is a guess, then raised to the trip target until its deadline
+        (auto-reverts by time). Source ∈ {fixed, commute, unknown-hold, trip}.
+        """
         car = self._active_car()
         base = self._read_float_cg(car, CA_TARGET_PCT)
         base = 80.0 if base is None else base
+        source = "fixed"
         if self._commute_enabled(car):
             ct = self._commute_target(car)
             if ct is not None:
-                base = ct
+                base, source = ct, "commute"
         # Multi-vehicle safety: while the plugged-in car is still a guess, the
         # `unknown_car` policy bounds what we charge it to (default conservative).
         if self._uncertain():
@@ -1165,18 +1175,38 @@ class ChargeAssistant:
                 # Don't charge to a guess — target the current SOC so there's no
                 # deficit (no auto-start) until the car is confirmed.
                 soc = self._read_float(self._cg(car, CA_SOC_ENTITY))
-                if soc is not None:
-                    base = min(base, soc)
+                if soc is not None and soc < base:
+                    base, source = soc, "unknown-hold"
             elif pol == CA_UNKNOWN_CONSERVATIVE:
                 cons = self._conservative_target()
-                if cons is not None:
-                    base = min(base, cons)
-        return effective_target(
+                if cons is not None and cons < base:
+                    base, source = cons, "unknown-hold"
+        resolved = effective_target(
             base,
             self._cg(car, CA_TRIP_TARGET),
             self._parse_dt_local(self._cg(car, CA_TRIP_UNTIL)),
             dt_util.utcnow(),
         )
+        if resolved > base:  # the trip target won
+            source = "trip"
+        return resolved, source
+
+    def target_status(self) -> dict | None:
+        """Read-only snapshot of the resolved acting target, for the effective-
+        target sensor: the target %, its source, the active car, and the next
+        departure deadline. None when the current strategy doesn't charge toward
+        a target (off / pure-solar / reminder-only) so the sensor goes
+        unavailable rather than advertising a target nothing is honouring."""
+        if ca_config.strategy_of(self._opts) not in (MODE_TARGET, MODE_SMART_SOLAR):
+            return None
+        resolved, source = self._resolve_target()
+        dep = self._next_departure()
+        return {
+            "target_pct": round(resolved, 1),
+            "source": source,
+            "active_car": self.active_vehicle_name(),
+            "departure": dep.isoformat() if dep else None,
+        }
 
     # ------------------------------------------------------------------
     # Car profiles — one wallbox charges one car at a time, so the learner /

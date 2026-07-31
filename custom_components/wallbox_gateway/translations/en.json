@@ -420,6 +420,9 @@
       "commute_target": {
         "name": "Commute charge target"
       },
+      "effective_target": {
+        "name": "Effective charge target"
+      },
       "projected_soc": {
         "name": "Projected SOC after a day's driving"
       },

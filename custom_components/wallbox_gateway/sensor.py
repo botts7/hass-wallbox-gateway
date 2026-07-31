@@ -224,6 +224,35 @@ def _recommended_plug_in_attrs(entity: GatewayEntity) -> dict | None:
     return a.recommended_plug_in_detail()
 
 
+def _effective_target(entity: GatewayEntity) -> float | None:
+    """The SOC target the Charge Assistant is actually charging toward right now
+    — the fixed/commute/trip/unknown-hold hierarchy resolved to one number.
+    Unavailable when the active strategy doesn't charge to a target (off /
+    pure-solar / reminder-only), so it always matches what's enforced."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    st = a.target_status()
+    return st.get("target_pct") if st else None
+
+
+def _effective_target_attrs(entity: GatewayEntity) -> dict | None:
+    """What set the effective target (source), the active car it applies to, and
+    the departure deadline that can raise it to a trip target."""
+    a = _assistant(entity)
+    if a is None:
+        return None
+    st = a.target_status()
+    if not st:
+        return None
+    out: dict = {"source": st.get("source")}
+    if st.get("active_car"):
+        out["active_car"] = st["active_car"]
+    if st.get("departure"):
+        out["departure"] = st["departure"]
+    return out
+
+
 def _control_owner(entity: GatewayEntity) -> str | None:
     # Charge-control arbitration: who may autonomously drive charging.
     o = entity._status().get("control_owner")
@@ -853,6 +882,21 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         native_unit_of_measurement="%",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_commute_target,
+    ),
+    # ---- Effective charge target (resolved acting target) --------------
+    # The single number the assistant is charging toward *now*, after folding
+    # in the fixed/commute/trip/unknown-hold hierarchy. `source` + `active_car`
+    # + `departure` attributes explain which input won. Unavailable unless the
+    # active strategy actually charges to a target (target_soc / smart_solar).
+    GatewaySensorEntityDescription(
+        key="effective_target",
+        translation_key="effective_target",
+        name="Effective charge target",
+        icon="mdi:battery-heart-variant",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=_effective_target,
+        attrs_fn=_effective_target_attrs,
     ),
     GatewaySensorEntityDescription(
         key="projected_soc",
