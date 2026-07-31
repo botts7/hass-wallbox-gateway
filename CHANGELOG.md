@@ -4,6 +4,27 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.31.0] - 2026-07-31
+
+### Added
+- **Effective charge target sensor** — a new sensor showing the single SOC
+  target the Charge Assistant is actually charging toward right now, after
+  folding in the fixed / commute / trip / unknown-hold hierarchy. Attributes
+  explain which input won (`source`), the active car, and the departure
+  deadline. Unavailable unless the active strategy charges to a target
+  (Smart charge / Smart+Solar), so it never advertises a target nothing honours.
+- **Vehicles editor in the Options flow** — map the cars this charger charges
+  natively (Configure → Vehicles): add / edit / remove a vehicle with its name,
+  battery capacity, battery-level sensor, and commute-learning source. The
+  Add-on remains the richer editor; this is the self-serve path without it.
+
+### Changed
+- **Hardened the `set_config` bridge** the Add-on writes through: the accepted-
+  key allow-list is now a single, unit-tested function. Unknown top-level keys
+  are ignored (nest new settings under `charge_assistant`); the Charge Assistant
+  config is always replaced wholesale, never merged key-by-key. No behaviour
+  change for valid input.
+
 ## [0.30.0] - 2026-07-30
 
 ### Fixed
