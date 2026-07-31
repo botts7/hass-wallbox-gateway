@@ -92,6 +92,44 @@ def test_target_pct_daily_vs_trip():
     assert ca._target_pct() == 80.0
 
 
+# ── effective-target sensor snapshot (target_status, #130 1a) ────────
+@case
+def test_target_status_fixed_source():
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 80}, {})
+    st = ca.target_status()
+    assert st is not None, "target mode must expose a target"
+    assert st["target_pct"] == 80.0
+    assert st["source"] == "fixed"
+    assert st["active_car"] is None       # single-car → identity not meaningful
+    assert st["departure"] is None
+
+
+@case
+def test_target_status_trip_source():
+    until_future = (dt_util.utcnow() + timedelta(hours=6)).isoformat()
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 80,
+                   C.CA_TRIP_TARGET: 100, C.CA_TRIP_UNTIL: until_future}, {})
+    st = ca.target_status()
+    assert st["target_pct"] == 100.0 and st["source"] == "trip"
+
+
+@case
+def test_target_status_smart_solar_available():
+    ca, _ = build({C.CA_MODE: C.MODE_SMART_SOLAR, C.CA_TARGET_PCT: 70}, {})
+    st = ca.target_status()
+    assert st is not None and st["target_pct"] == 70.0 and st["source"] == "fixed"
+
+
+@case
+def test_target_status_unavailable_off_and_solar():
+    # Strategies that don't charge TO a target → sensor unavailable (None), so
+    # it never advertises a target nothing is honouring.
+    for opts in ({}, {C.CA_MODE: C.MODE_OFF, C.CA_TARGET_PCT: 80},
+                 {C.CA_MODE: C.MODE_SOLAR, C.CA_TARGET_PCT: 80}):
+        ca, _ = build(opts, {})
+        assert ca.target_status() is None, f"expected None for {opts!r}"
+
+
 # ── price-cap gating in autostart ───────────────────────────────────
 def _autostart_opts(cap):
     return {
