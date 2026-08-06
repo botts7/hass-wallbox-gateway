@@ -19,18 +19,12 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ClientConfig, GatewayClient
+from .ca_config import sanitize_options
 from .charge_assistant import ChargeAssistant
 from .const import (
-    CA_AUTO_RESUME,
     CA_KEY,
-    CA_RELEASE_DEFAULT,
-    CONF_POLL_INTERVAL,
     DEFAULT_USERNAME,
     DOMAIN,
-    RELEASE_KEEP,
-    RELEASE_RESUME_ECO,
-    RELEASE_RESUME_SCHEDULE,
-    RELEASE_STOP,
 )
 from .coordinator import GatewayCoordinator
 from .schedule import async_setup_schedule_services
@@ -133,33 +127,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if entry is None:
                 raise HomeAssistantError("No matching Wallbox Gateway entry")
             incoming = call.data.get("options") or {}
-            # Allow-list the option keys the GUI may write, so a stray or hostile
-            # service call can't inject arbitrary keys into entry.options (which
-            # is reloaded live) or clobber unrelated settings with junk that then
-            # breaks the coordinator/assistant on reload. Credentials live in
-            # entry.data (not entry.options), so they're never reachable here.
-            clean: dict = {}
-            for key, val in incoming.items():
-                if key == CONF_POLL_INTERVAL:
-                    try:
-                        clean[key] = max(1, min(3600, int(val)))
-                    except (TypeError, ValueError):
-                        _LOGGER.warning("set_config: ignoring non-numeric poll_interval %r", val)
-                elif key in (CA_KEY, "tariff"):
-                    if isinstance(val, dict):
-                        clean[key] = val
-                    else:
-                        _LOGGER.warning("set_config: ignoring %s (expected an object)", key)
-                elif key == CA_AUTO_RESUME:
-                    clean[key] = bool(val)
-                elif key == CA_RELEASE_DEFAULT:
-                    if val in (RELEASE_KEEP, RELEASE_STOP,
-                               RELEASE_RESUME_SCHEDULE, RELEASE_RESUME_ECO):
-                        clean[key] = val
-                    else:
-                        _LOGGER.warning("set_config: ignoring invalid release_default %r", val)
-                else:
-                    _LOGGER.warning("set_config: ignoring unknown option key %r", key)
+            # The allow-list lives in ca_config.sanitize_options — a single,
+            # unit-tested source of truth so the GUI, this service, and the tests
+            # agree on exactly which keys survive. A stray or hostile call can't
+            # inject arbitrary keys into entry.options (reloaded live) or clobber
+            # unrelated settings. Credentials live in entry.data (not
+            # entry.options), so they're never reachable here.
+            clean, ignored = sanitize_options(incoming)
+            for msg in ignored:
+                _LOGGER.warning("set_config: %s", msg)
             if not clean:
                 return
             # Sub-dicts the caller owns (the whole Charge Assistant config under

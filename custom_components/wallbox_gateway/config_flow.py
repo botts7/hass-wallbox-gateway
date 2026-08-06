@@ -25,6 +25,7 @@ from .api import (
     GatewayClient,
     GatewayUnreachable,
 )
+from .ca_config import remove_car, upsert_car
 from .const import (
     CA_ACTIONABLE,
     CA_ARRIVAL_ENTITY,
@@ -44,6 +45,8 @@ from .const import (
     CA_SOC_MAX_AGE,
     CA_TAP_PATH,
     CA_BATTERY_KWH,
+    CA_CARS,
+    CA_CAR_NAME,
     CA_CHARGE_POWER_KW,
     CA_CHEAPEST,
     CA_COMMUTE_ENABLED,
@@ -358,10 +361,10 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Top-level options menu: Charge Assistant vs Firmware updates."""
+        """Top-level options menu: Charge Assistant, Vehicles, Firmware."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["charge_assistant", "firmware"],
+            menu_options=["charge_assistant", "vehicles", "firmware"],
         )
 
     # ---- Firmware update channel ----
@@ -399,6 +402,133 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="firmware", data_schema=schema)
+
+    # ---- Vehicles (multi-car mapping) ----
+    _VEHICLE_ADD = "__add__"
+
+    async def async_step_vehicles(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Pick a mapped vehicle to edit, add one, or remove one.
+
+        The Add-on stays the richer editor; this is the self-serve native path
+        for users who don't run it. Edits touch ONLY the ``cars`` list — the
+        rest of the Charge Assistant config is preserved (merged, not replaced).
+        """
+        cars = list(self._cur().get(CA_CARS) or [])
+
+        # No cars yet → skip the picker, straight to the add form.
+        if not cars and user_input is None:
+            self._car_idx: int | None = None
+            return await self.async_step_vehicle_edit()
+
+        if user_input is not None:
+            sel = user_input["vehicle"]
+            if sel == self._VEHICLE_ADD:
+                self._car_idx = None
+                return await self.async_step_vehicle_edit()
+            idx = int(sel)
+            if user_input.get("remove"):
+                ca = {**self._cur(), CA_CARS: remove_car(cars, idx)}
+                return self.async_create_entry(
+                    title="", data={**self.config_entry.options, CA_KEY: ca}
+                )
+            self._car_idx = idx
+            return await self.async_step_vehicle_edit()
+
+        options = [
+            {"value": str(i), "label": c.get(CA_CAR_NAME) or f"Vehicle {i + 1}"}
+            for i, c in enumerate(cars)
+        ]
+        options.append({"value": self._VEHICLE_ADD, "label": "➕ Add a vehicle"})
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "vehicle", default=self._VEHICLE_ADD
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                ),
+                vol.Optional("remove", default=False): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(step_id="vehicles", data_schema=schema)
+
+    async def async_step_vehicle_edit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Add or edit one vehicle profile (name, battery, SOC, commute source)."""
+        cars = list(self._cur().get(CA_CARS) or [])
+        idx = getattr(self, "_car_idx", None)
+        car = dict(cars[idx]) if idx is not None and idx < len(cars) else {}
+
+        if user_input is not None:
+            new = dict(car)
+            new[CA_CAR_NAME] = user_input[CA_CAR_NAME].strip()
+            new[CA_BATTERY_KWH] = user_input[CA_BATTERY_KWH]
+            new[CA_COMMUTE_ENABLED] = user_input[CA_COMMUTE_ENABLED]
+            new[CA_COMMUTE_SOURCE] = user_input[CA_COMMUTE_SOURCE]
+            # Optional entity fields: store when picked, clear when blanked.
+            for key in (CA_SOC_ENTITY, CA_COMMUTE_ODOMETER_ENTITY):
+                if user_input.get(key):
+                    new[key] = user_input[key]
+                else:
+                    new.pop(key, None)
+            ca = {**self._cur(), CA_CARS: upsert_car(cars, idx, new)}
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, CA_KEY: ca}
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CA_CAR_NAME, default=car.get(CA_CAR_NAME, vol.UNDEFINED)
+                ): str,
+                vol.Required(
+                    CA_BATTERY_KWH, default=car.get(CA_BATTERY_KWH, 60)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10, max=250, step=1, unit_of_measurement="kWh",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_SOC_ENTITY, default=car.get(CA_SOC_ENTITY, vol.UNDEFINED)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor", device_class="battery"
+                    )
+                ),
+                vol.Required(
+                    CA_COMMUTE_ENABLED,
+                    default=car.get(CA_COMMUTE_ENABLED, False),
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    CA_COMMUTE_SOURCE,
+                    default=car.get(CA_COMMUTE_SOURCE, CA_COMMUTE_SOURCE_CHARGER),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": CA_COMMUTE_SOURCE_CHARGER,
+                             "label": "Charger energy log"},
+                            {"value": CA_COMMUTE_SOURCE_ODOMETER,
+                             "label": "Odometer sensor"},
+                            {"value": CA_COMMUTE_SOURCE_SOC,
+                             "label": "Battery SOC drop"},
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Optional(
+                    CA_COMMUTE_ODOMETER_ENTITY,
+                    default=car.get(CA_COMMUTE_ODOMETER_ENTITY, vol.UNDEFINED),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+            }
+        )
+        return self.async_show_form(step_id="vehicle_edit", data_schema=schema)
 
     # ---- Charge Assistant · step 1: mode ----
     async def async_step_charge_assistant(
