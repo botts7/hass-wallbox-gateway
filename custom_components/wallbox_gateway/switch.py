@@ -56,11 +56,18 @@ def _charging_value(entity: GatewayEntity) -> bool | None:
 
 
 def _lock_value(entity: GatewayEntity) -> bool | None:
+    # Prefer the gateway's direct lock state. `chg_lock_state` (0=unlocked,
+    # 1=locked, -1=unread) is refreshed from r_lck / r_sta.lock_status every
+    # poll on fw >= 3.2.4, so it tracks a lock/unlock made ANYWHERE — the web
+    # UI, the Wallbox app, HA. The old charger_status==6 heuristic only held
+    # while the charger was otherwise idle and lagged external changes.
+    ls = entity._status().get("chg_lock_state")
+    if isinstance(ls, int) and ls >= 0:
+        return ls == 1
+    # Fallback for older firmware / chargers without r_lck (chg_lock_state -1).
     code = entity._realtime().get("charger_status")
     if code is None:
         return None
-    # Status code 6 = Locked. Everything else means the charger is not
-    # in the lock state. This is the same heuristic the dashboard uses.
     return int(code) == 6
 
 

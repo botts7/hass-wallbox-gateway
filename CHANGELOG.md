@@ -4,6 +4,18 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.31.1] - 2026-08-10
+
+### Fixed
+- **Lock switch now reflects lock/unlock made anywhere** — the Lock switch
+  now reads the gateway's direct `chg_lock_state` (refreshed every poll on
+  firmware >= 3.2.4), so locking or unlocking from the gateway web UI, the
+  Wallbox app, or the charger itself is mirrored into Home Assistant within
+  one poll. Previously the switch inferred lock state from `charger_status==6`,
+  which only held while the charger was otherwise idle and lagged external
+  changes. Older firmware (which reports `chg_lock_state = -1`) transparently
+  falls back to the previous heuristic. Reported on the HA forum.
+
 ## [0.31.0] - 2026-07-31
 
 ### Added
