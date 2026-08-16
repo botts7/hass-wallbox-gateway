@@ -34,6 +34,10 @@ MODE_REMINDER = "reminder"
 CONF_POLL_INTERVAL = "poll_interval"
 CA_KEY = "charge_assistant"
 TARIFF_KEY = "tariff"
+# Savings baseline the add-on's savings-card selector writes (the counterfactual
+# the savings sensors compare against): {"mode": plug_in|fixed_time|flat_avg,
+# "fixedTime": "HH:MM"}. Opaque dict passthrough, like the tariff (#151).
+BASELINE_KEY = "baseline"
 CA_AUTO_RESUME = "auto_resume_eco"
 CA_RELEASE_DEFAULT = "release_default"
 _RELEASE_VALUES = ("keep", "stop", "resume_schedule", "resume_eco")
@@ -121,7 +125,7 @@ def sanitize_options(incoming: dict | None) -> tuple[dict, list[str]]:
                 clean[key] = max(1, min(3600, int(val)))
             except (TypeError, ValueError):
                 ignored.append(f"ignoring non-numeric poll_interval {val!r}")
-        elif key in (CA_KEY, TARIFF_KEY):
+        elif key in (CA_KEY, TARIFF_KEY, BASELINE_KEY):
             if isinstance(val, dict):
                 clean[key] = val
             else:

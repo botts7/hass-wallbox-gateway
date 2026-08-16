@@ -438,6 +438,18 @@
       },
       "cost_month": {
         "name": "Charging cost (this month)"
+      },
+      "savings_week": {
+        "name": "Charging savings (7 days)"
+      },
+      "savings_month": {
+        "name": "Charging savings (this month)"
+      },
+      "solar_saved_month": {
+        "name": "Solar savings (this month)"
+      },
+      "shift_saved_month": {
+        "name": "Off-peak savings (this month)"
       }
     },
     "switch": {

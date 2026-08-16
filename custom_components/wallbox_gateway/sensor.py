@@ -289,6 +289,42 @@ def _month_cost(entity: GatewayEntity) -> float | None:
     return round(s["month_cost"], 2) if s else None
 
 
+def _savings_summary(entity: GatewayEntity) -> dict[str, Any] | None:
+    """Week/month savings (time-shift + solar self-consumption) from the
+    charge-log + tariff, using the baseline the add-on mirrors into
+    entry.options['baseline']. Defaults to the flat-average baseline, which
+    gives meaningful per-burst time-shift savings. Solar savings are net of the
+    feed-in/export rate in the tariff (0 by default). None until a tariff set."""
+    coord = entity.coordinator
+    tariff = (coord.entry.options or {}).get("tariff")
+    if not tariff:
+        return None
+    baseline = (coord.entry.options or {}).get("baseline") or {"mode": "flat_avg"}
+    intervals = (coord.data or {}).get("charge_log") or []
+    tz = entity.hass.config.time_zone or "UTC"
+    return cost_engine.summarize_savings(tariff, intervals, tz, time.time(), baseline)
+
+
+def _week_savings(entity: GatewayEntity) -> float | None:
+    s = _savings_summary(entity)
+    return round(s["week_saved"], 2) if s else None
+
+
+def _month_savings(entity: GatewayEntity) -> float | None:
+    s = _savings_summary(entity)
+    return round(s["month_saved"], 2) if s else None
+
+
+def _month_solar_saved(entity: GatewayEntity) -> float | None:
+    s = _savings_summary(entity)
+    return round(s["month_solar"], 2) if s else None
+
+
+def _month_shift_saved(entity: GatewayEntity) -> float | None:
+    s = _savings_summary(entity)
+    return round(s["month_shift"], 2) if s else None
+
+
 SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
     GatewaySensorEntityDescription(
         key="charger_status",
@@ -957,6 +993,45 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
         value_fn=_month_cost,
+    ),
+    # Savings vs the counterfactual baseline (time-shift) + solar self-
+    # consumption, net of any feed-in/export rate. Only populated once a tariff
+    # is set in the add-on; None/unknown until then. MEASUREMENT for statistics.
+    GatewaySensorEntityDescription(
+        key="savings_week",
+        translation_key="savings_week",
+        name="Charging savings (7 days)",
+        icon="mdi:piggy-bank",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_week_savings,
+    ),
+    GatewaySensorEntityDescription(
+        key="savings_month",
+        translation_key="savings_month",
+        name="Charging savings (this month)",
+        icon="mdi:piggy-bank-outline",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_month_savings,
+    ),
+    GatewaySensorEntityDescription(
+        key="solar_saved_month",
+        translation_key="solar_saved_month",
+        name="Solar savings (this month)",
+        icon="mdi:solar-power",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_month_solar_saved,
+    ),
+    GatewaySensorEntityDescription(
+        key="shift_saved_month",
+        translation_key="shift_saved_month",
+        name="Off-peak savings (this month)",
+        icon="mdi:clock-time-four-outline",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_month_shift_saved,
     ),
 )
 
