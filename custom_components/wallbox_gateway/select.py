@@ -49,24 +49,30 @@ class EcoSmartMode(GatewayEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
+        # Documented Wallbox eco_smart enum (#38): esm 0 = Eco (grid+solar),
+        # 1 = Full Green. The master `active` (ese) flag is what turns it off —
+        # esm alone can't distinguish Off from Eco. There is no esm 2.
         eco = self._eco_smart()
         if not eco:
             return None
-        mode = int(eco.get("mode", 0))
-        return ECO_MODES.get(mode)
+        if not eco.get("active"):
+            return ECO_MODES[0]  # "disabled"
+        return ECO_MODES[1] if int(eco.get("mode", 0)) == 1 else ECO_MODES[2]
 
     async def async_select_option(self, option: str) -> None:
-        mode = ECO_MODE_TO_INT.get(option)
-        if mode is None:
+        if option not in ECO_MODE_TO_INT:
             return
-        # Preserve esp (solar power target) and derive ese (enabled flag)
-        # from the mode, matching the dashboard's saveEco() shape.
+        # Translate the HA option to the real {ese, esm} the charger expects
+        # (esm 0 = Eco / "Solar + Grid", 1 = Full Green). "Disabled" drops the
+        # master flag. Preserve esp so we don't reset the user's solar target.
         prior = self._eco_smart()
-        payload = {
-            "ese": 1 if mode > 0 else 0,
-            "esm": mode,
-            "esp": int(prior.get("power_pct") or 100),
-        }
+        esp = int(prior.get("power_pct") or 100)
+        if option == ECO_MODES[0]:          # disabled
+            payload = {"ese": 0, "esm": 0, "esp": esp}
+        elif option == ECO_MODES[1]:        # full_green -> esm 1
+            payload = {"ese": 1, "esm": 1, "esp": esp}
+        else:                               # eco_smart (Solar + Grid) -> esm 0
+            payload = {"ese": 1, "esm": 0, "esp": esp}
         await self.coordinator.client.bapi(
             "s_ecos", par=json.dumps(payload), wait_ms=8000
         )

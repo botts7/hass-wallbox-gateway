@@ -4,6 +4,21 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.32.0] - 2026-08-16
+
+### Fixed
+- **Eco-Smart mode select now blends grid power correctly (#38).** "Eco Smart"
+  was writing `esm=2`, a value that isn't part of Wallbox's eco_smart API — the
+  charger ignored it and behaved like Full Green (never importing grid). The
+  documented enum is `esm 0 = Eco (solar + grid)`, `esm 1 = Full Green`, with
+  the master on/off carried by the separate `ese` flag. The select now maps
+  Disabled → `ese 0`, Full Green → `esm 1`, Eco Smart → `esm 0`, and reads the
+  current mode back from `(active, esm)` so it round-trips.
+- **Max current slider no longer capped at 32 A (#39).** A 40 A charger (e.g. a
+  USA Pulsar Plus at a 40 A hardware limit) can now be set above 32 A. The
+  slider's maximum follows the charger's own `max_available_current`, falling
+  back to 32 A when the charger doesn't report one.
+
 ## [0.31.1] - 2026-08-10
 
 ### Fixed

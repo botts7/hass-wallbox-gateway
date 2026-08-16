@@ -57,6 +57,21 @@ class MaxCurrent(GatewayEntity, NumberEntity):
     def __init__(self, coordinator: GatewayCoordinator) -> None:
         super().__init__(coordinator, "max_current")
 
+    def _ceiling(self) -> int:
+        # The charger reports its own hardware/installation ceiling as
+        # max_available_current (40 A on USA Pulsar Plus, 32 A on most EU
+        # units). A fixed 32 A cap wrongly limited 40 A chargers (#39). Fall
+        # back to MAX_CURRENT_A when the charger doesn't report one.
+        for src in (self._realtime(), self._charger_status()):
+            v = src.get("max_available_current")
+            if isinstance(v, int) and MIN_CURRENT_A <= v <= 80:
+                return v
+        return MAX_CURRENT_A
+
+    @property
+    def native_max_value(self) -> float:
+        return float(self._ceiling())
+
     @property
     def native_value(self) -> float | None:
         # The charger reports its currently-allowed max current under a
@@ -79,7 +94,7 @@ class MaxCurrent(GatewayEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         amps = int(round(value))
-        amps = max(MIN_CURRENT_A, min(MAX_CURRENT_A, amps))
+        amps = max(MIN_CURRENT_A, min(self._ceiling(), amps))
         await self.coordinator.client.get(
             f"/api/command?action=current&value={amps}&wait=5000"
         )

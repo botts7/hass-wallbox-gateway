@@ -207,8 +207,11 @@ def _parse_autolock(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | 
 
 
 def _parse_ecos(raw: Any, prior: dict[str, Any] | None) -> dict[str, Any] | None:
-    """g_ecos returns {"r": {"esm": 0|1|2, "esp": 0-100, "ese": bool}}.
-    esm 0 = Disabled, 1 = Full Green (solar-only), 2 = Eco Smart.
+    """g_ecos returns {"r": {"esm": 0|1, "esp": 0-100, "ese": bool}}.
+    Documented Wallbox enum (#38): esm 0 = Eco (solar + grid), 1 = Full Green
+    (solar-only); `ese` (active) is the on/off master. `mode` below is the raw
+    esm — the select derives the user-facing Disabled/Full Green/Eco from
+    (active, mode). There is no esm 2 (the charger silently ignores it).
     """
     if isinstance(raw, Exception) or not isinstance(raw, dict):
         return prior
