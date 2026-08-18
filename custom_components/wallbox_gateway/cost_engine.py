@@ -215,7 +215,55 @@ def summarize_cost(tariff, intervals, tzname, now_epoch):
 
 
 def session_savings(tariff, s, charge_log, tzname, baseline):
-    """(shift_saved, solar_saved) for one session."""
+    """(shift_saved, solar_saved) for one session.
+
+    shift_saved = counterfactual grid cost (baseline) − actual grid cost, i.e.
+    what time-shifting to cheaper hours saved. solar_saved = the value of the
+    solar (green) kWh self-consumed for charging. With a feed-in / export tariff
+    (`tariff["feedIn"]`, currency/kWh) that value is *net* of the export income
+    you gave up by self-consuming instead of exporting: green_kwh × (grid_rate −
+    feedIn). feedIn defaults to 0, so without an export rate this is the gross
+    avoided-grid value, unchanged.
+    """
     cost = session_cost(tariff, s, charge_log, tzname)
     base = baseline_cost(tariff, s, charge_log, tzname, baseline)
-    return max(0.0, base - cost["total"]), cost["saved"]
+    shift = max(0.0, base - cost["total"])
+    feed_in = tariff.get("feedIn") or 0
+    solar = max(0.0, cost["saved"] - cost["green"] * feed_in)
+    return shift, solar
+
+
+def summarize_savings(tariff, intervals, tzname, now_epoch, baseline):
+    """Week/month savings from the firmware charge-log bursts, split into
+    time-shift (off-peak) and solar self-consumption. Mirrors summarize_cost:
+    each burst is billed as a mini-session against the baseline. Returns None
+    without a tariff.
+
+    Note: per-burst the plug-in baseline start equals the burst start, so the
+    'plug_in' baseline yields ~0 shift-savings here; 'flat_avg' (vs the day's
+    average rate) and 'fixed_time' give meaningful per-burst shift figures, so
+    flat_avg is the sensible default for the HA sensors."""
+    if not tariff:
+        return None
+    now_local = _local(now_epoch, tzname)
+    week_ago = now_epoch - 7 * 86400
+    month_start = int(now_local.replace(day=1, hour=0, minute=0, second=0,
+                                        microsecond=0).timestamp())
+    wk_shift = wk_solar = mo_shift = mo_solar = 0.0
+    for iv in (intervals or []):
+        st = iv.get("start", 0)
+        if st < week_ago and st < month_start:
+            continue
+        shift, solar = session_savings(tariff, _burst_session(iv), [iv], tzname, baseline)
+        if st >= week_ago:
+            wk_shift += shift
+            wk_solar += solar
+        if st >= month_start:
+            mo_shift += shift
+            mo_solar += solar
+    return {
+        "week_shift": wk_shift, "week_solar": wk_solar,
+        "month_shift": mo_shift, "month_solar": mo_solar,
+        "week_saved": wk_shift + wk_solar, "month_saved": mo_shift + mo_solar,
+        "currency": tariff.get("currency", "$"),
+    }

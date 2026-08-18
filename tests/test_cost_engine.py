@@ -107,6 +107,48 @@ def test_summarize_cost_no_tariff():
     assert ce.summarize_cost(None, LOG, "UTC", CHG + 3600) is None
 
 
+@case
+def test_feed_in_reduces_solar_saving():
+    # 4 kWh green in the off-peak band (0.18). A 0.10 feed-in/export rate makes
+    # the net self-consumption value 4 × (0.18 − 0.10) = 0.32 (vs 0.72 gross).
+    s = {"ts": PLUG, "stop": PLUG + 12 * 3600, "en": 10000, "gen": 4000, "dur": 7200}
+    log = [{"start": CHG, "stop": CHG + 7200, "wh": 10000, "gwh": 4000}]
+    t = dict(TARIFF, feedIn=0.10)
+    _, solar = ce.session_savings(t, s, log, "UTC", {"mode": "plug_in"})
+    assert approx(solar, 4.0 * (0.18 - 0.10)), solar
+    # feedIn defaults to 0 → gross avoided-grid value, unchanged.
+    _, solar0 = ce.session_savings(TARIFF, s, log, "UTC", {"mode": "plug_in"})
+    assert approx(solar0, 4.0 * 0.18), solar0
+
+
+@case
+def test_feed_in_never_negative():
+    # A feed-in rate above the grid rate can't drive solar savings below 0.
+    s = {"ts": PLUG, "stop": PLUG + 12 * 3600, "en": 10000, "gen": 4000, "dur": 7200}
+    log = [{"start": CHG, "stop": CHG + 7200, "wh": 10000, "gwh": 4000}]
+    t = dict(TARIFF, feedIn=0.99)
+    _, solar = ce.session_savings(t, s, log, "UTC", {"mode": "plug_in"})
+    assert approx(solar, 0.0), solar
+
+
+@case
+def test_summarize_savings_flat_avg():
+    # Off-peak burst vs the flat-average baseline: shift = flat_avg − actual
+    # = 2.25 − 1.80 = 0.45. No solar in this burst.
+    now = CHG + 3600
+    summ = ce.summarize_savings(TARIFF, LOG, "UTC", now, {"mode": "flat_avg"})
+    assert approx(summ["week_shift"], 0.45), summ
+    assert approx(summ["month_shift"], 0.45), summ
+    assert approx(summ["week_solar"], 0.0), summ
+    assert approx(summ["week_saved"], 0.45), summ
+    assert summ["currency"] == "$"
+
+
+@case
+def test_summarize_savings_no_tariff():
+    assert ce.summarize_savings(None, LOG, "UTC", CHG + 3600, {"mode": "flat_avg"}) is None
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
