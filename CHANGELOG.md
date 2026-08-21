@@ -4,6 +4,18 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.33.1] - 2026-08-21
+
+### Fixed
+- **Firmware OTA from HA no longer fails with "no firmware asset for board".**
+  A gateway flashed with `pio run -e ota` reports `board="ota"` (the PlatformIO
+  env name), which matched no release asset. The Update entity now remaps the
+  known `ota` alias to its real target (`esp32s3`, which that env builds) so OTA
+  works. An *unrecognised* board with no matching asset now returns nothing
+  rather than guessing — it will never hand a classic ESP32-WROOM an esp32s3
+  image. (Firmware fix incoming so freshly flashed gateways report the real
+  board and self-correct.)
+
 ## [0.33.0] - 2026-08-16
 
 ### Added
