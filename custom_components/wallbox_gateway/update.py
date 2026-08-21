@@ -115,16 +115,32 @@ def newest_release(releases: list[dict], channel: str) -> dict | None:
     return best
 
 
+# Build-env aliases that are KNOWN to produce a specific target, so remapping is
+# safe. The `ota` espota-upload env `extends = env:esp32s3`, so a gateway flashed
+# via `pio run -e ota` reports board="ota" but is really an esp32s3 image. We do
+# NOT guess for an arbitrary unknown board — handing a classic ESP32-WROOM
+# (esp32dev) gateway an esp32s3 image would brick it, so an unrecognised board
+# with no matching asset returns None (fail visibly, don't flash the wrong arch).
+_BOARD_ALIAS = {"ota": DEFAULT_BOARD}
+
+
 def pick_asset(release: dict, board: str) -> dict | None:
     """The firmware `.bin` asset for this board.
 
-    Prefers an asset whose name ends with '-<board>.bin'; falls back to the
-    only `.bin` when a release ships a single unambiguous target.
+    Prefers an asset whose name ends with '-<board>.bin'. A known env alias
+    (e.g. board="ota" → esp32s3) is remapped. As a last resort, the single `.bin`
+    when a release ships one unambiguous target. Returns None rather than risk
+    an architecture mismatch on an unrecognised board.
     """
     bins = [a for a in release.get("assets", []) if str(a.get("name", "")).endswith(".bin")]
-    for a in bins:
-        if str(a["name"]).endswith(f"-{board}.bin"):
-            return a
+    candidates = [board]
+    alias = _BOARD_ALIAS.get(board)
+    if alias and alias != board:
+        candidates.append(alias)
+    for want in candidates:
+        for a in bins:
+            if str(a["name"]).endswith(f"-{want}.bin"):
+                return a
     if len(bins) == 1:
         return bins[0]
     return None

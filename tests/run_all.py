@@ -26,6 +26,7 @@ MODULES = [
     "test_charge_guards",
     "test_cost_engine",
     "test_charge_window",          # allowed-window + composable normalize
+    "test_update_asset",           # firmware Update asset picker (board=ota fallback); self-skips
     "test_controller_decisions",   # needs HA importable; self-skips if not
     "test_solar_switch",           # Solar-charging switch; needs HA; self-skips
     "test_scenarios_e2e",          # exhaustive per-mode scenario matrix; self-skips
