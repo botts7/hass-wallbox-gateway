@@ -140,6 +140,7 @@ from .const import (
     CA_WINDOW_OVERRUN,
     CA_WINDOW_PRESTART,
     CA_WINDOW_COST_WARN,
+    CA_KEEP_SCHEDULE,
     TRIG_ARRIVAL,
     TRIG_LEAD,
     TRIG_NIGHTLY,
@@ -469,6 +470,27 @@ class ChargeAssistant:
     async def _reconcile_schedules(self) -> None:
         await self._apply_control(self._should_control())
 
+    def _coexist_window(self) -> tuple[int, int] | None:
+        """The daytime window the schedule arbiter should scope to, or None to
+        disable every schedule (legacy). Coexistence (#152) is only meaningful
+        for a solar strategy with a charge window set: then night schedules
+        (outside the window) are left to run natively while we own the day."""
+        opts = self._opts
+        if not opts.get(CA_KEEP_SCHEDULE):
+            return None
+        # Solar-only: Smart+Solar already does its own night grid-to-target
+        # charge, so a native night schedule would double up. Coexistence is for
+        # pure daytime solar + the charger's own off-peak schedule.
+        if ca_config.strategy_of(opts) != MODE_SOLAR:
+            return None
+        if not opts.get(CA_WINDOW_ENABLED):
+            return None
+        s = charge_window.to_minutes(opts.get(CA_WINDOW_START))
+        e = charge_window.to_minutes(opts.get(CA_WINDOW_END))
+        if s is None or e is None or s == e:
+            return None  # no usable window — fall back to disable-all
+        return (s, e)
+
     async def _apply_control(self, sc: bool) -> None:
         """Drive the arbiter toward the desired control state, retrying until
         the gateway actually applies it (BLE can be busy after an owner change
@@ -477,7 +499,7 @@ class ChargeAssistant:
             return
         self._applying = True
         try:
-            ok = await self._arbiter.async_reconcile(sc)
+            ok = await self._arbiter.async_reconcile(sc, self._coexist_window())
             if ok:
                 if sc != self._applied_sc:
                     _LOGGER.info(
@@ -2665,7 +2687,26 @@ class ChargeAssistant:
         self._deficit_since = None
         return charging
 
+    def _outside_coexist_window(self) -> bool:
+        """When coexistence (#152) is on, the solar loop must stand down OUTSIDE
+        its daytime window — otherwise, at night, a low-surplus reading would
+        make it stop the native off-peak schedule's charge (it doesn't own).
+        No coexistence window configured → never stands down (legacy behaviour)."""
+        win = self._coexist_window()
+        if win is None:
+            return False
+        now_local = dt_util.now()
+        now_min = now_local.hour * 60 + now_local.minute
+        return not charge_window.in_window(now_min, win[0], win[1])
+
     def _eval_solar(self) -> None:
+        # Coexistence: outside the daytime window, hand the night over to the
+        # charger's own schedule — don't start OR stop anything.
+        if self._outside_coexist_window():
+            self._surplus_since = None
+            self._deficit_since = None
+            self._note_standby("night_schedule")
+            return
         ok, reason = self._may_control()
         if not ok:
             self._note_standby(reason)

@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .api import GatewayClient, GatewayError, GatewayUnreachable
+from .charge_window import hhmm_to_minutes, overlaps
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,12 +109,21 @@ class NativeScheduleArbiter:
             )
             return False
 
-    async def async_reconcile(self, should_control: bool) -> bool:
+    async def async_reconcile(
+        self, should_control: bool, active_window: tuple[int, int] | None = None
+    ) -> bool:
         """Make the charger's native schedules match our control state.
 
-        should_control True  -> disable every enabled native schedule (snapshot
+        should_control True  -> disable enabled native schedules (snapshot
                                 first), so the integration owns charging.
         should_control False -> restore the schedules we disabled.
+
+        ``active_window`` is an optional ``(start_min, end_min)`` daytime window
+        (minutes since midnight, may wrap). When given, only schedules whose
+        window OVERLAPS it are disabled — a non-overlapping night schedule is
+        left enabled so it still runs on the charger (solar-by-day +
+        schedule-by-night coexistence, #152). When None, every schedule is
+        disabled (legacy behaviour).
 
         Returns True when the desired state is fully applied (so the caller can
         stop retrying), False when it couldn't be applied yet (BLE busy / a
@@ -125,12 +135,30 @@ class NativeScheduleArbiter:
         try:
             state = await self._load()
             if should_control:
-                return await self._take_control(state)
+                return await self._take_control(state, active_window)
             return await self._release_control(state)
         finally:
             self._busy = False
 
-    async def _take_control(self, state: dict) -> bool:
+    @staticmethod
+    def _overlaps_window(row: dict, active_window: tuple[int, int] | None) -> bool:
+        """Should this native schedule be disabled under the active window?
+
+        No window -> always (legacy: disable everything). With a window, disable
+        only schedules that overlap it. A schedule whose times can't be parsed
+        is disabled too (fail safe: never leave a schedule that might fight us).
+        """
+        if active_window is None:
+            return True
+        s = hhmm_to_minutes(row.get("start"))
+        e = hhmm_to_minutes(row.get("stop"))
+        if s is None or e is None:
+            return True  # unparseable — can't prove it's a night schedule
+        return overlaps(s, e, active_window[0], active_window[1])
+
+    async def _take_control(
+        self, state: dict, active_window: tuple[int, int] | None = None
+    ) -> bool:
         rows = await self._read_rows()
         if rows is None:
             # Couldn't read (BLE busy, e.g. just after a gateway reboot). If we
@@ -143,7 +171,7 @@ class NativeScheduleArbiter:
         for row in rows:
             if not isinstance(row, dict) or "sid" not in row:
                 continue
-            if row.get("enabled"):
+            if row.get("enabled") and self._overlaps_window(row, active_window):
                 snapshot.setdefault(str(int(row["sid"])), 1)
                 if await self._set_enabled(row, 0):
                     _LOGGER.info(

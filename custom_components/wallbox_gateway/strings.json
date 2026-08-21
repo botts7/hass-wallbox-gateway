@@ -209,6 +209,7 @@
           "autostart_grace_min": "Grace before auto-start (minutes, 0 = start immediately)",
           "window_start": "Window start (local time)",
           "window_end": "Window end (local time, can cross midnight)",
+          "keep_native_schedule": "Keep my charger's own night schedule running",
           "window_overrun": "Keep charging past the window until the target is reached",
           "window_prestart": "Start before the window if needed to be ready by departure",
           "window_cost_warn": "Notify me when a charge runs outside the window",
@@ -217,7 +218,8 @@
           "rl_notify": "Reminder notify service"
         },
         "data_description": {
-          "resume_eco_mode": "After the assistant finishes a managed charge and hands control back, force the charger's native Eco-Smart into this mode. \"Keep current mode\" leaves whatever was already set."
+          "resume_eco_mode": "After the assistant finishes a managed charge and hands control back, force the charger's native Eco-Smart into this mode. \"Keep current mode\" leaves whatever was already set.",
+          "keep_native_schedule": "Solar-by-day + schedule-by-night: HA charges on solar within your window; any native schedule outside it keeps running on the charger (even if HA is offline). Only schedules overlapping your window are paused."
         }
       },
       "vehicles": {
