@@ -47,6 +47,54 @@ def in_window(now_min: int, start_min: int | None, end_min: int | None) -> bool:
     return now_min >= start_min or now_min < end_min
 
 
+def hhmm_to_minutes(hhmm: int | str | None) -> int | None:
+    """Native-schedule 'HHMM' clock value (e.g. 600 or "0600" = 06:00) →
+    minutes since midnight, or None if unparseable/out of range. Distinct from
+    ``to_minutes`` which parses the config UI's "HH:MM" strings."""
+    if hhmm is None or hhmm == "":
+        return None
+    try:
+        v = int(str(hhmm).strip())
+    except (TypeError, ValueError):
+        return None
+    h, m = divmod(v, 100)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return h * 60 + m
+
+
+def _segments(start_min: int, end_min: int) -> list[tuple[int, int]]:
+    """Decompose a (possibly midnight-wrapping) [start, end) window into 1–2
+    plain non-wrapping intervals on [0, 1440). A zero-length window covers
+    nothing."""
+    if start_min == end_min:
+        return []
+    if start_min < end_min:
+        return [(start_min, end_min)]
+    return [(start_min, 1440), (0, end_min)]  # wraps past midnight
+
+
+def overlaps(
+    a_start: int | None, a_end: int | None,
+    b_start: int | None, b_end: int | None,
+) -> bool:
+    """Do two time-of-day windows [start, end) overlap on the 24-hour clock?
+
+    Times are minutes since midnight; either window may wrap past midnight
+    (``start > end``, e.g. 23:00–07:00). A window with an unset endpoint or a
+    zero length overlaps nothing (there is no interval to intersect). Used to
+    decide whether a native schedule falls inside the integration's active
+    (daytime) window — a non-overlapping night schedule is left to run itself.
+    """
+    if a_start is None or a_end is None or b_start is None or b_end is None:
+        return False
+    for as_, ae in _segments(a_start, a_end):
+        for bs, be in _segments(b_start, b_end):
+            if as_ < be and bs < ae:
+                return True
+    return False
+
+
 def evaluate(
     now_min: int,
     *,

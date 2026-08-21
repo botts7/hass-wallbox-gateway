@@ -26,6 +26,7 @@ MODULES = [
     "test_charge_guards",
     "test_cost_engine",
     "test_charge_window",          # allowed-window + composable normalize
+    "test_schedule_arbiter",       # coexistence schedule scoping (#152); self-skips w/o HA
     "test_update_asset",           # firmware Update asset picker (board=ota fallback); self-skips
     "test_controller_decisions",   # needs HA importable; self-skips if not
     "test_solar_switch",           # Solar-charging switch; needs HA; self-skips

@@ -113,6 +113,7 @@ from .const import (
     CA_WINDOW_ENABLED,
     CA_WINDOW_START,
     CA_WINDOW_END,
+    CA_KEEP_SCHEDULE,
     CA_WINDOW_OVERRUN,
     CA_WINDOW_PRESTART,
     CA_WINDOW_COST_WARN,
@@ -719,6 +720,24 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="power")
                 ),
+                # Coexistence (#152): keep the charger's OWN off-peak schedule
+                # running at night while HA does daytime solar. The daytime
+                # window tells the arbiter which native schedules are "day"
+                # (disabled while we control) vs "night" (left to run). Outside
+                # the window the solar loop stands down so it never stops the
+                # native night charge.
+                vol.Optional(
+                    CA_KEEP_SCHEDULE, default=cur.get(CA_KEEP_SCHEDULE, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_WINDOW_ENABLED, default=cur.get(CA_WINDOW_ENABLED, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_WINDOW_START, default=cur.get(CA_WINDOW_START, vol.UNDEFINED)
+                ): selector.TimeSelector(),
+                vol.Optional(
+                    CA_WINDOW_END, default=cur.get(CA_WINDOW_END, vol.UNDEFINED)
+                ): selector.TimeSelector(),
                 vol.Optional(
                     CA_NOTIFY_SERVICE, default=cur.get(CA_NOTIFY_SERVICE, vol.UNDEFINED)
                 ): selector.SelectSelector(

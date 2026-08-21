@@ -67,6 +67,13 @@ CA_WINDOW_OVERRUN = "window_overrun"      # keep charging past end until target 
 CA_WINDOW_PRESTART = "window_prestart"    # start before window to be ready by departure
 CA_WINDOW_COST_WARN = "window_cost_warn"  # notify when a charge runs outside the window
 
+# Coexistence (#152): solar-by-day + native-schedule-by-night. When on (Solar /
+# Smart+Solar only, and only meaningful with a charge window set), the schedule
+# arbiter disables ONLY native schedules that overlap the integration's daytime
+# window — a night off-peak schedule keeps running on the charger itself (even
+# if HA is offline). Off => the arbiter disables all schedules (legacy).
+CA_KEEP_SCHEDULE = "keep_native_schedule"  # bool
+
 # Snapshot of the charger's native schedules, imported into HA so they're
 # preserved/visible even while the integration is the control owner (which
 # pauses them on the charger). Written by the import_native_schedules service;

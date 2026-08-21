@@ -177,6 +177,50 @@ def test_reminder_absent():
     assert cc.reminder_enabled({"mode": "target_soc"}) is False
 
 
+# ── hhmm_to_minutes (native-schedule "HHMM" clock values) ───────────
+@case
+def test_hhmm_to_minutes():
+    assert w.hhmm_to_minutes(0) == 0
+    assert w.hhmm_to_minutes(600) == 360         # 06:00
+    assert w.hhmm_to_minutes("0600") == 360      # zero-padded string
+    assert w.hhmm_to_minutes("600") == 360       # unpadded string
+    assert w.hhmm_to_minutes(2330) == 1410       # 23:30
+    assert w.hhmm_to_minutes(2359) == 1439
+    assert w.hhmm_to_minutes(None) is None
+    assert w.hhmm_to_minutes("") is None
+    assert w.hhmm_to_minutes("nope") is None
+    assert w.hhmm_to_minutes(2400) is None       # hour out of range
+    assert w.hhmm_to_minutes(1270) is None       # minute out of range (70)
+
+
+# ── overlaps (coexistence: does a schedule fall in the day window?) ──
+@case
+def test_overlaps_basic():
+    # day window 09:00–16:00
+    d0, d1 = _m(9), _m(16)
+    assert w.overlaps(_m(10), _m(14), d0, d1) is True   # midday schedule overlaps
+    assert w.overlaps(_m(0), _m(6), d0, d1) is False     # 00:00–06:00 night: no overlap
+    assert w.overlaps(_m(16), _m(18), d0, d1) is False   # touches end — half-open, no overlap
+    assert w.overlaps(_m(6), _m(9), d0, d1) is False     # touches start — no overlap
+    assert w.overlaps(_m(15), _m(20), d0, d1) is True    # partial overlap at trailing edge
+
+
+@case
+def test_overlaps_midnight_wrap():
+    assert w.overlaps(_m(23), _m(7), _m(9), _m(16)) is False   # 23:00–07:00 night vs day: no
+    assert w.overlaps(_m(23), _m(10), _m(9), _m(16)) is True   # 23:00–10:00 clips into day
+    assert w.overlaps(_m(2), _m(5), _m(22), _m(8)) is True     # charge inside a wrapping window
+    assert w.overlaps(_m(23), _m(2), _m(22), _m(1)) is True    # two wrapping windows share pre-midnight
+
+
+@case
+def test_overlaps_degenerate():
+    assert w.overlaps(None, _m(6), _m(9), _m(16)) is False     # unset endpoint
+    assert w.overlaps(_m(0), _m(6), _m(9), None) is False
+    assert w.overlaps(_m(6), _m(6), _m(0), _m(12)) is False    # zero-length covers nothing
+    assert w.overlaps(_m(0), _m(12), _m(6), _m(6)) is False
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
