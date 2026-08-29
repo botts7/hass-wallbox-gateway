@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -19,6 +20,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import GatewayAuthError, GatewayClient, GatewayUnreachable
+from .next_charge import compute_next_charge
 from .const import (
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
@@ -128,6 +130,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 phsw_raw,
                 tzn_raw,
                 halo_raw,  # g_halocfg = LED halo config {bright %, mode, time_s}
+                schs_raw,  # r_schs = native charge schedules (for next-charge calc)
             ) = await asyncio.gather(
                 self.client.bapi("g_alo", wait_ms=2000),
                 self.client.bapi("g_ecos", wait_ms=2000),
@@ -135,10 +138,11 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.client.bapi("g_phsw", wait_ms=2000),
                 self.client.bapi("g_tzn", wait_ms=2000),
                 self.client.bapi("g_halocfg", wait_ms=2000),
+                self.client.bapi("r_schs", wait_ms=2000),
                 return_exceptions=True,
             )
         else:
-            autolock_raw = ecos_raw = psh_raw = phsw_raw = tzn_raw = halo_raw = None
+            autolock_raw = ecos_raw = psh_raw = phsw_raw = tzn_raw = halo_raw = schs_raw = None
 
         # Carry forward the prior settings dict when the BAPI read failed
         # (BLE napping, charger asleep, transient timeout) so the entities
@@ -162,6 +166,14 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         prior = self.data or {}
+        # Charger-local next scheduled charge. The firmware's next_scheduled_charge
+        # (in raw_status) is computed in UTC, so a local-midnight schedule lands a
+        # day late; recompute it here with a real tz database from the native
+        # schedules + the charger's zone. Recomputed every cycle (cheap) from the
+        # carried-forward schedules so it advances as occurrences pass.
+        timezone = _parse_tzn(tzn_raw, prior.get("timezone"))
+        schedules = _parse_schedules(schs_raw, prior.get("schedules"))
+        next_local = compute_next_charge(schedules, timezone, time.time())
         return {
             "raw_status": status or {},
             # `status`/`realtime` can be the JSON literal null (empty cache on a
@@ -180,10 +192,12 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "meter": _parse_dca(dca_raw, prior.get("meter")),
             "power_sharing": _parse_psh(psh_raw, prior.get("power_sharing")),
             "phase_switch": _parse_phsw(phsw_raw, prior.get("phase_switch")),
-            "timezone": _parse_tzn(tzn_raw, prior.get("timezone")),
+            "timezone": timezone,
             "notifications": _parse_not(not_raw, prior.get("notifications")),
             "lse": _parse_lse(lse_raw, prior.get("lse")),
             "halo": _parse_halocfg(halo_raw, prior.get("halo")),
+            "schedules": schedules,
+            "next_scheduled_charge_local": next_local,
         }
 
 
@@ -332,6 +346,20 @@ def _parse_tzn(raw: Any, prior: Any) -> str | None:
         tz = r.get("timezone")
         if isinstance(tz, str) and tz:
             return tz
+    return prior
+
+
+def _parse_schedules(raw: Any, prior: Any) -> list | None:
+    """r_schs returns {"r": {"schedules": [...]}} (array models) or {"r": [...]}.
+    Carries the prior list forward on a transient BLE miss so the derived
+    next-charge doesn't flap to None every skipped/failed cycle."""
+    if isinstance(raw, Exception) or not isinstance(raw, dict):
+        return prior
+    r = raw.get("r")
+    if isinstance(r, dict) and isinstance(r.get("schedules"), list):
+        return r["schedules"]
+    if isinstance(r, list):
+        return r
     return prior
 
 
