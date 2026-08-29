@@ -50,8 +50,13 @@ def _schedule_paused(entity: GatewayEntity) -> bool:
 
 def _plug_reminder(entity: GatewayEntity) -> bool | None:
     # Charge-reminder engine (#127): ON when a charge is due within the
-    # configured lead window and the car is NOT plugged in. The gateway
-    # computes it; this is the single entity a notify blueprint binds to.
+    # configured lead window and the car is NOT plugged in. Prefer the
+    # coordinator's tz-correct recomputation — the firmware's plug_reminder uses
+    # its UTC next-charge, so it's mistimed a day off for local-midnight
+    # schedules. Fall back to the firmware flag until rem_lead/schedules are read.
+    local = entity.coordinator.data.get("plug_reminder_local")
+    if local is not None:
+        return bool(local)
     val = entity._status().get("plug_reminder")
     return bool(val) if val is not None else None
 

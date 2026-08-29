@@ -20,7 +20,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import GatewayAuthError, GatewayClient, GatewayUnreachable
-from .next_charge import compute_next_charge
+from .next_charge import compute_next_charge, plug_reminder_due
 from .const import (
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
@@ -173,7 +173,15 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # carried-forward schedules so it advances as occurrences pass.
         timezone = _parse_tzn(tzn_raw, prior.get("timezone"))
         schedules = _parse_schedules(schs_raw, prior.get("schedules"))
-        next_local = compute_next_charge(schedules, timezone, time.time())
+        now_ts = time.time()
+        next_local = compute_next_charge(schedules, timezone, now_ts)
+        # Recompute the plug-in reminder against the tz-correct next charge — the
+        # firmware's plug_reminder (in raw_status) uses its UTC next-charge, so
+        # it's mistimed for local-midnight schedules. rem_lead + car_connected
+        # come from /api/status; None means "fall back to the firmware flag".
+        status_d = status or {}
+        plug_local = plug_reminder_due(
+            next_local, status_d.get("rem_lead"), status_d.get("car_connected"), now_ts)
         return {
             "raw_status": status or {},
             # `status`/`realtime` can be the JSON literal null (empty cache on a
@@ -198,6 +206,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "halo": _parse_halocfg(halo_raw, prior.get("halo")),
             "schedules": schedules,
             "next_scheduled_charge_local": next_local,
+            "plug_reminder_local": plug_local,
         }
 
 

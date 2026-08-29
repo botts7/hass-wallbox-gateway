@@ -105,6 +105,52 @@ def test_dst_summer_offset():
     assert loc.hour == 1, loc               # 14:00 UTC == 01:00 AEDT
 
 
+# ── plug_reminder_due ────────────────────────────────────────────────────────
+@case
+def test_plug_reminder_due_within_window_not_connected():
+    now = 1_000_000
+    nxt = now + 5 * 60                       # due in 5 min
+    assert nc.plug_reminder_due(nxt, 10, False, now) is True
+
+
+@case
+def test_plug_reminder_not_due_outside_window():
+    now = 1_000_000
+    nxt = now + 30 * 60                       # 30 min out, lead 10
+    assert nc.plug_reminder_due(nxt, 10, False, now) is False
+
+
+@case
+def test_plug_reminder_false_when_connected():
+    now = 1_000_000
+    nxt = now + 5 * 60
+    assert nc.plug_reminder_due(nxt, 10, True, now) is False
+
+
+@case
+def test_plug_reminder_disabled_lead_zero():
+    now = 1_000_000
+    assert nc.plug_reminder_due(now + 300, 0, False, now) is False
+
+
+@case
+def test_plug_reminder_none_falls_back():
+    now = 1_000_000
+    # old firmware: no rem_lead -> None (caller uses firmware flag)
+    assert nc.plug_reminder_due(now + 300, None, False, now) is None
+    # no computed next charge yet -> None
+    assert nc.plug_reminder_due(None, 10, False, now) is None
+    assert nc.plug_reminder_due(0, 10, False, now) is None
+    # unknown plug state -> None
+    assert nc.plug_reminder_due(now + 300, 10, None, now) is None
+
+
+@case
+def test_plug_reminder_past_charge_not_due():
+    now = 1_000_000
+    assert nc.plug_reminder_due(now - 60, 10, False, now) is False
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
