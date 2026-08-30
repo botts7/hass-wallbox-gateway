@@ -108,10 +108,15 @@ def _mains_voltage(entity: GatewayEntity) -> int | None:
 
 
 def _next_charge(entity: GatewayEntity) -> datetime | None:
-    # Charge-reminder engine (#127): the gateway computes the UTC epoch of
-    # the next enabled schedule. A timestamp sensor needs a tz-aware
-    # datetime; 0/absent means no upcoming schedule (or NTP not synced).
-    epoch = entity._status().get("next_scheduled_charge")
+    # Charge-reminder engine (#127). Prefer the coordinator's charger-local
+    # computation — the firmware's next_scheduled_charge is computed in UTC, so a
+    # local-midnight schedule (14:00 UTC = 00:00 local next day) lands a day late.
+    # Fall back to the firmware epoch until the schedules + timezone are read.
+    # A timestamp sensor needs a tz-aware datetime; 0/absent means no upcoming
+    # schedule (or NTP not synced).
+    epoch = entity.coordinator.data.get("next_scheduled_charge_local")
+    if not isinstance(epoch, (int, float)) or epoch <= 0:
+        epoch = entity._status().get("next_scheduled_charge")
     if not isinstance(epoch, (int, float)) or epoch <= 0:
         return None
     return datetime.fromtimestamp(epoch, tz=timezone.utc)

@@ -4,6 +4,30 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.35.1] - 2026-08-29
+
+### Fixed
+- **"Plug-In Reminder" binary sensor was mistimed for local-midnight schedules.**
+  It read the firmware's `plug_reminder`, which is computed against the UTC
+  next-charge and so fired a day off. The coordinator now recomputes it against
+  the timezone-correct next charge (due within the lead window AND the car isn't
+  connected), using `rem_lead` + `car_connected` from `/api/status`, and the
+  sensor prefers that value — falling back to the firmware flag on older gateways
+  that don't expose `rem_lead`. Covered by new `test_next_charge` cases.
+
+## [0.35.0] - 2026-08-29
+
+### Fixed
+- **"Next Scheduled Charge" sensor showed the wrong day for local-midnight
+  schedules.** The charger stores a schedule's `days` as the *local* weekday but
+  its `start` as a UTC time, so a Sydney "Sunday 00:00" schedule (14:00 UTC) was
+  reported by the firmware — and shown by the sensor — a day late ("Monday"). The
+  integration now recomputes the next charge in the charger's own timezone using
+  `zoneinfo` (seeded by the charger's `g_tzn` zone — no hard-coded offsets),
+  reading the native schedules (`r_schs`) on the existing slow-poll cadence. It
+  falls back to the firmware value until the schedules/timezone are read. Covered
+  by a new pure-logic test suite (`test_next_charge`, incl. a DST case).
+
 ## [0.34.0] - 2026-08-21
 
 ### Added
