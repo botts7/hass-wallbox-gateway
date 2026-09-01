@@ -19,9 +19,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import GatewayAuthError, GatewayClient, GatewayUnreachable
+from .api import GatewayAuthError, GatewayClient
 from .next_charge import compute_next_charge, plug_reminder_due
+from .resilience import OnceSeen, cycles_for, due, first_exception, partition_results
 from .const import (
+    CHARGE_LOG_INTERVAL,
+    CHARGE_LOG_TIMEOUT,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
@@ -31,6 +34,7 @@ from .const import (
     ENDPOINT_DIAG,
     ENDPOINT_HEALTH,
     ENDPOINT_STATUS,
+    HTTP_TIMEOUT,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -57,6 +61,12 @@ def _fw_tuple(v: str) -> tuple[int, int, int]:
 # gateway #168). Live reads (r_dca/r_not/r_lse) stay on every cycle.
 _SLOW_POLL_EVERY = 6
 
+# Endpoints whose data the primary entities read. If one of these is gone the
+# device really is unreachable and the update should fail. Everything else is
+# secondary: it degrades to its previous value instead of taking the tick down
+# with it (#8).
+_CRITICAL_ENDPOINTS = ("status", "charger")
+
 
 class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the gateway, normalises responses, exposes one dict."""
@@ -70,10 +80,17 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client = client
         self.entry = entry
         self._fw_warned = False
+        self._poll_cycle = 0
+        # One warning per (endpoint, exception type) and per unmapped status
+        # code, instead of one per poll. See #8 and #9.
+        self._endpoint_warned = OnceSeen()
+        self.unknown_status_codes = OnceSeen()
         interval = entry.options.get(
             CONF_POLL_INTERVAL,
             entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
         )
+        # /api/charge_log rides its own wall-clock cadence rather than the tick.
+        self._charge_log_every = cycles_for(CHARGE_LOG_INTERVAL, interval)
         super().__init__(
             hass,
             LOGGER,
@@ -82,28 +99,84 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
-        # The endpoint reads below are pure HTTP and succeed/fail the coordinator
-        # as a unit. The BAPI passthroughs (further down) each trigger a live BLE
+        # The endpoint reads below are pure HTTP. /api/status and /api/charger
+        # are critical — losing either fails the update. The rest degrade to
+        # their prior value so one slow endpoint can't take the device down
+        # (#8). The BAPI passthroughs (further down) each trigger a live BLE
         # round-trip on the gateway; they're best-effort (only work when BLE is
         # connected) and gathered with return_exceptions=True so a charger sleep
         # window falls back to the prior value instead of tripping every sensor.
         # They're also rate-shaped — live reads every cycle, config reads on a
         # slow cadence — so we don't saturate the gateway BLE pipeline (#168).
-        try:
-            status, charger, diag, health, boot, charge_log = await asyncio.gather(
-                self.client.get(ENDPOINT_STATUS, timeout=4),
-                self.client.get(ENDPOINT_CHARGER, timeout=4),
-                self.client.get(ENDPOINT_DIAG, timeout=4),
-                self.client.get(ENDPOINT_HEALTH, timeout=4),
-                self.client.get(ENDPOINT_BOOT, timeout=4),
-                self.client.get(ENDPOINT_CHARGE_LOG, timeout=4),
+        prior = self.data or {}
+        self._poll_cycle += 1
+
+        # /api/charge_log is assembled over BLE on the gateway, so it is both the
+        # slowest endpoint and the least time-critical one. Give it its own
+        # ~5-minute cadence and a longer timeout rather than letting it ride the
+        # 10 s tick on a 4 s budget (#8).
+        names = ["status", "charger", "diag", "health", "boot"]
+        calls = [
+            self.client.get(ENDPOINT_STATUS, timeout=HTTP_TIMEOUT),
+            self.client.get(ENDPOINT_CHARGER, timeout=HTTP_TIMEOUT),
+            self.client.get(ENDPOINT_DIAG, timeout=HTTP_TIMEOUT),
+            self.client.get(ENDPOINT_HEALTH, timeout=HTTP_TIMEOUT),
+            self.client.get(ENDPOINT_BOOT, timeout=HTTP_TIMEOUT),
+        ]
+        if due(self._poll_cycle, self._charge_log_every):
+            names.append("charge_log")
+            calls.append(
+                self.client.get(ENDPOINT_CHARGE_LOG, timeout=CHARGE_LOG_TIMEOUT)
             )
-        except GatewayAuthError as e:
-            # Surface as auth-failed so HA starts the reauth flow (prompts
-            # the user for new credentials) rather than just retrying.
-            raise ConfigEntryAuthFailed(f"auth rejected by gateway: {e}") from e
-        except GatewayUnreachable as e:
-            raise UpdateFailed(f"gateway unreachable: {e}") from e
+
+        # return_exceptions=True so one endpoint's failure doesn't cancel the
+        # others' results. Before #8 a single charge_log timeout raised out of
+        # the gather and every entity of the device went unavailable for the
+        # cycle — including sensors whose own endpoint had answered fine.
+        results = await asyncio.gather(*calls, return_exceptions=True)
+        ok, failed = partition_results(names, results)
+
+        # return_exceptions=True also captures CancelledError, which is not an
+        # endpoint fault — it means HA is unloading the entry or shutting down.
+        # Re-raise it rather than degrading, so teardown isn't swallowed.
+        if (cancelled := first_exception(failed, asyncio.CancelledError)) is not None:
+            raise cancelled
+
+        # Auth is fatal wherever it appears: wrong credentials are wrong for
+        # every endpoint. Surface as auth-failed so HA starts the reauth flow
+        # (prompts the user for new credentials) rather than just retrying.
+        if (auth_err := first_exception(failed, GatewayAuthError)) is not None:
+            raise ConfigEntryAuthFailed(
+                f"auth rejected by gateway: {auth_err}"
+            ) from auth_err
+
+        # Only /api/status and /api/charger carry the state the primary entities
+        # read; losing either means the gateway really is unreachable.
+        for name in _CRITICAL_ENDPOINTS:
+            if (err := failed.get(name)) is not None:
+                raise UpdateFailed(f"gateway unreachable: {err}") from err
+
+        # Everything else degrades: keep the prior value, and say so once per
+        # (endpoint, error type) rather than on every poll.
+        for name, err in failed.items():
+            if self._endpoint_warned.is_new((name, type(err).__name__)):
+                LOGGER.warning(
+                    "Wallbox gateway: %s could not be read (%s: %s). Keeping the "
+                    "previous value; the rest of the device stays available. "
+                    "Further identical failures on this endpoint are not logged.",
+                    name,
+                    type(err).__name__,
+                    err,
+                )
+            else:
+                LOGGER.debug("Wallbox gateway: %s failed again (%s)", name, err)
+
+        status = ok.get("status")
+        charger = ok.get("charger")
+        diag = ok.get("diag")
+        health = ok.get("health")
+        boot = ok.get("boot")
+        charge_log = ok.get("charge_log")
 
         # Live BAPI reads — every cycle. These change continuously while charging:
         #   r_dca = realtime power meter (per-phase voltage + power; not in /status)
@@ -121,8 +194,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # always on the first cycle so entities populate at startup). Skipped
         # cycles pass None → the _parse_* helpers return the prior value, so
         # entities never flap. Cuts the steady-state BAPI burst 9→3 per cycle.
-        self._poll_cycle = getattr(self, "_poll_cycle", 0) + 1
-        if self._poll_cycle % _SLOW_POLL_EVERY == 1:
+        if due(self._poll_cycle, _SLOW_POLL_EVERY):
             (
                 autolock_raw,
                 ecos_raw,
@@ -165,7 +237,6 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 MIN_GATEWAY_FW,
             )
 
-        prior = self.data or {}
         # Charger-local next scheduled charge. The firmware's next_scheduled_charge
         # (in raw_status) is computed in UTC, so a local-midnight schedule lands a
         # day late; recompute it here with a real tz database from the native
@@ -191,9 +262,13 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # goes unavailable.
             "charger_status": ((charger or {}).get("status") or {}).get("r", {}),
             "charger_realtime": ((charger or {}).get("realtime") or {}).get("r", {}),
-            "diag": diag or {},
-            "health": health or {},
-            "boot": boot or {},
+            # Secondary endpoints: a failed or skipped read carries the prior
+            # value forward rather than blanking the entity (#8). `is None`
+            # rather than `or` so a genuine empty response still replaces a
+            # stale one.
+            "diag": diag if diag is not None else prior.get("diag", {}),
+            "health": health if health is not None else prior.get("health", {}),
+            "boot": boot if boot is not None else prior.get("boot", {}),
             "charge_log": (charge_log or {}).get("intervals", []) or prior.get("charge_log", []),
             "autolock": _parse_autolock(autolock_raw, prior.get("autolock")),
             "eco_smart": _parse_ecos(ecos_raw, prior.get("eco_smart")),

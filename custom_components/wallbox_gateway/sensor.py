@@ -38,12 +38,22 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+import logging
 import time
 
 from . import cost_engine
-from .const import CA_COMMUTE_RESERVE, DOMAIN, STATUS_CODES, ZENTRI_STATUS_CODES
+from .const import (
+    CA_COMMUTE_RESERVE,
+    DOMAIN,
+    ISSUE_URL,
+    STATUS_CODES,
+    ZENTRI_STATUS_CODES,
+)
 from .coordinator import GatewayCoordinator
 from .entity import GatewayEntity
+from .resilience import resolve_status_label
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,20 +77,43 @@ STATUS_NOT_CHARGING = "Connected — not charging"
 
 
 def _status_label(entity: GatewayEntity) -> str | None:
+    """Enum label for the live charger status, or None if unmapped.
+
+    Returning None (→ `unknown`) rather than a free-text "Code N" is the whole
+    point: an ENUM sensor raises ValueError on any state outside `options`, and
+    because that raise happens in async_write_ha_state it fired on every single
+    coordinator tick — 3,659 tracebacks in 12 hours for one user, with the
+    sensor unusable for the entire charging session (#9).
+    """
+    label, unknown = resolve_status_label(
+        entity._charger_status_code(),
+        zentri=entity._is_zentri(),
+        gen=entity._status().get("gen"),
+        status_codes=STATUS_CODES,
+        zentri_codes=ZENTRI_STATUS_CODES,
+        not_charging_label=STATUS_NOT_CHARGING,
+    )
+    if unknown is not None and entity.coordinator.unknown_status_codes.is_new(unknown):
+        LOGGER.warning(
+            "Wallbox charger reported status code %s, which this integration "
+            "does not map yet. Charger status will read 'unknown' while that "
+            "code is active; the raw value is on the sensor's status_code "
+            "attribute. Please report it at %s so it can be added. "
+            "(Logged once per code per restart.)",
+            unknown,
+            ISSUE_URL,
+        )
+    return label
+
+
+def _status_attrs(entity: GatewayEntity) -> dict | None:
+    """Expose the raw numeric status code alongside the label.
+
+    Keeps unmapped codes visible to the user (and reportable) even when the
+    state itself has degraded to `unknown` (#9).
+    """
     code = entity._charger_status_code()
-    if code is None:
-        return None
-    # Wallbox status 4 is "Paused", but that term covers TWO different states:
-    # an active override (Schedule/Solar charging paused — r_dat.gen != 0) AND a
-    # plain stopped/idle session (gen == 0, e.g. after reaching target). Only the
-    # former is really "Paused" — disambiguate so idle isn't mislabelled.
-    if code == 4 and not entity._is_zentri():
-        gen = entity._status().get("gen")
-        return "Paused" if (gen or 0) != 0 else STATUS_NOT_CHARGING
-    # Zentri uses a different enum; its labels are reused from STATUS_CODES so
-    # the ENUM `options` list stays valid.
-    table = ZENTRI_STATUS_CODES if entity._is_zentri() else STATUS_CODES
-    return table.get(code, STATUS_CODES.get(code, f"Code {code}"))
+    return None if code is None else {"status_code": code}
 
 
 def _charging_power(entity: GatewayEntity) -> float | None:
@@ -338,6 +371,7 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=sorted(set(STATUS_CODES.values()) | {STATUS_NOT_CHARGING}),
         value_fn=_status_label,
+        attrs_fn=_status_attrs,
     ),
     GatewaySensorEntityDescription(
         key="charging_power",

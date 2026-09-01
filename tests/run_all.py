@@ -24,6 +24,7 @@ MODULES = [
     "test_price_planner",
     "test_charger_control",
     "test_charge_guards",
+    "test_resilience",             # partial updates + unmapped status codes (#8/#9)
     "test_cost_engine",
     "test_charge_window",          # allowed-window + composable normalize
     "test_next_charge",            # charger-local next-charge (UTC-vs-local day)
