@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.36.0] - 2026-09-08
 
 ### Fixed
 - **A timeout on `/api/charge_log` no longer marks the whole device unavailable
