@@ -74,7 +74,13 @@ class GatewayClient:
         except aiohttp.ClientConnectorError as e:
             raise GatewayUnreachable(str(e)) from e
         except TimeoutError as e:
-            raise GatewayUnreachable(f"timeout on {path}") from e
+            # Name the concrete aiohttp/asyncio timeout class in the message.
+            # `raise ... from e` already chains it, but HA logs only the string
+            # at ERROR level, so without this a connect timeout and a read
+            # timeout are indistinguishable in a user's log (#8).
+            raise GatewayUnreachable(
+                f"timeout on {path} after {timeout}s ({type(e).__name__})"
+            ) from e
 
     async def post(self, path: str, timeout: float = 6.0) -> Any:
         """POST with no body — for auth-only side-effect endpoints like

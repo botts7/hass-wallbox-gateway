@@ -1,0 +1,7 @@
+# HA-coupled tests (tests/test_coordinator_partial_update.py):
+#   pip install -r requirements-test.txt
+#   pytest tests/test_coordinator_partial_update.py -q --asyncio-mode=auto
+#
+# The pure-logic suites need none of this — `python tests/run_all.py` runs them
+# against a bare interpreter.
+pytest-homeassistant-custom-component

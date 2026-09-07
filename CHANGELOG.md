@@ -4,6 +4,43 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.36.0] - 2026-09-08
+
+### Fixed
+- **A timeout on `/api/charge_log` no longer marks the whole device unavailable
+  (#8).** All six HTTP endpoints were gathered as a unit, so one slow endpoint
+  raised out of the gather and took every entity down for the cycle — including
+  sensors whose own endpoint had answered fine. Charger status, power, current
+  and session sensors flapped to unavailable roughly hourly, breaking history
+  graphs and state-dependent automations. `/api/status` and `/api/charger` are
+  now the only critical reads; the rest degrade to their previous value and the
+  device stays available. Auth failures still trigger reauth from any endpoint,
+  and cancellation during teardown is re-raised rather than swallowed.
+- **`/api/charge_log` no longer rides the main poll tick (#8).** The gateway
+  assembles it over BLE, so it costs ~1.3 s on top of the cycle and occasionally
+  far more. It now polls on its own ~5-minute wall-clock cadence (derived from
+  the configured poll interval, so it holds at any tick rate) with a 12 s
+  timeout instead of 4 s. Cost and savings sensors are unaffected — they read
+  completed intervals.
+- **Repeated endpoint failures are logged once per endpoint and error type**
+  rather than on every poll, with the repeats at DEBUG.
+- **An unmapped charger status code no longer breaks the status sensor or
+  floods the log (#9).** `charger_status` is an ENUM sensor, so a code outside
+  `STATUS_CODES` produced the free-text state `"Code 19"`, which HA rejects with
+  a `ValueError` on *every* state write — one user logged 3,659 tracebacks in 12
+  hours, with the sensor unusable for the whole charging session. Unknown codes
+  now degrade to `unknown`, are logged once per code per restart with a pointer
+  to the issue tracker, and the raw value is exposed as a `status_code`
+  attribute so it stays visible and reportable.
+- **`GatewayUnreachable` timeout messages name the underlying exception class
+  and the budget that was exceeded (#8)**, so a connect timeout and a read
+  timeout are distinguishable in a user's log.
+
+### Added
+- `resilience.py` — pure, HA-free decision helpers behind the above (partial
+  update partitioning, slow-cadence gating, once-per-key logging, unmapped enum
+  fallback), covered by `tests/test_resilience.py` (24 cases).
+
 ## [0.35.1] - 2026-08-29
 
 ### Fixed

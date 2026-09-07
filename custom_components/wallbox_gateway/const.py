@@ -325,6 +325,24 @@ ENDPOINT_HEALTH = "/api/health"
 ENDPOINT_BOOT = "/api/boot/history"
 ENDPOINT_CHARGE_LOG = "/api/charge_log"
 
+# Per-endpoint HTTP timeouts. Most endpoints answer from the gateway's cache in
+# well under a second. /api/charge_log is different: the gateway assembles it
+# over BLE, so it normally costs ~1.3 s and occasionally far more when the BLE
+# transaction is slow. A shared 4 s budget made those slow reads fail roughly
+# hourly and, before #8, took every entity down with them.
+HTTP_TIMEOUT = 4
+CHARGE_LOG_TIMEOUT = 12
+
+# Target wall-clock interval between /api/charge_log reads. A charge log does
+# not need the 10 s tick the live sensors use; polling it every ~5 minutes
+# removes most of the timeout window without any user-visible staleness. The
+# coordinator converts this to a cycle count against the configured poll
+# interval, so it holds at any tick rate.
+CHARGE_LOG_INTERVAL = 300  # seconds
+
+# Where users should report an unmapped charger status code (#9).
+ISSUE_URL = "https://github.com/botts7/hass-wallbox-gateway/issues"
+
 # Eco-Smart mode integer -> HA select option key. Keys must match
 # [a-z0-9-_]+ per HA's translation spec (hassfest fail otherwise).
 # User-facing labels come from translations/en.json under
