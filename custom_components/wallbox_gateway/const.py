@@ -303,6 +303,11 @@ STATUS_CODES = {
     16: "OCPP reserved",
     17: "Updating",
     18: "Queued by Eco-Smart",
+    # Cable connected, no current flowing — a transient precursor the charger
+    # reports before it settles into charging / waiting. Confirmed by two users
+    # (hass-wallbox-gateway #9): 19 always coincided with car-connected + not-
+    # charging, resolving into the real state moments later.
+    19: "Connected — no current",
 }
 
 # Original/Zentri Pulsar (#12) reports a small status enum that does NOT match

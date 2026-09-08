@@ -4,6 +4,14 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.36.1] - 2026-09-08
+
+### Added
+- **Charger status code 19 is now labelled "Connected — no current"** instead of
+  falling back to `unknown` (#9 follow-up). It's the cable-connected-but-not-yet-
+  drawing precursor state; two users independently confirmed it always coincided
+  with car-connected + not-charging, resolving into the real state moments later.
+
 ## [0.36.0] - 2026-09-08
 
 ### Fixed
