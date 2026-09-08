@@ -32,16 +32,14 @@ This integration is for users who:
 - Want **statistics → HA Energy dashboard** with proper device classes
 - Want to keep one fewer broker process in the loop
 
-## Roadmap
+## Status
 
-| Version | Adds |
-|---------|------|
-| v0.1.0    | Config flow + DataUpdateCoordinator + 6 sensors + 2 binary_sensors |
-| **v0.2.0** | 3 switches (charging, lock, auto_lock) + Number (max_current) + Select (eco_smart_mode) + Button (refresh_now); coordinator polls `r_dca` for working `mains_voltage` + `house_power` |
-| v0.3.0    | Number (auto_lock_minutes, eco_smart_power_pct) + Button (reboot_gateway, once firmware-side auth-only reboot endpoint lands) + Update entity (firmware version surface) |
-| v0.4.0    | Services: `add_schedule`, `delete_schedule`, `toggle_schedule`, `set_max_current` |
-| v0.5.0    | Long-term statistics for HA Energy dashboard |
-| v1.0.0    | Stable / submit to HA core |
+Well past the original roadmap — the integration is at **v0.36.x** with the full
+switch / number / select / button / update entity set, schedule services,
+charge-cost and solar/grid sensors, solar-by-day + schedule coexistence, and
+resilience hardening (a slow endpoint no longer takes the device unavailable).
+See the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/botts7/hass-wallbox-gateway/releases)
+for what's shipped. Remaining goal: submit to HA core (v1.0.0).
 
 ## Installation
 
@@ -79,7 +77,7 @@ stable unique-id.
 |--------|--------|--------------|
 | `binary_sensor.<name>_ble_connected`  | `/api/status -> ble` | connectivity |
 | `binary_sensor.<name>_charging`       | charger_status == 1 | battery_charging |
-| `sensor.<name>_charger_status`        | enum, 19 values | enum |
+| `sensor.<name>_charger_status`        | enum, 20 values (unmapped codes → `unknown`) | enum |
 | `sensor.<name>_charging_power`        | kW | power |
 | `sensor.<name>_session_energy`        | kWh (measurement, resets) | energy |
 | `sensor.<name>_house_power`           | W (if MID meter installed) | power |
