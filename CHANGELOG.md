@@ -337,6 +337,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects for the `energy` device class — now `total_increasing` (they reset per
   session; HA handles the reset). "Last charge burst" is a per-burst snapshot, so
   it now carries no `state_class` (neither measurement nor total_increasing fits).
+  Independently reported and fixed by [@xtux77](https://github.com/xtux77)
+  (#2, PR #3) — the fix here matches theirs.
 
 ### Added
 - **Test guard:** a suite check validates every sensor's `device_class` /
