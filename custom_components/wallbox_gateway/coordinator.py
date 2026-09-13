@@ -21,7 +21,14 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import GatewayAuthError, GatewayClient
 from .next_charge import compute_next_charge, plug_reminder_due
-from .resilience import OnceSeen, cycles_for, due, first_exception, partition_results
+from .resilience import (
+    OnceSeen,
+    cycles_for,
+    due,
+    first_exception,
+    partition_results,
+    ride_through_critical,
+)
 from .const import (
     CHARGE_LOG_INTERVAL,
     CHARGE_LOG_TIMEOUT,
@@ -67,6 +74,15 @@ _SLOW_POLL_EVERY = 6
 # with it (#8).
 _CRITICAL_ENDPOINTS = ("status", "charger")
 
+# How many consecutive polls a critical endpoint may fail before the device is
+# marked unavailable. The gateway can briefly stall a request under internal-heap
+# or BLE pressure (e.g. a periodic charger event) for a few seconds; at a 10 s
+# poll that is a single failed cycle. Rather than flap every entity to
+# unavailable for that one cycle, keep the last-good data and only surface an
+# outage once the failures persist. 3 → ride through up to 2 failed cycles
+# (~20-30 s), then go unavailable — a real outage still shows quickly.
+_CRITICAL_FAIL_GRACE = 3
+
 
 class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the gateway, normalises responses, exposes one dict."""
@@ -81,6 +97,9 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.entry = entry
         self._fw_warned = False
         self._poll_cycle = 0
+        # Critical-endpoint ride-through state (transient-stall tolerance).
+        self._critical_fail_streak = 0
+        self._critical_warned = False
         # One warning per (endpoint, exception type) and per unmapped status
         # code, instead of one per poll. See #8 and #9.
         self._endpoint_warned = OnceSeen()
@@ -151,10 +170,38 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ) from auth_err
 
         # Only /api/status and /api/charger carry the state the primary entities
-        # read; losing either means the gateway really is unreachable.
-        for name in _CRITICAL_ENDPOINTS:
-            if (err := failed.get(name)) is not None:
-                raise UpdateFailed(f"gateway unreachable: {err}") from err
+        # read; losing either normally means the gateway is unreachable. But a
+        # single transient stall (a few seconds under gateway heap/BLE pressure)
+        # should not flap every entity to unavailable when the very next poll
+        # will succeed. Ride through up to _CRITICAL_FAIL_GRACE-1 consecutive
+        # critical failures using the last-good data; only raise UpdateFailed
+        # once the failures persist (a genuine outage).
+        critical_err = next(
+            (failed[name] for name in _CRITICAL_ENDPOINTS if name in failed), None
+        )
+        if critical_err is not None:
+            self._critical_fail_streak += 1
+            if ride_through_critical(
+                self._critical_fail_streak, _CRITICAL_FAIL_GRACE, bool(self.data)
+            ):
+                LOGGER.debug(
+                    "Wallbox gateway: critical endpoint failed (%s: %s), "
+                    "streak %d/%d — keeping last-good data, device stays available",
+                    type(critical_err).__name__, critical_err,
+                    self._critical_fail_streak, _CRITICAL_FAIL_GRACE,
+                )
+                return self.data
+            if not self._critical_warned:
+                self._critical_warned = True
+                LOGGER.warning(
+                    "Wallbox gateway: unreachable for %d consecutive polls "
+                    "(%s: %s) — marking unavailable.",
+                    self._critical_fail_streak, type(critical_err).__name__, critical_err,
+                )
+            raise UpdateFailed(f"gateway unreachable: {critical_err}") from critical_err
+        # A clean critical read clears the streak and re-arms the warning.
+        self._critical_fail_streak = 0
+        self._critical_warned = False
 
         # Everything else degrades: keep the prior value, and say so once per
         # (endpoint, error type) rather than on every poll.

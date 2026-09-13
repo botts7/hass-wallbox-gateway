@@ -116,10 +116,46 @@ async def test_failed_secondary_carries_prior_value_forward(hass):
 
 @pytest.mark.parametrize("endpoint", [ENDPOINT_STATUS, ENDPOINT_CHARGER])
 async def test_critical_endpoint_failure_still_fails_the_update(hass, endpoint):
-    """Degrading must not become 'never report a real outage'."""
+    """Degrading must not become 'never report a real outage'. On a fresh
+    coordinator (no prior data) a critical failure fails immediately."""
     coord, _ = _coordinator(hass, {endpoint: GatewayUnreachable("connection refused")})
     with pytest.raises(UpdateFailed):
         await coord._async_update_data()
+
+
+async def test_transient_critical_stall_rides_through(hass):
+    """A single critical-endpoint stall must NOT flap entities to unavailable
+    once we have last-good data — it should be ridden through (the ~6s gateway
+    stall a periodic charger event causes; forum report)."""
+    coord, client = _coordinator(hass)
+    first = await coord._async_update_data()
+    coord.data = first  # HA normally sets this; do it explicitly for the test
+
+    # One failed cycle: rides through, returns last-good, stays available.
+    client.overrides[ENDPOINT_STATUS] = GatewayUnreachable("timeout on /api/status after 4s")
+    second = await coord._async_update_data()
+    assert second["raw_status"]["chg_sn"] == "SN123"  # last-good, not unavailable
+    assert coord._critical_fail_streak == 1
+
+    # Recovery clears the streak.
+    del client.overrides[ENDPOINT_STATUS]
+    third = await coord._async_update_data()
+    assert coord._critical_fail_streak == 0
+    assert third["raw_status"]["chg_sn"] == "SN123"
+
+
+async def test_persistent_critical_failure_goes_unavailable_after_grace(hass):
+    """A real outage must still surface: after the grace window of consecutive
+    critical failures, the update fails and entities go unavailable."""
+    coord, client = _coordinator(hass)
+    coord.data = await coord._async_update_data()
+
+    client.overrides[ENDPOINT_STATUS] = GatewayUnreachable("connection refused")
+    # Grace is 3 → cycles 1 and 2 ride through, cycle 3 raises.
+    await coord._async_update_data()   # streak 1, rides through
+    await coord._async_update_data()   # streak 2, rides through
+    with pytest.raises(UpdateFailed):
+        await coord._async_update_data()   # streak 3, unavailable
 
 
 async def test_auth_failure_on_a_secondary_endpoint_still_triggers_reauth(hass):

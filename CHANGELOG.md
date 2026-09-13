@@ -4,6 +4,20 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.36.2] - 2026-09-13
+
+### Fixed
+- **A brief gateway stall no longer flaps every entity to `unavailable`.** The
+  gateway can stall a critical read (`/api/status` / `/api/charger`) for a few
+  seconds under transient pressure — e.g. a periodic charger event on the Plus
+  Bluetooth path briefly starving the HTTP server. At a 10 s poll that is a
+  single failed cycle, and the coordinator used to mark the whole device
+  unavailable for it. It now rides through up to two consecutive critical
+  failures using the last-good data, and only marks the device unavailable once
+  the failures persist (~30 s) — a real outage still surfaces quickly. This is
+  independent of the gateway firmware fixes for the underlying stall; it keeps
+  the entities steady regardless of the cause.
+
 ## [0.36.1] - 2026-09-08
 
 ### Added
