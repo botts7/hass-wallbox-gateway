@@ -147,3 +147,21 @@ def resolve_status_label(
     if label is None:
         return None, code
     return label, None
+
+
+def ride_through_critical(streak: int, grace: int, has_prior: bool) -> bool:
+    """Whether a critical-endpoint failure should be ridden through this poll.
+
+    A critical read (``/api/status`` / ``/api/charger``) can stall for a few
+    seconds under transient gateway pressure (a periodic charger event on the
+    Plus BLE path briefly starves the HTTP server). At a 10 s poll that is a
+    single failed cycle. Rather than flap every entity to unavailable for that
+    one cycle, keep the last-good data — but only if we actually HAVE prior data
+    and the failures have not persisted past ``grace`` consecutive polls. A real
+    outage (no prior data, or streak reached grace) still fails the update so
+    entities correctly go unavailable.
+
+    ``streak`` is the count INCLUDING this failure (1 on the first failed poll).
+    Returns True to ride through (return last-good), False to fail the update.
+    """
+    return has_prior and streak < grace

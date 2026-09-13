@@ -233,6 +233,27 @@ def test_zentri_unknown_still_degrades():
     assert _resolve(19, zentri=True) == (None, 19)
 
 
+@case
+def test_ride_through_first_transient_failure_when_prior_data():
+    # streak 1 and 2 of grace 3, with last-good data → ride through.
+    assert r.ride_through_critical(1, 3, has_prior=True) is True
+    assert r.ride_through_critical(2, 3, has_prior=True) is True
+
+
+@case
+def test_ride_through_fails_at_grace():
+    # streak reaches grace → do NOT ride through (go unavailable).
+    assert r.ride_through_critical(3, 3, has_prior=True) is False
+    assert r.ride_through_critical(4, 3, has_prior=True) is False
+
+
+@case
+def test_ride_through_never_without_prior_data():
+    # A fresh coordinator (no last-good data) must fail immediately — there is
+    # nothing to ride through with.
+    assert r.ride_through_critical(1, 3, has_prior=False) is False
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
