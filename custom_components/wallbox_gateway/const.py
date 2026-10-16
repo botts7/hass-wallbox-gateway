@@ -111,6 +111,30 @@ CA_TRIP_UNTIL = "trip_until"              # local "YYYY-MM-DDTHH:MM" — trip ta
 # Hard cost ceiling: never charge above this price (departure floor overrides).
 CA_PRICE_CAP = "price_cap"                # in the price entity's own units
 
+# ---- Hand back to native solar between top-ups (target mode) ----
+# By default the SOC target is a HARD cap: at/above it the assistant stops any
+# charge and holds. With this on, the target becomes just an overnight GRID
+# FLOOR — once the assistant's own top-up reaches it, control hands straight
+# back to the charger's native Eco-Smart solar so free surplus keeps filling the
+# pack (to 100%) through the day. It never STOPS a charge it didn't start, so
+# native solar is left to run. Needs a charger with native Eco-Smart. Pairs
+# naturally with the commute floor (grid to the commute minimum overnight, solar
+# for everything else) and with auto_resume_eco / resume_eco_mode.
+CA_HANDBACK_SOLAR = "handback_solar"      # bool (default False)
+
+# ---- Periodic battery-balance charge (target mode) ----
+# LFP (and, less often, NMC) packs benefit from a periodic full charge so the
+# BMS can rebalance cells and recalibrate SOC. Rather than top to 100% nightly
+# (bad for ageing), charge only to the everyday floor on normal nights and lift
+# the target to balance_target_pct once every balance_interval_days. The last
+# time the pack actually reached the balance target is persisted out-of-band
+# (helpers.storage.Store), NOT in options (options writes reload the entry).
+CA_BALANCE_ENABLED = "balance_enabled"            # bool (default False)
+CA_BALANCE_TARGET_PCT = "balance_target_pct"      # SOC to hit on a balance night (default 100)
+CA_BALANCE_INTERVAL_DAYS = "balance_interval_days"  # days between balances (default 7)
+DEFAULT_BALANCE_TARGET_PCT = 100
+DEFAULT_BALANCE_INTERVAL_DAYS = 7
+
 # Solar-surplus mode fields. Start when surplus >= start for `debounce`
 # minutes; stop when surplus <= stop for `debounce` minutes (hysteresis +
 # debounce ride out passing clouds). Thresholds are in the surplus sensor's

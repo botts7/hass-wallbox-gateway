@@ -8,7 +8,7 @@ dashboard sends (decoded + proven on the live charger):
 
   * create/update: ``s_sch`` with
         {"schedules":[{sid, start:<int HHMM UTC>, stop:<int HHMM UTC>,
-                       days:[Mon..Sun bit-array], mcr, type, enabled,
+                       days:[Sun..Sat bit-array], mcr, type, enabled,
                        target, repeat}]}
     One method does both insert and update, keyed by ``sid``.
   * delete: ``clr_sch`` with {"sid":[<id>, ...]} (the key holds an ARRAY).
@@ -38,8 +38,12 @@ SERVICE_SET = "set_schedule"
 SERVICE_DELETE = "delete_schedule"
 SERVICE_IMPORT = "import_native_schedules"
 
-# Mon-first order — matches the dashboard's day bit-array (bit0=Mon..bit6=Sun).
-_DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+# SUNDAY-first order — the charger stores `days` Sunday-first (bit0=Sun .. bit6=Sat),
+# verified against the official Wallbox app (Sunday = 1, Mon-Fri = 62) and matching
+# the add-on's schedule editor. This list is indexed by the charger's BIT, so it
+# MUST lead with Sunday. (It used to be Monday-first, which wrote/read every day one
+# earlier — e.g. a Friday schedule landed on Thursday. See issue #11.)
+_DAY_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 
 _SET_SCHEMA = vol.Schema(
     {
@@ -77,7 +81,8 @@ def _local_hhmm_to_utc_int(hass: HomeAssistant, value: str) -> int:
 
 
 def _days_array(days: list[str]) -> list[int]:
-    """['mon','wed'] -> [1,0,1,0,0,0,0] (Mon..Sun)."""
+    """['sun','tue'] -> [1,0,1,0,0,0,0] (Sun..Sat). The charger reads this array
+    Sunday-first, so the order must match _DAY_ORDER (bit0=Sun)."""
     chosen = {d.lower() for d in days}
     return [1 if d in chosen else 0 for d in _DAY_ORDER]
 
@@ -96,9 +101,9 @@ def _utc_int_to_local_hhmm(value: object) -> str | None:
 
 
 def _days_from_array(arr: object) -> list[str]:
-    """Charger day-set -> ['mon','wed']. Accepts either the Mon..Sun bit-array
+    """Charger day-set -> ['sun','tue']. Accepts either the Sun..Sat bit-array
     [1,0,1,...] we *write*, or the bitmask integer r_schs *reads back*
-    (bit0=Mon … bit6=Sun; e.g. 127 = every day, 32 = Saturday)."""
+    (bit0=Sun … bit6=Sat; e.g. 127 = every day, 1 = Sunday, 62 = Mon-Fri)."""
     if isinstance(arr, bool):
         return []
     if isinstance(arr, int):

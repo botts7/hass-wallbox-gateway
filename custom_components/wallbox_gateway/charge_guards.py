@@ -78,3 +78,33 @@ def price_allows_charge(price, cap):
         return float(price) <= cap_v
     except (TypeError, ValueError):
         return True
+
+
+def pause_from_status(status, realtime=None):
+    """Is the charger's own schedule / Eco-Smart loop suspended by a manual
+    override ("Resume" state in the Wallbox app)?
+
+    The gateway computes this authoritatively in /api/status as
+    ``schedule_paused`` (from r_lse.control_mode == 1, 0 = automatic), and the
+    firmware already falls back to r_dat.gen != 0 internally for chargers
+    without r_lse (Zentri / original Pulsar). So we trust ``schedule_paused``
+    whenever it's present.
+
+    The legacy ``gen`` path is kept ONLY for old gateway builds that don't yet
+    emit ``schedule_paused`` — and even then it was doubly wrong on a MAX Pro,
+    where ``gen`` is accumulated green energy, not an override flag. New builds
+    always carry the boolean, so this fallback is effectively dead on current
+    firmware. (This was the bug behind "stuck paused, solar never resumes" on
+    the MAX Pro: the controller read ``gen`` while the binary_sensor had already
+    moved to ``schedule_paused``.)
+    """
+    status = status if isinstance(status, dict) else {}
+    sp = status.get("schedule_paused")
+    if isinstance(sp, bool):
+        return sp
+    rt = realtime if isinstance(realtime, dict) else {}
+    gen = status.get("gen", rt.get("gen"))
+    try:
+        return (gen or 0) != 0
+    except TypeError:
+        return False

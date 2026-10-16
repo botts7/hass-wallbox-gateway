@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_point_in_time,
@@ -66,10 +67,14 @@ from .const import (
     CA_SNOOZE_ACTION,
     CA_SOC_ENTITY,
     CA_SOC_MAX_AGE,
+    CA_BALANCE_ENABLED,
+    CA_BALANCE_INTERVAL_DAYS,
+    CA_BALANCE_TARGET_PCT,
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
     CA_CHEAPEST,
     CA_DEPARTURE,
+    CA_HANDBACK_SOLAR,
     CA_PRICE_CAP,
     CA_PRICE_ENTITY,
     CA_TRIP_TARGET,
@@ -78,6 +83,8 @@ from .const import (
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
     CA_RESUME_ECO_MODE,
+    DEFAULT_BALANCE_INTERVAL_DAYS,
+    DEFAULT_BALANCE_TARGET_PCT,
     CA_RELEASE_DEFAULT,
     RELEASE_KEEP,
     RELEASE_STOP,
@@ -149,10 +156,16 @@ from .const import (
     CA_SOLAR_REMIND_KW,
     CA_HOME_ENTITY,
 )
+from . import balance_schedule
 from . import ca_config
 from . import charge_window
 from . import price_planner
-from .charge_guards import derive_surplus, effective_target, price_allows_charge
+from .charge_guards import (
+    derive_surplus,
+    effective_target,
+    pause_from_status,
+    price_allows_charge,
+)
 from .charger_control import (
     WallboxGatewayCharger,
     ECO_DISABLED,
@@ -355,6 +368,12 @@ class ChargeAssistant:
         # times, like a manual start in the official app, before warning.
         self._starting: dict | None = None
         self._start_unsub = None
+        # Periodic battery-balance: the date the pack last reached the balance
+        # target (ISO "YYYY-MM-DD" | None), persisted out-of-band so it survives
+        # restarts without an options write (which would reload the entry).
+        self._last_balance: str | None = None
+        # Created lazily in async_start (Store needs a fully-initialised hass).
+        self._balance_store: Store | None = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -423,6 +442,26 @@ class ChargeAssistant:
     async def async_start(self) -> None:
         """Wire up listeners for the configured mode."""
         self._opts = dict(self.entry.options.get(CA_KEY) or {})
+        # Restore the last battery-balance date (out-of-band Store, not options).
+        try:
+            if self._balance_store is None:
+                self._balance_store = Store(
+                    self.hass, 1, f"wallbox_gateway_ca_{self.entry.entry_id}"
+                )
+            data = await self._balance_store.async_load()
+            self._last_balance = (data or {}).get("last_balance")
+        except Exception as err:  # noqa: BLE001 — never block startup on this
+            _LOGGER.debug("Charge Assistant: balance-state load failed: %s", err)
+            self._last_balance = None
+        # Start the balance clock from the day it's first enabled, so turning it
+        # on never triggers a surprise immediate 100% charge — the first balance
+        # lands one interval later. (Also does the async_save that properly warms
+        # the Store cache, which a hand-written file can't after startup.)
+        if self._balance_enabled() and not self._last_balance:
+            self._last_balance = dt_util.now().date().isoformat()
+            _LOGGER.info("Charge Assistant: balance enabled — clock starts today, "
+                         "first balance in %d days", self._balance_interval())
+            await self._save_balance_state()
         # Composable model: an acting STRATEGY + an independent reminder LAYER.
         # Legacy mode=='reminder' migrates to strategy 'off' + reminder layer.
         strategy = ca_config.strategy_of(self._opts)
@@ -630,6 +669,20 @@ class ChargeAssistant:
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
+        # Surface a misconfiguration the user can act on (don't bury it in logs):
+        # the "Solar available" plug-in reminder needs a surplus source to detect
+        # surplus, which isn't set. Raise a Repair so it's visible + actionable.
+        solar_issue = f"solar_reminder_no_surplus_{self.entry.entry_id}"
+        if TRIG_SOLAR in (self._rem.get(CA_TRIGGERS) or []) and not self._surplus_configured():
+            ir.async_create_issue(
+                self.hass, DOMAIN, solar_issue,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="solar_reminder_no_surplus",
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, solar_issue)
+
     async def _start_reminder(self) -> None:
         triggers = self._rem.get(CA_TRIGGERS) or []
         if not triggers:
@@ -664,9 +717,12 @@ class ChargeAssistant:
             )
         if TRIG_SOLAR in triggers:
             if not self._surplus_configured():
-                _LOGGER.warning(
+                # Surfaced to the user as an actionable Repair (see _update_repair),
+                # not a log warning — a saved config shouldn't spew warnings. The
+                # nudge just stays inert until a surplus source is set.
+                _LOGGER.debug(
                     "Charge Assistant: 'Solar available' reminder on but no surplus "
-                    "source configured — set one in the solar settings"
+                    "source configured — nudge inert until one is set"
                 )
             else:
                 # Surplus is noisy + entity-driven → re-check on a steady tick so a
@@ -938,10 +994,15 @@ class ChargeAssistant:
             self._eval_cheapest(soc, target, charging)
             return
         if soc >= target:
-            # Charge cap reached — stop if we're charging, hand control back.
+            # Charge cap / overnight floor reached.
             self._cost_warned = False
             self._cancel_grace("target reached")
-            if charging:
+            self._note_balance_reached(soc)
+            if charging and (self._we_started or not self._handback_solar()):
+                # Default (hard cap): stop ANY charge at/above target. Hand-back
+                # mode: the target is just the overnight grid floor, so only stop
+                # OUR OWN top-up — never a native solar charge filling past it for
+                # free. _finish_charge hands control back to native Eco-Smart.
                 _LOGGER.info("Charge Assistant: SOC %.0f%% >= target %.0f%% — stopping charge", soc, target)
                 self._finish_charge(soc, target)
             return
@@ -1178,8 +1239,9 @@ class ChargeAssistant:
 
         The everyday care target, replaced by the learned adaptive target when
         commute mode is on, bounded by the unknown-car policy while the plugged
-        car is a guess, then raised to the trip target until its deadline
-        (auto-reverts by time). Source ∈ {fixed, commute, unknown-hold, trip}.
+        car is a guess, raised to the balance target on a due balance night,
+        then raised to the trip target until its deadline (auto-reverts by time).
+        Source ∈ {fixed, commute, unknown-hold, balance, trip}.
         """
         car = self._active_car()
         base = self._read_float_cg(car, CA_TARGET_PCT)
@@ -1203,6 +1265,13 @@ class ChargeAssistant:
                 cons = self._conservative_target()
                 if cons is not None and cons < base:
                     base, source = cons, "unknown-hold"
+        # Periodic battery-balance: on a due night lift the target to the balance
+        # % (full charge for LFP cell rebalancing). Never while the plugged car's
+        # identity is still a guess — don't force a full charge on the wrong car.
+        if not self._uncertain() and self._balance_due():
+            bt = self._balance_target()
+            if bt > base:
+                base, source = bt, "balance"
         resolved = effective_target(
             base,
             self._cg(car, CA_TRIP_TARGET),
@@ -1212,6 +1281,67 @@ class ChargeAssistant:
         if resolved > base:  # the trip target won
             source = "trip"
         return resolved, source
+
+    # ------------------------------------------------------------------
+    # Hand-back-to-solar + periodic battery balance
+    # ------------------------------------------------------------------
+    def _handback_solar(self) -> bool:
+        """User wants the SOC target treated as an overnight GRID FLOOR, handing
+        straight back to the charger's native solar once reached (so free
+        surplus keeps filling past it). Requires a native Eco-Smart charger —
+        without one there's nothing to hand back to, so it's a no-op."""
+        return bool(self._opts.get(CA_HANDBACK_SOLAR)) and self._eco_smart_supported()
+
+    def _balance_enabled(self) -> bool:
+        return bool(self._opts.get(CA_BALANCE_ENABLED))
+
+    def _balance_target(self) -> float:
+        try:
+            v = float(self._opts.get(CA_BALANCE_TARGET_PCT) or DEFAULT_BALANCE_TARGET_PCT)
+        except (TypeError, ValueError):
+            v = float(DEFAULT_BALANCE_TARGET_PCT)
+        # Clamp to a REACHABLE SOC. An out-of-range value (e.g. a GUI typo of
+        # 200%) would never be reached, so the balance would never mark done and
+        # would re-trigger every night. 100% is the most a pack can hold.
+        return max(1.0, min(100.0, v))
+
+    def _balance_interval(self) -> int:
+        return balance_schedule.clamp_interval(
+            self._opts.get(CA_BALANCE_INTERVAL_DAYS, DEFAULT_BALANCE_INTERVAL_DAYS)
+        )
+
+    def _balance_due(self) -> bool:
+        """Is a balance charge due tonight? (enabled + >= interval days since the
+        pack last reached the balance target)."""
+        if not self._balance_enabled():
+            return False
+        return balance_schedule.is_balance_due(
+            self._last_balance, dt_util.now().date(), self._balance_interval()
+        )
+
+    def _note_balance_reached(self, soc: float) -> None:
+        """Record that the pack reached the balance target today, so the next
+        balance isn't due for another interval. Persisted via the Store (an
+        options write would reload the entry mid-session)."""
+        if not (self._balance_enabled() and self._balance_due()):
+            return
+        if soc is None or soc < self._balance_target():
+            return
+        today = dt_util.now().date().isoformat()
+        if self._last_balance == today:
+            return
+        self._last_balance = today
+        _LOGGER.info("Charge Assistant: battery balanced to %.0f%% — next in %d days",
+                     self._balance_target(), self._balance_interval())
+        self.hass.async_create_task(self._save_balance_state())
+
+    async def _save_balance_state(self) -> None:
+        if self._balance_store is None:
+            return
+        try:
+            await self._balance_store.async_save({"last_balance": self._last_balance})
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Charge Assistant: balance-state save failed: %s", err)
 
     def target_status(self) -> dict | None:
         """Read-only snapshot of the resolved acting target, for the effective-
@@ -1917,6 +2047,7 @@ class ChargeAssistant:
         # Cap reached — stop only our own charge, hand control back.
         if soc >= target:
             self._cancel_grace("target reached")
+            self._note_balance_reached(soc)
             if charging and self._we_started:
                 _LOGGER.info("Charge Assistant: cheapest — reached target %.0f%%, stopping", target)
                 self._finish_charge(soc, target)
@@ -2303,18 +2434,23 @@ class ChargeAssistant:
         await self._ensure_eco_mode(target)
 
     def _is_paused(self) -> bool:
-        """Charger's sticky manual-override / pause flag (r_dat.gen != 0). When
-        set, the charger's own Solar + schedule loops are held off."""
+        """Charger's sticky manual-override / pause flag. When set, the charger's
+        own Solar + schedule loops are held off.
+
+        Reads the gateway's authoritative ``schedule_paused`` (r_lse.control_mode
+        == 1) — the same signal the schedule_paused binary_sensor uses — falling
+        back to the legacy r_dat.gen heuristic only on old gateway builds. The
+        controller used to read ``gen`` directly, which on a MAX Pro is green
+        energy, not an override flag: at night (gen=0) it wrongly concluded "not
+        paused", so the finish-time handback never fired and the charger sat
+        paused with native solar unable to run. See pause_from_status."""
         coord = self._coordinator()
         if coord is None or not getattr(coord, "data", None):
             return False
-        raw = coord.data.get("raw_status") or {}
-        rt = coord.data.get("charger_realtime") or {}
-        gen = raw.get("gen", rt.get("gen"))
-        try:
-            return (gen or 0) != 0
-        except TypeError:
-            return False
+        return pause_from_status(
+            coord.data.get("raw_status") or {},
+            coord.data.get("charger_realtime") or {},
+        )
 
     async def _resume_if_paused(self) -> None:
         """Hand control back to the charger's own Solar + schedule loops after a
