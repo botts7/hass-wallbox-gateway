@@ -121,6 +121,10 @@
           "departure_time": "Ready-by time (optional — charge just-in-time)",
           "battery_kwh": "Battery capacity (kWh) — for the ready-by estimate",
           "charge_power_kw": "Typical charge power (kW) — for the ready-by estimate",
+          "handback_solar": "Target is just an overnight grid floor — hand back to the charger's own solar to fill past it (needs native Eco-Smart)",
+          "balance_enabled": "Periodic full charge to balance the battery (good for LFP)",
+          "balance_target_pct": "Balance charge level (%)",
+          "balance_interval_days": "Balance every (days)",
           "cheapest_window": "Charge in the cheapest hours (needs a price-forecast sensor)",
           "price_entity": "Electricity price sensor with a forecast (Amber / Nord Pool / Tibber)",
           "trip_target_pct": "Trip target charge level (%) — for an upcoming trip",
@@ -543,6 +547,10 @@
     "not_control_owner": {
       "title": "Charge Assistant isn't the charge-control owner",
       "description": "You've set up a smart-charge / solar mode, but the gateway's **Charge Control Owner** is set to `{owner}`, so the Charge Assistant is standing down and won't start or stop charging.\n\nTo let it take over, open the gateway's config page (http://your-gateway-ip/config) and set **Charge Control Owner** to **Home Assistant Integration**."
+    },
+    "solar_reminder_no_surplus": {
+      "title": "'Solar available' reminder has no surplus source",
+      "description": "The plug-in reminder's **Solar available** trigger is on, but no surplus/solar source is set for it to detect surplus, so that nudge can't run (everything else is unaffected).\n\nTo fix it, either pick a surplus/solar power sensor for the reminder, or turn off the **Solar available** trigger in the Charge Assistant settings."
     }
   }
 }

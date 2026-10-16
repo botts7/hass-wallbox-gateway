@@ -27,8 +27,10 @@ MODULES = [
     "test_resilience",             # partial updates + unmapped status codes (#8/#9)
     "test_cost_engine",
     "test_charge_window",          # allowed-window + composable normalize
+    "test_balance_schedule",       # periodic LFP balance-charge schedule
     "test_next_charge",            # charger-local next-charge (UTC-vs-local day)
     "test_schedule_arbiter",       # coexistence schedule scoping (#152); self-skips w/o HA
+    "test_schedule_days",          # set_schedule Sunday-first day encoding (#11); self-skips w/o HA
     "test_update_asset",           # firmware Update asset picker (board=ota fallback); self-skips
     "test_controller_decisions",   # needs HA importable; self-skips if not
     "test_solar_switch",           # Solar-charging switch; needs HA; self-skips

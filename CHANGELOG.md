@@ -4,6 +4,35 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.0] - 2026-10-06
+
+### Fixed
+- **MAX Pro: the charger no longer gets stuck paused after a managed charge.**
+  The Charge Assistant's pause check read `r_dat.gen`, which on a MAX Pro is
+  accumulated green energy, not the manual-override flag. At night (gen=0) it
+  wrongly decided "not paused", so the finish-time hand-back never fired and the
+  charger sat paused with its own Solar / schedule loops held off — you had to
+  un-pause it by hand before native solar could run. It now reads the gateway's
+  authoritative `schedule_paused` (r_lse.control_mode == 1), the same signal the
+  schedule_paused binary_sensor already uses, falling back to `gen` only on old
+  gateway builds that don't emit it.
+
+### Added
+- **Hand back to native solar (target mode).** New option that treats the SOC
+  target as an overnight *grid floor* rather than a hard cap: once the
+  assistant's own top-up reaches it, control hands straight back to the
+  charger's native Eco-Smart solar so free surplus keeps filling the pack (to
+  100%) through the day. It never stops a charge it didn't start, so native
+  solar is left to run. Pairs naturally with the commute floor — cheap grid to
+  the commute minimum overnight, free solar for everything else. Needs a charger
+  with native Eco-Smart; off by default (the target stays a hard cap).
+- **Periodic battery-balance charge (target mode).** Optionally lift the target
+  to 100% (configurable) once every N days (default 7) for LFP cell rebalancing
+  and SOC recalibration, charging to the everyday floor on all other nights. The
+  clock starts the day you enable it (so turning it on never triggers a surprise
+  immediate full charge — the first balance lands one interval later), and the
+  last balance date is persisted out-of-band so it survives restarts.
+
 ## [0.36.2] - 2026-09-13
 
 ### Fixed

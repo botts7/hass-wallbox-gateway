@@ -34,7 +34,11 @@ def _row_to_entry(row: dict, enabled: int) -> dict:
     enabled flag, preserving everything else.
 
     Read shape: start/stop are "HHMM" strings, days is a bitmask int.
-    Write shape: start/stop are HHMM ints, days is a [Mon..Sun] bit array.
+    Write shape: start/stop are HHMM ints, days is a [Sun..Sat] bit array
+    (bit0=Sun). Here we only round-trip the bits (read bitmask -> array -> write
+    the same array), so enable/disable preserves the charger's own day set
+    regardless of ordering; the ordering matters only for the human-facing
+    set_schedule service (see schedule._DAY_ORDER).
     """
     bits = int(row.get("days") or 0)
     days = [(bits >> i) & 1 for i in range(7)]

@@ -102,6 +102,37 @@ def test_surplus_from_solar_minus_load():
     assert g.derive_surplus("solar_load", solar=4000, load=None) is None  # missing input
 
 
+# ── pause_from_status (manual-override detection) ───────────────────
+@case
+def test_pause_prefers_schedule_paused():
+    # Authoritative boolean wins regardless of gen.
+    assert g.pause_from_status({"schedule_paused": True, "gen": 0}) is True
+    assert g.pause_from_status({"schedule_paused": False, "gen": 1234}) is False
+
+
+@case
+def test_pause_max_pro_green_energy_not_a_flag():
+    # The MAX Pro bug: gen is green energy. With the authoritative flag present
+    # and False, a non-zero gen must NOT read as paused.
+    assert g.pause_from_status({"schedule_paused": False, "gen": 5000}) is False
+
+
+@case
+def test_pause_legacy_gen_fallback():
+    # Old gateway build with no schedule_paused field → fall back to gen.
+    assert g.pause_from_status({"gen": 1}) is True
+    assert g.pause_from_status({"gen": 0}) is False
+    assert g.pause_from_status({}, {"gen": 2}) is True   # gen on realtime
+    assert g.pause_from_status({}) is False
+
+
+@case
+def test_pause_degenerate_inputs():
+    assert g.pause_from_status(None) is False
+    assert g.pause_from_status({"gen": None}) is False
+    assert g.pause_from_status({"schedule_paused": "yes"}) is False  # non-bool ignored → no gen → False
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

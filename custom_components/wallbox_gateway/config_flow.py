@@ -45,10 +45,16 @@ from .const import (
     CA_SOC_MAX_AGE,
     CA_TAP_PATH,
     CA_BATTERY_KWH,
+    CA_BALANCE_ENABLED,
+    CA_BALANCE_INTERVAL_DAYS,
+    CA_BALANCE_TARGET_PCT,
     CA_CARS,
     CA_CAR_NAME,
     CA_CHARGE_POWER_KW,
     CA_CHEAPEST,
+    CA_HANDBACK_SOLAR,
+    DEFAULT_BALANCE_INTERVAL_DAYS,
+    DEFAULT_BALANCE_TARGET_PCT,
     CA_COMMUTE_ENABLED,
     CA_COMMUTE_RESERVE,
     CA_COMMUTE_MARGIN,
@@ -541,14 +547,19 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 # Start a fresh accumulator for this run-through.
                 self._ca: dict[str, Any] = {CA_MODE: MODE_REMINDER}
                 return await self.async_step_triggers()
+            # Acting modes: seed the accumulator from the CURRENT config so the
+            # mode step preserves everything its form doesn't cover (car profiles,
+            # the charging window, and any other keys the Add-on set). The mode's
+            # sub-step then overrides only the fields the user submits. Without
+            # this, a quick re-run of a mode step would silently drop cars/window.
             if mode == MODE_TARGET:
-                self._ca = {CA_MODE: MODE_TARGET}
+                self._ca = {**self._cur(), CA_MODE: MODE_TARGET}
                 return await self.async_step_target()
             if mode == MODE_SOLAR:
-                self._ca = {CA_MODE: MODE_SOLAR}
+                self._ca = {**self._cur(), CA_MODE: MODE_SOLAR}
                 return await self.async_step_solar()
             if mode == MODE_SMART_SOLAR:
-                self._ca = {CA_MODE: MODE_SMART_SOLAR}
+                self._ca = {**self._cur(), CA_MODE: MODE_SMART_SOLAR}
                 return await self.async_step_smart_solar()
             # "Off" (and not-yet-built modes) — store mode only.
             # Merge into existing options (don't replace the whole dict) so the
@@ -956,6 +967,35 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=1, max=50, step=0.1, unit_of_measurement="kW",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                # Hand back to native solar: treat the target as an overnight
+                # GRID FLOOR, then let the charger's own Eco-Smart solar top up
+                # past it for free (needs a charger with native Eco-Smart).
+                vol.Optional(
+                    CA_HANDBACK_SOLAR, default=cur.get(CA_HANDBACK_SOLAR, False)
+                ): selector.BooleanSelector(),
+                # Periodic battery-balance charge — lift the target to 100% (for
+                # LFP cell rebalancing) once every N days.
+                vol.Optional(
+                    CA_BALANCE_ENABLED, default=cur.get(CA_BALANCE_ENABLED, False)
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CA_BALANCE_TARGET_PCT,
+                    default=cur.get(CA_BALANCE_TARGET_PCT, DEFAULT_BALANCE_TARGET_PCT),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=50, max=100, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CA_BALANCE_INTERVAL_DAYS,
+                    default=cur.get(CA_BALANCE_INTERVAL_DAYS, DEFAULT_BALANCE_INTERVAL_DAYS),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=90, step=1, unit_of_measurement="days",
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),

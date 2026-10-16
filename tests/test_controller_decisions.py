@@ -170,6 +170,111 @@ def test_trip_target_keeps_charging_past_daily():
     assert calls == [True], f"trip target should keep charging, got {calls}"
 
 
+# ── hand back to native solar (target = overnight grid floor) ───────
+def _handback_opts():
+    return {
+        C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+        C.CA_TARGET_PCT: 50, C.CA_TARGET_AUTOSTART: True,
+        C.CA_HANDBACK_SOLAR: True,
+    }
+
+
+@case
+def test_handback_does_not_stop_native_solar_past_floor():
+    # Above the floor, charging, but WE didn't start it (native Eco-Smart solar
+    # filling for free) → must NOT be stopped.
+    ca, calls = build(_handback_opts(), {"sensor.soc": FakeState("60")})
+    ca._eco_smart_supported = lambda: True
+    ca._is_charging = lambda: True
+    ca._we_started = False
+    ca._eval_target()
+    assert calls == [], f"native solar past the floor must not be stopped, got {calls}"
+
+
+@case
+def test_handback_stops_our_own_topup_at_floor():
+    # Our own overnight grid top-up reaching the floor still stops (then the
+    # finish path hands control back to native solar).
+    ca, calls = build(_handback_opts(), {"sensor.soc": FakeState("60")})
+    ca._eco_smart_supported = lambda: True
+    ca._is_charging = lambda: True
+    ca._we_started = True
+    # Capture the stop decision without the async finish-verify machinery.
+    ca._finish_charge = lambda soc, target, **k: calls.append(False)
+    ca._eval_target()
+    assert calls == [False], f"our own top-up at the floor should stop, got {calls}"
+
+
+@case
+def test_hard_cap_stops_any_charge_when_handback_off():
+    # Default (no handback): the target is a hard cap — stop even a charge we
+    # didn't start.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 50, C.CA_TARGET_AUTOSTART: True}
+    ca, calls = build(opts, {"sensor.soc": FakeState("60")})
+    ca._is_charging = lambda: True
+    ca._we_started = False
+    ca._finish_charge = lambda soc, target, **k: calls.append(False)
+    ca._eval_target()
+    assert calls == [False], f"hard cap should stop any charge at/above target, got {calls}"
+
+
+@case
+def test_handback_requires_native_eco():
+    # Without native Eco-Smart there's nothing to hand back to, so handback is a
+    # no-op and the hard cap applies (stop the native charge).
+    ca, calls = build(_handback_opts(), {"sensor.soc": FakeState("60")})
+    ca._eco_smart_supported = lambda: False
+    ca._is_charging = lambda: True
+    ca._we_started = False
+    ca._finish_charge = lambda soc, target, **k: calls.append(False)
+    ca._eval_target()
+    assert calls == [False], f"no native eco → hard cap stops, got {calls}"
+
+
+# ── periodic battery-balance target ─────────────────────────────────
+@case
+def test_balance_due_raises_target_to_100():
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 50,
+            C.CA_BALANCE_ENABLED: True}
+    ca, _ = build(opts, {})
+    ca._last_balance = None   # never balanced → due
+    st = ca.target_status()
+    assert st["target_pct"] == 100.0 and st["source"] == "balance", st
+
+
+@case
+def test_balance_not_due_keeps_floor():
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 50,
+            C.CA_BALANCE_ENABLED: True, C.CA_BALANCE_INTERVAL_DAYS: 7}
+    ca, _ = build(opts, {})
+    ca._last_balance = dt_util.now().date().isoformat()   # balanced today
+    st = ca.target_status()
+    assert st["target_pct"] == 50.0 and st["source"] == "fixed", st
+
+
+@case
+def test_balance_disabled_ignores_schedule():
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 50}
+    ca, _ = build(opts, {})
+    ca._last_balance = None
+    st = ca.target_status()
+    assert st["target_pct"] == 50.0 and st["source"] == "fixed", st
+
+
+@case
+def test_balance_target_clamped_to_100():
+    # An out-of-range balance target (e.g. a GUI typo of 200%) must clamp to 100
+    # — otherwise it's unreachable and the balance re-triggers every night.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: 50,
+            C.CA_BALANCE_ENABLED: True, C.CA_BALANCE_TARGET_PCT: 200}
+    ca, _ = build(opts, {})
+    ca._last_balance = None   # due
+    assert ca._balance_target() == 100.0
+    st = ca.target_status()
+    assert st["target_pct"] == 100.0 and st["source"] == "balance", st
+
+
 # ── surplus-source derivation ───────────────────────────────────────
 @case
 def test_surplus_value_grid_export_negative():
@@ -567,26 +672,32 @@ def test_schedule_time_roundtrip():
 def test_schedule_days_roundtrip():
     import wallbox_gateway.schedule as sch
     arr = sch._days_array(["mon", "wed", "sun"])
-    assert sch._days_from_array(arr) == ["mon", "wed", "sun"]
+    assert set(sch._days_from_array(arr)) == {"mon", "wed", "sun"}
 
 
 @case
 def test_schedule_days_bitmask():
-    # r_schs reads days back as a bitmask int (bit0=Mon..bit6=Sun).
+    # r_schs reads days back as a bitmask int, Sunday-first (bit0=Sun..bit6=Sat);
+    # see issue #11. Returned in _DAY_ORDER (Sun-first) order.
     import wallbox_gateway.schedule as sch
-    assert sch._days_from_array(127) == ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    assert sch._days_from_array(32) == ["sat"]     # bit5
+    assert sch._days_from_array(127) == ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+    assert sch._days_from_array(62) == ["mon", "tue", "wed", "thu", "fri"]  # Wallbox app: Mon-Fri = 62
+    assert sch._days_from_array(1) == ["sun"]                                # Sunday = 1
+    assert sch._days_from_array(32) == ["fri"]     # bit5 = Friday (Sun-first)
+    assert sch._days_from_array(64) == ["sat"]     # bit6 = Saturday
     assert sch._days_from_array(0) == []
 
 
 @case
 def test_decode_native_schedule_shape():
     import wallbox_gateway.schedule as sch
-    row = {"sid": 2, "start": 1400, "stop": 2100, "days": [1, 1, 1, 1, 1, 0, 0],
+    # Sun-first bit array for Mon-Fri: [sun=0, mon=1, tue=1, wed=1, thu=1, fri=1, sat=0].
+    row = {"sid": 2, "start": 1400, "stop": 2100, "days": [0, 1, 1, 1, 1, 1, 0],
            "mcr": 16, "enabled": 1, "target": {"type": 1, "value": 7000}}
     d = sch._decode_schedule(row)
     assert d["sid"] == 2 and d["max_current"] == 16 and d["enabled"] is True
     assert d["energy_target_kwh"] == 7.0
+    assert set(d["days"]) == {"mon", "tue", "wed", "thu", "fri"}
     assert d["days"] == ["mon", "tue", "wed", "thu", "fri"]
     assert d["start"] and d["stop"]
     assert sch._decode_schedule("not a dict") is None
