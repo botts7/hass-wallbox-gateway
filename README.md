@@ -34,9 +34,11 @@ This integration is for users who:
 
 ## Status
 
-Well past the original roadmap — the integration is at **v0.36.x** with the full
+Well past the original roadmap — the integration is at **v0.37.x** with the full
 switch / number / select / button / update entity set, schedule services,
-charge-cost and solar/grid sensors, solar-by-day + schedule coexistence, and
+charge-cost and solar/grid sensors, a Charge Assistant (smart charge to target,
+commute-aware overnight grid floor with hand-back to the charger's own solar by
+day, and periodic LFP balancing), solar-by-day + schedule coexistence, and
 resilience hardening (a slow endpoint no longer takes the device unavailable).
 See the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/botts7/hass-wallbox-gateway/releases)
 for what's shipped. Remaining goal: submit to HA core (v1.0.0).
