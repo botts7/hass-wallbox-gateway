@@ -4,6 +4,25 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.2] - 2026-10-25
+
+### Fixed
+- **A stop from Home Assistant no longer restarts by itself a few minutes later
+  (#67, Pulsar Plus).** The Charge Assistant's auto-resume un-pauses an idle,
+  paused charger so its own Eco-Smart or schedule can take over again. Since
+  0.37.0 the pause check reads the gateway's `schedule_paused`, which on a
+  Pulsar Plus turns on after every ordinary stop. So when you stopped charging
+  from your own automation, the integration un-paused it about 3 minutes later
+  (then every 10), and a car that still wanted charge started charging again.
+  Auto-resume and the "resume" release defaults now only un-pause when:
+  - the charger has something native to hand back to (Eco-Smart or Full Green
+    turned on, or an enabled native schedule), and
+  - you didn't just stop it yourself with the integration's Charging switch.
+    That stop holds off the un-pause for 12 hours, or until charging starts
+    again or the car is unplugged.
+  If you used the workaround (`auto_resume_eco: false`, `release_default: keep`)
+  you can keep it or remove it; both work.
+
 ## [0.37.0] - 2026-10-06
 
 ### Fixed

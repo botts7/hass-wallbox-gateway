@@ -133,6 +133,40 @@ def test_pause_degenerate_inputs():
     assert g.pause_from_status({"schedule_paused": "yes"}) is False  # non-bool ignored → no gen → False
 
 
+# ── #67: auto-resume must not undo a deliberate stop ──────────────────
+@case
+def test_native_resume_nothing_to_hand_back():
+    # Reporters' setups: Eco-Smart disabled, no schedules -> nothing native.
+    assert g.has_native_to_resume(0, []) is False
+    assert g.has_native_to_resume(0, [{"sid": 0, "enabled": 0}]) is False
+    assert g.has_native_to_resume(None, []) is False   # no Eco-Smart at all
+
+
+@case
+def test_native_resume_eco_or_schedule():
+    assert g.has_native_to_resume(1, []) is True        # Full Green
+    assert g.has_native_to_resume(2, []) is True        # Eco-Smart
+    assert g.has_native_to_resume(0, [{"enabled": 1}]) is True
+    assert g.has_native_to_resume(0, [{"enabled": 0}, {"enabled": True}]) is True
+
+
+@case
+def test_native_resume_unknown_keeps_old_behaviour():
+    assert g.has_native_to_resume(0, None) is True      # schedules not read yet
+    assert g.has_native_to_resume(None, None) is True
+    assert g.has_native_to_resume(True, [])  is False   # bool is not a mode
+
+
+@case
+def test_user_stop_hold_window():
+    h = g.USER_STOP_HOLD_S
+    assert g.user_stop_holds(None, 1000) is False
+    assert g.user_stop_holds(1000, 1000) is True
+    assert g.user_stop_holds(1000, 1000 + h - 1) is True
+    assert g.user_stop_holds(1000, 1000 + h) is False
+    assert g.user_stop_holds(1000, 999) is False         # clock went backwards
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

@@ -163,8 +163,10 @@ from . import price_planner
 from .charge_guards import (
     derive_surplus,
     effective_target,
+    has_native_to_resume,
     pause_from_status,
     price_allows_charge,
+    user_stop_holds,
 )
 from .charger_control import (
     WallboxGatewayCharger,
@@ -295,6 +297,10 @@ class ChargeAssistant:
         # and when we last issued a resume (debounce + cooldown).
         self._auto_resume_since: datetime | None = None
         self._auto_resume_last: datetime | None = None
+        # Epoch seconds of the last deliberate stop from the integration's own
+        # Charging switch (#67). Blocks the automatic un-pause, so a car that
+        # still wants charge isn't restarted behind the owner's back.
+        self._user_stop_at: float | None = None
         self._release_since: datetime | None = None
         self._release_last: datetime | None = None
         # Commute learner: cached avg daily use (kWh/day) for the history-backed
@@ -559,6 +565,7 @@ class ChargeAssistant:
         sc = self._should_control()
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
+        self._expire_user_stop()   # any new charge or an unplug ends the hold
         self._maybe_auto_resume(sc)
         self._maybe_release_default(sc)
         self._maybe_identity()
@@ -579,6 +586,9 @@ class ChargeAssistant:
         if not self._is_paused() or self._is_charging():
             self._auto_resume_since = None   # not in the paused-and-idle state
             return
+        if not self._resume_wanted():
+            self._auto_resume_since = None
+            return
         now = dt_util.utcnow()
         if self._auto_resume_since is None:
             self._auto_resume_since = now
@@ -590,6 +600,34 @@ class ChargeAssistant:
         self._auto_resume_last = now
         _LOGGER.info("Charge Assistant: auto-resuming Eco-Smart/schedule (paused + idle)")
         self.hass.async_create_task(self._resume_and_restore_eco())
+
+    def note_user_stop(self) -> None:
+        """The owner stopped charging with the integration's Charging switch.
+        Hold off the automatic un-pause (auto-resume and the resume release
+        defaults) for USER_STOP_HOLD_S, or until charging starts again or the
+        car is unplugged (#67)."""
+        self._user_stop_at = dt_util.utcnow().timestamp()
+        self._auto_resume_since = None
+        _LOGGER.debug("Charge Assistant: deliberate stop noted, holding auto-resume")
+
+    def _expire_user_stop(self) -> None:
+        """A new charge or an unplug ends the deliberate-stop hold."""
+        if self._user_stop_at is None:
+            return
+        if self._is_charging() or self._plugged_in() is False:
+            self._user_stop_at = None
+
+    def _resume_wanted(self) -> bool:
+        """Whether an automatic un-pause should happen at all: not straight
+        after a deliberate stop, and only when the charger has its own Eco-Smart
+        or an enabled schedule to hand back to. Otherwise un-pausing just undoes
+        the stop and the car's next request restarts charging (#67)."""
+        if user_stop_holds(self._user_stop_at, dt_util.utcnow().timestamp()):
+            return False
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        schedules = data.get("schedules") if isinstance(data, dict) else None
+        return has_native_to_resume(self._current_eco_mode(), schedules)
 
     def _maybe_release_default(self, controlling: bool) -> None:
         """Return the charger to the user's chosen default when the integration/
@@ -641,11 +679,17 @@ class ChargeAssistant:
             if default == RELEASE_STOP:
                 if self._is_charging():
                     await charger.stop()
-            elif default == RELEASE_RESUME_SCHEDULE:
-                # Un-pause so the charger's own schedule + Eco loops take over.
-                await self._resume_native()
-            elif default == RELEASE_RESUME_ECO:
-                await self._resume_and_restore_eco()
+            elif default in (RELEASE_RESUME_SCHEDULE, RELEASE_RESUME_ECO):
+                self._expire_user_stop()
+                if not self._resume_wanted():
+                    # Deliberate stop, or nothing native to hand back to: an
+                    # un-pause would only restart the car (#67). Just release.
+                    _LOGGER.info("Charge Assistant: release without un-pause (deliberate stop or no native schedule/Eco-Smart)")
+                elif default == RELEASE_RESUME_SCHEDULE:
+                    # Un-pause so the charger's own schedule + Eco loops take over.
+                    await self._resume_native()
+                else:
+                    await self._resume_and_restore_eco()
             await charger.release_owner()
         except Exception as err:  # noqa: BLE001 — never crash the eval loop
             _LOGGER.warning("Charge Assistant: release default '%s' failed: %s", default, err)

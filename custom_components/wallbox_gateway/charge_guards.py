@@ -108,3 +108,37 @@ def pause_from_status(status, realtime=None):
         return (gen or 0) != 0
     except TypeError:
         return False
+
+
+# How long a deliberate stop (the integration's Charging switch turned off)
+# holds off the automatic un-pause. Long enough to cover the car re-requesting
+# charge all afternoon; short enough that an always-plugged car isn't left
+# paused forever.
+USER_STOP_HOLD_S = 12 * 3600
+
+
+def has_native_to_resume(eco_mode, schedules):
+    """Is there anything native for an automatic un-pause (s_cmode mode 0) to
+    hand control back to? Un-pausing exists to let the charger's own Eco-Smart
+    or schedule loop take over again. With neither, it only undoes the stop, and
+    a car that still wants charge then starts charging again (#67).
+
+    ``eco_mode``: native Eco-Smart mode (0 = Disabled), None when unknown.
+    ``schedules``: the r_schs list, None when unknown. Unknown schedules count
+    as "maybe", keeping the old behaviour rather than guessing.
+    """
+    if isinstance(eco_mode, (int, float)) and not isinstance(eco_mode, bool) and eco_mode != 0:
+        return True
+    if schedules is None:
+        return True
+    if not isinstance(schedules, list):
+        return True
+    return any(isinstance(s, dict) and bool(s.get("enabled")) for s in schedules)
+
+
+def user_stop_holds(stopped_at_s, now_s, hold_s=USER_STOP_HOLD_S):
+    """True while a deliberate stop made at ``stopped_at_s`` (epoch seconds, or
+    None) should still block the automatic un-pause."""
+    if stopped_at_s is None:
+        return False
+    return 0 <= (now_s - stopped_at_s) < hold_s

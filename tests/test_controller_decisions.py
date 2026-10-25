@@ -1042,6 +1042,71 @@ def test_auto_resume_skips():
         "disabled via option → no resume"
 
 
+# ── #67: auto-resume must not undo a deliberate stop ────────────────
+def _paused_plus(eco_mode, schedules):
+    """A Pulsar Plus after a stop: control_mode 1 -> schedule_paused, idle,
+    car still plugged in and wanting charge."""
+    ca, _ = build({C.CA_MODE: C.MODE_OFF}, {})
+    d = ca._coordinator().data
+    d["raw_status"] = {"control_owner": "none", "schedule_paused": True}
+    if eco_mode is not None:
+        d["eco_smart"] = {"mode": eco_mode, "power_pct": 100}
+    d["schedules"] = schedules
+    ca._is_charging = lambda: False
+    return ca
+
+
+def _ticks_past_delay(ca):
+    ca._maybe_auto_resume(False)                                   # arms
+    if ca._auto_resume_since is not None:
+        ca._auto_resume_since = dt_util.utcnow() - timedelta(minutes=5)
+    ca._maybe_auto_resume(False)
+    return ca._auto_resume_last is not None
+
+
+@case
+def test_67_no_resume_without_native_to_hand_back():
+    # Both reporters: Eco-Smart disabled, no schedules, HA automations stop it.
+    assert not _ticks_past_delay(_paused_plus(0, [])),         "nothing native to resume -> must not undo the stop"
+    assert not _ticks_past_delay(_paused_plus(0, [{"sid": 0, "enabled": 0}])),         "disabled schedule only -> must not undo the stop"
+
+
+@case
+def test_67_still_resumes_for_eco_or_schedule():
+    assert _ticks_past_delay(_paused_plus(2, [])), "Eco-Smart on -> hand back"
+    assert _ticks_past_delay(_paused_plus(1, [])), "Full Green on -> hand back"
+    assert _ticks_past_delay(_paused_plus(0, [{"sid": 0, "enabled": 1}])),         "enabled native schedule -> hand back"
+
+
+@case
+def test_67_deliberate_stop_holds_even_with_eco():
+    ca = _paused_plus(2, [])
+    ca.note_user_stop()
+    assert not _ticks_past_delay(ca), "HA switch stop -> no auto-resume"
+    assert ca._resume_wanted() is False, "release defaults are held too"
+    ca._user_stop_at -= 12 * 3600 + 1                              # past the 12 h hold
+    assert _ticks_past_delay(ca), "hold expired -> normal hand-back resumes"
+
+
+@case
+def test_67_hold_ends_on_new_charge_or_unplug():
+    ca = _paused_plus(2, [])
+    ca.note_user_stop()
+    ca._is_charging = lambda: True
+    ca._expire_user_stop()
+    assert ca._user_stop_at is None, "a new charge ends the hold"
+    ca = _paused_plus(2, [])
+    ca.note_user_stop()
+    ca._plugged_in = lambda: False
+    ca._expire_user_stop()
+    assert ca._user_stop_at is None, "unplugging ends the hold"
+    ca = _paused_plus(2, [])
+    ca.note_user_stop()
+    ca._plugged_in = lambda: None
+    ca._expire_user_stop()
+    assert ca._user_stop_at is not None, "unknown plug state keeps the hold"
+
+
 # ── commute-based adaptive target ───────────────────────────────────
 @case
 def test_commute_avg_use_and_target():
