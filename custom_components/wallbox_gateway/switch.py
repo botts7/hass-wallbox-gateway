@@ -87,9 +87,18 @@ async def _start_charging(switch: "GatewaySwitch") -> Any:
 
 
 async def _stop_charging(switch: "GatewaySwitch") -> Any:
-    return await switch.coordinator.client.get(
+    result = await switch.coordinator.client.get(
         "/api/command?action=stop&wait=5000"
     )
+    # A deliberate stop: tell the Charge Assistant so its automatic un-pause
+    # doesn't undo it a few minutes later (#67).
+    assistant = (
+        switch.hass.data.get(DOMAIN, {}).get("_assistants", {})
+        .get(switch.coordinator.entry.entry_id)
+    )
+    if assistant is not None:
+        assistant.note_user_stop()
+    return result
 
 
 async def _lock(switch: "GatewaySwitch") -> Any:
