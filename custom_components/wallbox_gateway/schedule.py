@@ -31,6 +31,13 @@ from homeassistant.util import dt as dt_util
 
 from .api import GatewayClient, GatewayError, GatewayUnreachable
 from .const import CA_IMPORTED_SCHEDULES, DOMAIN
+from .legacy_schedule import (
+    days_bitmask,
+    is_no_dispatch,
+    pick_legacy_sid,
+    wsch_clear_par,
+    wsch_par,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -193,17 +200,46 @@ def _schedule_rows(res: object) -> list:
     return r if isinstance(r, list) else []
 
 
-async def _next_sid(client: GatewayClient) -> int:
-    """Next free schedule id = max(existing) + 1 (0 if none)."""
+async def _existing_sids(client: GatewayClient) -> list[int]:
+    """Schedule ids currently on the charger ([] if unreadable)."""
     try:
         res = await client.command(
             {"action": "bapi", "met": "r_schs", "par": "null", "wait": "5000"}
         )
     except (GatewayError, GatewayUnreachable):
-        return 0
+        return []
     rows = _schedule_rows(res)
-    sids = [int(r["sid"]) for r in rows if isinstance(r, dict) and "sid" in r]
+    return [int(r["sid"]) for r in rows if isinstance(r, dict) and "sid" in r]
+
+
+async def _next_sid(client: GatewayClient) -> int:
+    """Next free schedule id = max(existing) + 1 (0 if none)."""
+    sids = await _existing_sids(client)
     return (max(sids) + 1) if sids else 0
+
+
+async def _bapi(client: GatewayClient, met: str, par: str) -> object:
+    try:
+        return await client.command(
+            {"action": "bapi", "met": met, "par": par, "wait": "6000"}
+        )
+    except (GatewayError, GatewayUnreachable) as e:
+        raise HomeAssistantError(f"Couldn't reach the charger: {e}") from e
+
+
+async def _set_legacy(
+    client: GatewayClient, requested: int | None, start: int, stop: int, days: list[str]
+) -> None:
+    """Pre-6.11 Pulsar Plus: write via the packed legacy w_sch (#13). No
+    enabled / current / energy-target fields exist on this firmware."""
+    try:
+        sid = pick_legacy_sid(requested, await _existing_sids(client))
+        par = wsch_par(sid, start, stop, days_bitmask(days))
+    except ValueError as e:
+        raise HomeAssistantError(f"set_schedule: {e}") from e
+    res = await _bapi(client, "w_sch", par)
+    _raise_on_error(res, "set_schedule (legacy w_sch)")
+    _LOGGER.info("Wallbox Gateway: set_schedule #%s via legacy w_sch %s -> %s", sid, par, res)
 
 
 async def _handle_set(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -227,12 +263,13 @@ async def _handle_set(hass: HomeAssistant, call: ServiceCall) -> None:
     }
     par = json.dumps({"schedules": [entry]}, separators=(",", ":"))
     _LOGGER.debug("set_schedule sid=%s par=%s", sid, par)
-    try:
-        res = await client.command(
-            {"action": "bapi", "met": "s_sch", "par": par, "wait": "6000"}
+    res = await _bapi(client, "s_sch", par)
+    if is_no_dispatch(res):
+        # Firmware without s_sch (pre-6.11 Pulsar Plus): fall back (#13).
+        await _set_legacy(
+            client, data.get("sid"), entry["start"], entry["stop"], data["days"]
         )
-    except (GatewayError, GatewayUnreachable) as e:
-        raise HomeAssistantError(f"Couldn't reach the charger: {e}") from e
+        return
     _raise_on_error(res, "set_schedule")
     _LOGGER.info("Wallbox Gateway: set_schedule #%s -> %s", sid, res)
 
@@ -243,12 +280,19 @@ async def _handle_delete(hass: HomeAssistant, call: ServiceCall) -> None:
     sids = [int(s) for s in data["sid"]]
     par = json.dumps({"sid": sids}, separators=(",", ":"))
     _LOGGER.debug("delete_schedule par=%s", par)
-    try:
-        res = await client.command(
-            {"action": "bapi", "met": "clr_sch", "par": par, "wait": "6000"}
-        )
-    except (GatewayError, GatewayUnreachable) as e:
-        raise HomeAssistantError(f"Couldn't reach the charger: {e}") from e
+    res = await _bapi(client, "clr_sch", par)
+    if is_no_dispatch(res):
+        # Firmware without clr_sch (pre-6.11 Pulsar Plus): empty each slot via
+        # the legacy w_sch, as the gateway dashboard does (#13).
+        for sid in sids:
+            try:
+                clear = wsch_clear_par(sid)
+            except ValueError as e:
+                raise HomeAssistantError(f"delete_schedule: {e}") from e
+            r = await _bapi(client, "w_sch", clear)
+            _raise_on_error(r, f"delete_schedule #{sid} (legacy w_sch)")
+        _LOGGER.info("Wallbox Gateway: delete_schedule %s via legacy w_sch", sids)
+        return
     _raise_on_error(res, "delete_schedule")
     _LOGGER.info("Wallbox Gateway: delete_schedule %s -> %s", sids, res)
 

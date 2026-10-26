@@ -63,6 +63,7 @@ def _arbiter(rows):
     a = NativeScheduleArbiter.__new__(NativeScheduleArbiter)
     a._client = FakeClient(rows)
     a._busy = False
+    a._no_sch_warned = False
     a._mem = {"controlling": False, "snapshot": {}}
 
     async def _load():
@@ -136,6 +137,38 @@ def test_release_restores_only_scoped_schedule():
     assert a._client.writes == [(2, 1)]      # re-enabled the one we disabled
     assert a._mem["controlling"] is False
     assert a._mem["snapshot"] == {}
+
+
+# ── #13: charger replies to s_sch ───────────────────────────────────
+class _ReplyClient(FakeClient):
+    def __init__(self, rows, reply):
+        super().__init__(rows)
+        self._reply = reply
+    async def command(self, req):
+        if req.get("met") == "s_sch":
+            return self._reply
+        return await super().command(req)
+
+
+@case
+def test_set_enabled_error_reply_is_failure():
+    if not _HA_OK:
+        return
+    a = _arbiter([_row(1, 1400, 2000)])
+    a._client = _ReplyClient(a._client._rows, {"error": {"code": 2, "message": "Busy"}})
+    assert _run(a._set_enabled(_row(1, 1400, 2000), 0)) is False,         "a refused write must not count as done (it gets retried)"
+
+
+@case
+def test_set_enabled_no_dispatch_warns_once_no_retry_loop():
+    if not _HA_OK:
+        return
+    a = _arbiter([_row(1, 1400, 2000)])
+    a._client = _ReplyClient(a._client._rows,
+                             {"error": {"code": 1, "message": "No dispatch method found"}})
+    assert _run(a._set_enabled(_row(1, 1400, 2000), 0)) is True
+    assert a._no_sch_warned is True
+    assert _run(a._set_enabled(_row(1, 1400, 2000), 0)) is True,         "pre-6.11 firmware: carry on, don't retry every poll"
 
 
 def main():

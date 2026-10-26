@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.4] - 2026-10-26
+
+### Fixed
+- **`set_schedule` and `delete_schedule` work on pre-6.11 Pulsar Plus firmware
+  (#13).** Pulsar Plus units on the 6.7.x firmware branch (the latest some
+  hardware revisions get) have no `s_sch` / `clr_sch` and rejected every
+  schedule write with "No dispatch method found". The services now fall back
+  to the legacy `w_sch` the gateway dashboard already uses there. On this
+  firmware:
+  - schedule slots are 1 to 4; slot 0 is refused because writing it corrupts
+    schedules on these chargers. Without a `sid`, the first free slot is used.
+  - `enabled`, `max_current` and `energy_target_kwh` don't exist and are ignored.
+- **The schedule arbiter no longer counts a refused write as done.** It now
+  retries on the next poll. On firmware with no `s_sch` it logs once that it
+  can't pause native schedules there, instead of retrying forever.
+
 ## [0.37.3] - 2026-10-26
 
 ### Fixed
