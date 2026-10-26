@@ -25,7 +25,7 @@ STATUS_CODES = {
     4: "Paused",
     7: "Error",
 }
-ZENTRI_CODES = {0: "Ready", 1: "Charging", 4: "Charging"}
+ZENTRI_CODES = {0: "Ready", 1: "Charging", 4: "Paused"}
 NOT_CHARGING = "Connected — not charging"
 
 
@@ -216,9 +216,10 @@ def test_status_4_disambiguates_paused_from_idle():
 
 @case
 def test_zentri_uses_its_own_table_for_status_4():
-    # Zentri st4 is the charge ramp, not "Paused" — and must not take the
-    # gen-based disambiguation path.
-    assert _resolve(4, zentri=True, gen=0) == ("Charging", None)
+    # Original Pulsar st4 is a paused session after w_cha 0 (esp32-wallbox#68).
+    # It comes from its own table, not the MAX gen-based path, so gen=0 must
+    # not turn it into the "not charging" label.
+    assert _resolve(4, zentri=True, gen=0) == ("Paused", None)
 
 
 @case
@@ -252,6 +253,16 @@ def test_ride_through_never_without_prior_data():
     # A fresh coordinator (no last-good data) must fail immediately — there is
     # nothing to ride through with.
     assert r.ride_through_critical(1, 3, has_prior=False) is False
+
+
+@case
+def test_legacy_pulsar_st4_is_paused():
+    # esp32-wallbox#68: on the original Pulsar st 4 is a paused session after
+    # w_cha 0, not a charge ramp, and gen doesn't change that.
+    # The real table must say Paused, and that must be a valid enum option.
+    from const import ZENTRI_STATUS_CODES, STATUS_CODES as REAL
+    assert ZENTRI_STATUS_CODES[4] == "Paused"
+    assert ZENTRI_STATUS_CODES[4] in REAL.values()
 
 
 def main():

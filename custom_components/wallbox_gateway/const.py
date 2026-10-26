@@ -335,7 +335,8 @@ STATUS_CODES = {
 }
 
 # Original/Zentri Pulsar (#12) reports a small status enum that does NOT match
-# the MAX 0-18 set — notably st4 is the charge ramp, not "Paused". Labels are
+# the MAX 0-18 set. st4 is a paused/open session after w_cha 0 (seen on an
+# original Pulsar, esp32-wallbox#68), not a charge ramp. Labels are
 # reused from STATUS_CODES above so the charger_status enum option set is
 # unchanged. Selected when /api/status reports zentri:true.
 ZENTRI_STATUS_CODES = {
@@ -343,7 +344,7 @@ ZENTRI_STATUS_CODES = {
     1: "Charging",
     2: "Connected — waiting for car",
     3: "Connected — waiting for schedule",
-    4: "Charging",
+    4: "Paused",
 }
 
 # Endpoints the coordinator polls on every refresh tick.
