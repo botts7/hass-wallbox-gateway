@@ -4,6 +4,15 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.3] - 2026-10-26
+
+### Fixed
+- **Original Pulsar: a paused session showed as "Charging".** The charger
+  status for the original (no-WiFi) Pulsar mapped status 4 to "Charging". On a
+  real original Pulsar, status 4 is the paused, still-open session after a
+  stop, so HA showed "Charging" with no power flowing. It now shows "Paused"
+  (esp32-wallbox#68, tested by @stevenvanrossen-commits).
+
 ## [0.37.2] - 2026-10-25
 
 ### Fixed
