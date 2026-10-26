@@ -23,6 +23,7 @@ from homeassistant.helpers.storage import Store
 
 from .api import GatewayClient, GatewayError, GatewayUnreachable
 from .charge_window import hhmm_to_minutes, overlaps
+from .legacy_schedule import is_no_dispatch
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class NativeScheduleArbiter:
         self._client = client
         self._store: Store = Store(hass, _STORE_VERSION, f"wallbox_gateway_sched_{entry.entry_id}")
         self._busy = False  # guard against overlapping reconciles
+        self._no_sch_warned = False  # logged the "no s_sch on this firmware" note
 
     async def _load(self) -> dict:
         data = await self._store.async_load()
@@ -102,9 +104,29 @@ class NativeScheduleArbiter:
         entry = _row_to_entry(row, enabled)
         par = json.dumps({"schedules": [entry]}, separators=(",", ":"))
         try:
-            await self._client.command(
+            res = await self._client.command(
                 {"action": "bapi", "met": "s_sch", "par": par, "wait": "6000"}
             )
+            if is_no_dispatch(res):
+                # Pre-6.11 Pulsar Plus has no s_sch, so its native schedules
+                # can't be paused this way (#13). Say so once and carry on as
+                # before; retrying every poll would only spam the log and BLE.
+                if not self._no_sch_warned:
+                    self._no_sch_warned = True
+                    _LOGGER.warning(
+                        "Schedule arbiter: this charger firmware has no s_sch, so its "
+                        "native schedules can't be paused while the integration controls "
+                        "charging. Disable them in the Wallbox app if they conflict."
+                    )
+                return True
+            if isinstance(res, dict) and res.get("error"):
+                # Any other refusal: report failure so it's retried next poll,
+                # instead of recording the schedule as changed.
+                _LOGGER.warning(
+                    "Schedule arbiter: charger rejected schedule #%s enabled=%s: %s",
+                    row.get("sid"), enabled, res.get("error"),
+                )
+                return False
             return True
         except (GatewayError, GatewayUnreachable) as e:
             _LOGGER.warning(

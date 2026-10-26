@@ -18,9 +18,22 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-# Hardware current range (mirrors const.MIN/MAX_CURRENT_A and the firmware).
-MIN_CURRENT_A = 6
-MAX_CURRENT_A = 32
+# Hardware current range. The real upper limit is the charger's own reported
+# ceiling (current_limits.current_ceiling); MAX_CURRENT_A is only the fallback.
+try:
+    from .current_limits import (  # noqa: E402
+        DEFAULT_MAX_CURRENT_A as MAX_CURRENT_A,
+        MIN_CURRENT_A,
+        clamp_current,
+        current_ceiling,
+    )
+except ImportError:  # loaded standalone by the HA-free unit tests
+    from current_limits import (  # type: ignore[no-redef]  # noqa: E402
+        DEFAULT_MAX_CURRENT_A as MAX_CURRENT_A,
+        MIN_CURRENT_A,
+        clamp_current,
+        current_ceiling,
+    )
 
 # Eco-Smart modes (esm). 0 lets the charger pull grid freely; 1/2 gate charging
 # on solar, which would re-pause a forced grid charge.
@@ -98,8 +111,8 @@ class WallboxGatewayCharger(ChargerControl):
         await self._send("stop")
 
     async def set_current(self, amps: int) -> None:
-        lo, hi = MIN_CURRENT_A, MAX_CURRENT_A
-        await self._send("current", value=int(max(lo, min(amps, hi))))
+        ceiling = current_ceiling(getattr(self._coord, "data", None))
+        await self._send("current", value=clamp_current(amps, ceiling))
 
     async def resume(self) -> None:
         # action=resume → s_cmode {"mode":0}; clears the manual-override flag so
@@ -145,7 +158,7 @@ class WallboxGatewayCharger(ChargerControl):
             can_set_current=not is_zentri,
             has_meter=bool(st.get("meter")),
             min_current=MIN_CURRENT_A,
-            max_current=MAX_CURRENT_A,
+            max_current=current_ceiling(getattr(self._coord, "data", None)),
         )
 
     def control_owner(self) -> str:

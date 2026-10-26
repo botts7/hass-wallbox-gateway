@@ -26,6 +26,7 @@ from .api import (
     GatewayUnreachable,
 )
 from .ca_config import remove_car, upsert_car
+from .current_limits import current_ceiling
 from .const import (
     CA_ACTIONABLE,
     CA_ARRIVAL_ENTITY,
@@ -364,6 +365,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         """The currently-saved Charge Assistant config (for defaults)."""
         return dict(self.config_entry.options.get(CA_KEY) or {})
 
+    def _ceiling(self) -> int:
+        """The charger's reported current ceiling (32 A if not known yet)."""
+        coord = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        return current_ceiling(getattr(coord, "data", None))
+
     # ---- options menu ----
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -692,20 +698,20 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                     )
                 ),
                 # Phase 2 — dynamic current follow + house-load limit (advanced;
-                # the gateway clamps to 6-32 A and ignores live current on the
-                # original Pulsar).
+                # bounded by the charger's own reported ceiling, e.g. 40 A on a
+                # US Pulsar Plus; the original Pulsar ignores live current).
                 vol.Optional(
                     CA_SOLAR_DYNAMIC, default=cur.get(CA_SOLAR_DYNAMIC, False)
                 ): selector.BooleanSelector(),
                 vol.Optional(CA_MIN_CURRENT, default=cur.get(CA_MIN_CURRENT, 6)): selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=6, max=32, unit_of_measurement="A",
+                        min=6, max=self._ceiling(), unit_of_measurement="A",
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
-                vol.Optional(CA_MAX_CURRENT, default=cur.get(CA_MAX_CURRENT, 32)): selector.NumberSelector(
+                vol.Optional(CA_MAX_CURRENT, default=min(int(cur.get(CA_MAX_CURRENT) or self._ceiling()), self._ceiling())): selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=6, max=32, unit_of_measurement="A",
+                        min=6, max=self._ceiling(), unit_of_measurement="A",
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),

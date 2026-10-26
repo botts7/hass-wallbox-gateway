@@ -168,6 +168,7 @@ from .charge_guards import (
     price_allows_charge,
     user_stop_holds,
 )
+from .current_limits import current_ceiling
 from .charger_control import (
     WallboxGatewayCharger,
     ECO_DISABLED,
@@ -2617,17 +2618,20 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     def _current_bounds(self) -> tuple[int, int]:
         """(min, max) charge current the assistant may command, clamped to the
-        charger's hardware range. User can narrow but never exceed it."""
+        charger's own reported ceiling (40 A on US Pulsar Plus, #39). User can
+        narrow but never exceed it; an unset max means the full ceiling."""
+        coord = self._coordinator()
+        ceiling = current_ceiling(getattr(coord, "data", None))
         try:
             lo = int(self._opts.get(CA_MIN_CURRENT, MIN_CURRENT_A) or MIN_CURRENT_A)
         except (TypeError, ValueError):
             lo = MIN_CURRENT_A
         try:
-            hi = int(self._opts.get(CA_MAX_CURRENT, MAX_CURRENT_A) or MAX_CURRENT_A)
+            hi = int(self._opts.get(CA_MAX_CURRENT, ceiling) or ceiling)
         except (TypeError, ValueError):
-            hi = MAX_CURRENT_A
-        lo = max(MIN_CURRENT_A, min(lo, MAX_CURRENT_A))
-        hi = max(MIN_CURRENT_A, min(hi, MAX_CURRENT_A))
+            hi = ceiling
+        lo = max(MIN_CURRENT_A, min(lo, ceiling))
+        hi = max(MIN_CURRENT_A, min(hi, ceiling))
         if lo > hi:
             lo, hi = hi, lo
         return lo, hi

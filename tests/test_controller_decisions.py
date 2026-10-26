@@ -1107,6 +1107,24 @@ def test_67_hold_ends_on_new_charge_or_unplug():
     assert ca._user_stop_at is not None, "unknown plug state keeps the hold"
 
 
+# ── #39 follow-up: current bounds follow the charger's own ceiling ──
+@case
+def test_current_bounds_use_charger_ceiling():
+    ca, _ = build({}, {})
+    d = ca._coordinator().data
+    assert ca._current_bounds() == (6, 32), "no ceiling reported -> old 32 A"
+    d["charger_realtime"] = {"max_available_current": 40}
+    assert ca._current_bounds() == (6, 40), "US 40 A charger, unset max -> 40"
+    ca._opts[C.CA_MAX_CURRENT] = 45
+    assert ca._current_bounds() == (6, 40), "can't exceed the charger"
+    ca._opts[C.CA_MAX_CURRENT] = 24
+    assert ca._current_bounds() == (6, 24), "user can still narrow it"
+    d["charger_realtime"] = {"max_available_current": 16}
+    ca._opts[C.CA_MAX_CURRENT] = 32
+    ca._opts[C.CA_MIN_CURRENT] = 20
+    assert ca._current_bounds() == (16, 16), "installer limit below the min"
+
+
 # ── commute-based adaptive target ───────────────────────────────────
 @case
 def test_commute_avg_use_and_target():
