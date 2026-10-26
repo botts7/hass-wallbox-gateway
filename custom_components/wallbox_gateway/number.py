@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, MAX_CURRENT_A, MIN_CURRENT_A
+from .current_limits import current_ceiling
 from .coordinator import GatewayCoordinator
 from .entity import GatewayEntity
 
@@ -58,15 +59,9 @@ class MaxCurrent(GatewayEntity, NumberEntity):
         super().__init__(coordinator, "max_current")
 
     def _ceiling(self) -> int:
-        # The charger reports its own hardware/installation ceiling as
-        # max_available_current (40 A on USA Pulsar Plus, 32 A on most EU
-        # units). A fixed 32 A cap wrongly limited 40 A chargers (#39). Fall
-        # back to MAX_CURRENT_A when the charger doesn't report one.
-        for src in (self._realtime(), self._charger_status()):
-            v = src.get("max_available_current")
-            if isinstance(v, int) and MIN_CURRENT_A <= v <= 80:
-                return v
-        return MAX_CURRENT_A
+        # The charger's own reported ceiling (40 A on US Pulsar Plus, #39),
+        # shared with every other current setter (current_limits.py).
+        return current_ceiling(self.coordinator.data)
 
     @property
     def native_max_value(self) -> float:

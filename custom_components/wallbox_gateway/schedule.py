@@ -31,6 +31,7 @@ from homeassistant.util import dt as dt_util
 
 from .api import GatewayClient, GatewayError, GatewayUnreachable
 from .const import CA_IMPORTED_SCHEDULES, DOMAIN
+from .current_limits import current_ceiling
 from .legacy_schedule import (
     days_bitmask,
     is_no_dispatch,
@@ -59,8 +60,11 @@ _SET_SCHEMA = vol.Schema(
         vol.Required("start"): cv.string,   # "HH:MM" local
         vol.Required("stop"): cv.string,    # "HH:MM" local
         vol.Required("days"): vol.All(cv.ensure_list, [vol.In(_DAY_ORDER)]),
-        vol.Optional("max_current", default=32): vol.All(
-            vol.Coerce(int), vol.Range(min=6, max=32)
+        # Upper bound is the charger's own ceiling (40 A on US Pulsar Plus,
+        # #39), checked at call time; 80 is only a sanity bound. Unset = the
+        # charger's full ceiling.
+        vol.Optional("max_current"): vol.All(
+            vol.Coerce(int), vol.Range(min=6, max=80)
         ),
         vol.Optional("enabled", default=True): cv.boolean,
         vol.Optional("energy_target_kwh", default=0): vol.All(
@@ -244,7 +248,17 @@ async def _set_legacy(
 
 async def _handle_set(hass: HomeAssistant, call: ServiceCall) -> None:
     data = call.data
-    client = _resolve_client(hass, data.get("device_id"))
+    coord, _entry_id = _resolve_coord_entry(hass, data.get("device_id"))
+    client = coord.client
+    ceiling = current_ceiling(getattr(coord, "data", None))
+    max_current = data.get("max_current")
+    if max_current is None:
+        max_current = ceiling
+    elif int(max_current) > ceiling:
+        raise HomeAssistantError(
+            f"set_schedule: max_current {max_current} A is above this charger's "
+            f"limit of {ceiling} A"
+        )
     sid = data.get("sid")
     if sid is None:
         sid = await _next_sid(client)
@@ -255,7 +269,7 @@ async def _handle_set(hass: HomeAssistant, call: ServiceCall) -> None:
         "start": _local_hhmm_to_utc_int(hass, data["start"]),
         "stop": _local_hhmm_to_utc_int(hass, data["stop"]),
         "days": _days_array(data["days"]),
-        "mcr": int(data["max_current"]),
+        "mcr": int(max_current),
         "type": 0,
         "enabled": 1 if data["enabled"] else 0,
         "target": target,

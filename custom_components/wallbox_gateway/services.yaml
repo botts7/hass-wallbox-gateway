@@ -97,12 +97,14 @@ set_schedule:
             - { value: sun, label: Sunday }
     max_current:
       name: Max current (A)
-      description: Charging current limit for this schedule.
-      default: 32
+      description: >-
+        Charging current limit for this schedule, up to your charger's own limit
+        (32 A on most units, 40 A or 48 A on US Pulsar Plus). Leave empty for the
+        charger's full limit. Ignored on pre-6.11 Pulsar Plus firmware.
       selector:
         number:
           min: 6
-          max: 32
+          max: 80
           unit_of_measurement: A
           mode: slider
     enabled:

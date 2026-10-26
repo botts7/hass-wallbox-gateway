@@ -64,6 +64,19 @@ def test_set_current_payload_and_clamp():
 
 
 @case
+def test_set_current_us_40a_charger():
+    # #39 follow-up: a US Pulsar Plus reports 40 A; the integration must be able
+    # to command it, and clamp to it (not to 32).
+    c = FakeCoord({"charger_realtime": {"max_available_current": 40}})
+    ch = cc.WallboxGatewayCharger(c)
+    run(ch.set_current(40))
+    assert c.client.sent[-1]["value"] == "40"
+    run(ch.set_current(99))
+    assert c.client.sent[-1]["value"] == "40"
+    assert ch.capabilities().max_current == 40
+
+
+@case
 def test_capabilities_plus_max():
     c = FakeCoord({"raw_status": {"zentri": False, "meter": True, "chg_project": "prj20-pulsar-max-pro"}})
     caps = cc.WallboxGatewayCharger(c).capabilities()
