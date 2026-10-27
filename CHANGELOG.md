@@ -33,6 +33,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Pulsar MAX the un-pause landing second re-queued the charge under Eco-Smart.
   It's now un-pause, then start, in order. The 40-minute gap was the 30-minute
   manual-override back-off triggered by the untagged resume.
+- **Schedules on pre-6.11 Pulsar Plus firmware (#13 follow-up, field report
+  from a Pulsar Plus Socket on 6.7.43):**
+  - Slot 0 can be edited when the charger reports a schedule there. New
+    schedules still never go in slot 0 (it corrupts schedules on a 6.7.41 Plus).
+  - Legacy writes and deletes are read back. Some chargers accept a write to an
+    empty slot and silently drop it; that's now a clear error ("create new
+    schedules in the Wallbox app") instead of a false success.
+  - `import_native_schedules` shows `max_current` as not reported when the
+    charger returns a meaningless value (below 6 A).
+  - The original (no-WiFi) Pulsar uses a different schedule format, so
+    `set_schedule` / `delete_schedule` now say to use the gateway dashboard
+    there instead of attempting a write.
+- **`set_schedule` right after `import_native_schedules` no longer fails** with
+  "isn't a Wallbox Gateway charger". Saving the imported snapshot reloaded the
+  integration; stored data now doesn't, and the schedule services wait up to
+  5 s for a reload that's in progress.
+- **No more `DeviceEntry.config_entries` deprecation warning** (HA 2026.10+);
+  older Home Assistant versions keep working.
 
 ## [0.37.4] - 2026-10-26
 
