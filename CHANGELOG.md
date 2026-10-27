@@ -42,9 +42,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     schedules in the Wallbox app") instead of a false success.
   - `import_native_schedules` shows `max_current` as not reported when the
     charger returns a meaningless value (below 6 A).
-  - The original (no-WiFi) Pulsar uses a different schedule format, so
-    `set_schedule` / `delete_schedule` now say to use the gateway dashboard
-    there instead of attempting a write.
+- **Schedules on the original (no-WiFi) Pulsar.** `set_schedule`,
+  `delete_schedule` and `import_native_schedules` now work there, using its own
+  format decoded from a Bluetooth capture of the Wallbox app (esp32-wallbox#68):
+  four slots (0 to 3), each read separately, written as a 12-character
+  `w_sch`, and read back to confirm. It has no per-schedule current or energy
+  limit, so `max_current` and `energy_target_kwh` are ignored there.
 - **`set_schedule` right after `import_native_schedules` no longer fails** with
   "isn't a Wallbox Gateway charger". Saving the imported snapshot reloaded the
   integration; stored data now doesn't, and the schedule services wait up to

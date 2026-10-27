@@ -31,6 +31,7 @@ MODULES = [
     "test_next_charge",            # charger-local next-charge (UTC-vs-local day)
     "test_schedule_arbiter",       # coexistence schedule scoping (#152); self-skips w/o HA
     "test_current_limits",         # charger current ceiling (US 40/48 A, #39)
+    "test_pulsar_schedule",        # original Pulsar schedules, snoop replay (#68)
     "test_legacy_schedule",        # pre-6.11 Plus w_sch fallback (#13)
     "test_schedule_days",          # set_schedule Sunday-first day encoding (#11); self-skips w/o HA
     "test_update_asset",           # firmware Update asset picker (board=ota fallback); self-skips
