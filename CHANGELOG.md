@@ -4,6 +4,18 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.5] - 2026-10-27
+
+### Changed
+- **Smart charge aims to finish before the cheap window ends, not exactly at
+  it.** New option "Finish this many minutes before the window ends" (default
+  30 min). The plan used to target the window end with only 10 minutes of
+  slack, so a late start or a real charge rate below the configured one (for
+  example charging losses: one night gained 7.6 %/h against a modelled
+  8.3 %/h) spilled the end of the charge past the window. The start decision
+  and the "next charge start" estimate both use it. A departure deadline keeps
+  its 10-minute margin.
+
 ## [0.37.4] - 2026-10-26
 
 ### Fixed

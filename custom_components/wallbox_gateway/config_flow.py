@@ -124,6 +124,8 @@ from .const import (
     CA_WINDOW_OVERRUN,
     CA_WINDOW_PRESTART,
     CA_WINDOW_COST_WARN,
+    CA_WINDOW_FINISH_BUFFER,
+    DEFAULT_WINDOW_FINISH_BUFFER_MIN,
     TRIG_ARRIVAL,
     TRIG_LEAD,
     TRIG_NIGHTLY,
@@ -800,6 +802,15 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CA_WINDOW_ENABLED, default=cur.get(CA_WINDOW_ENABLED, False)): selector.BooleanSelector(),
                 vol.Optional(CA_WINDOW_START, default=cur.get(CA_WINDOW_START, vol.UNDEFINED)): selector.TimeSelector(),
                 vol.Optional(CA_WINDOW_END, default=cur.get(CA_WINDOW_END, vol.UNDEFINED)): selector.TimeSelector(),
+                vol.Optional(
+                    CA_WINDOW_FINISH_BUFFER,
+                    default=cur.get(CA_WINDOW_FINISH_BUFFER, DEFAULT_WINDOW_FINISH_BUFFER_MIN),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=180, step=5, unit_of_measurement="min",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
                 vol.Optional(CA_WINDOW_OVERRUN, default=cur.get(CA_WINDOW_OVERRUN, False)): selector.BooleanSelector(),
                 vol.Optional(CA_WINDOW_PRESTART, default=cur.get(CA_WINDOW_PRESTART, False)): selector.BooleanSelector(),
                 vol.Optional(CA_WINDOW_COST_WARN, default=cur.get(CA_WINDOW_COST_WARN, False)): selector.BooleanSelector(),

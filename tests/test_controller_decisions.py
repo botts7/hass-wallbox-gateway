@@ -731,6 +731,61 @@ def test_window_jit_starts_when_late():
     assert calls == [True], f"late in window should start, got {calls}"
 
 
+# ── finish buffer: aim to finish BEFORE the window ends (2026-10-27 night) ──
+def _night(buffer=None, end_h=3.75):
+    # The 27 Oct night: 82 kWh, 6.8 kW, 46% -> 75% = 209 min of charge.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 75, C.CA_TARGET_AUTOSTART: True,
+            C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(end_h),
+            C.CA_BATTERY_KWH: 82, C.CA_CHARGE_POWER_KW: 6.8}
+    if buffer is not None:
+        opts[C.CA_WINDOW_FINISH_BUFFER] = buffer
+    return build(opts, {"sensor.soc": FakeState("46")})
+
+
+@case
+def test_finish_buffer_default_starts_earlier():
+    # 225 min to window end. Old rule (209 + 10 = 219) would still wait; the
+    # default 30-min finish buffer (209 + 30 = 239) starts now.
+    ca, calls = _night()
+    ca._eval_target()
+    assert calls == [True], f"default buffer should start with 225 min left, got {calls}"
+
+
+@case
+def test_finish_buffer_zero_waits():
+    # Buffer 0 -> needs 209 min, 225 left -> still waits (user's choice).
+    ca, calls = _night(buffer=0)
+    ca._eval_target()
+    assert calls == [], f"buffer 0 should wait with 225 min left, got {calls}"
+
+
+@case
+def test_finish_buffer_plan_display_matches():
+    # The "next charge start" estimate uses the same buffer as the start gate:
+    # window end minus (209 + 30) minutes.
+    ca, _ = _night(end_h=6)
+    start, reason = ca._planned_start_dt(46.0, 75.0)
+    end = ca_mod.charge_window.to_minutes(ca._opts[C.CA_WINDOW_END])
+    end_dt = ca._next_local_minute(end)
+    assert start is not None and "75%" in reason
+    assert int((end_dt - start).total_seconds() // 60) == 239, (end_dt - start)
+    ca._opts[C.CA_WINDOW_FINISH_BUFFER] = 60
+    start2, _ = ca._planned_start_dt(46.0, 75.0)
+    assert int((end_dt - start2).total_seconds() // 60) == 269
+
+
+@case
+def test_finish_buffer_bad_value_falls_back():
+    ca, _ = _night(buffer="lots")
+    assert ca._window_finish_buffer() == C.DEFAULT_WINDOW_FINISH_BUFFER_MIN
+    ca._opts[C.CA_WINDOW_FINISH_BUFFER] = 999
+    assert ca._window_finish_buffer() == 180
+    ca._opts[C.CA_WINDOW_FINISH_BUFFER] = -5
+    assert ca._window_finish_buffer() == 0
+
+
 @case
 def test_window_stops_when_outside_no_overrun():
     # Charging but now OUTSIDE the window with overrun OFF → stop (bounded).

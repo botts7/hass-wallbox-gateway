@@ -146,6 +146,8 @@ from .const import (
     CA_WINDOW_END,
     CA_WINDOW_OVERRUN,
     CA_WINDOW_PRESTART,
+    CA_WINDOW_FINISH_BUFFER,
+    DEFAULT_WINDOW_FINISH_BUFFER_MIN,
     CA_WINDOW_COST_WARN,
     CA_KEEP_SCHEDULE,
     TRIG_ARRIVAL,
@@ -1144,9 +1146,8 @@ class ChargeAssistant:
         now_local = dt_util.now()
         now_min = now_local.hour * 60 + now_local.minute
         mins_to_end = (end - now_min) % (24 * 60)
-        needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
-        mins_needed = int(needed_kwh / power * 60) + 10  # 10-min safety buffer
-        return mins_to_end <= mins_needed
+        mins_needed = self._minutes_needed(soc, target, self._window_finish_buffer())
+        return mins_needed is None or mins_to_end <= mins_needed
 
     # ------------------------------------------------------------------
     # Next-start estimate (display) — "when will it start charging?"
@@ -1160,9 +1161,18 @@ class ChargeAssistant:
             cand = cand + timedelta(days=1)
         return dt_util.as_utc(cand)
 
-    def _minutes_needed(self, soc: float, target: float) -> int | None:
-        """Charge time (minutes, +10 buffer) to reach target, or None without an
-        energy model."""
+    def _window_finish_buffer(self) -> int:
+        """Minutes to finish before the window END (CA_WINDOW_FINISH_BUFFER)."""
+        try:
+            v = int(self._opts.get(CA_WINDOW_FINISH_BUFFER, DEFAULT_WINDOW_FINISH_BUFFER_MIN))
+        except (TypeError, ValueError):
+            v = DEFAULT_WINDOW_FINISH_BUFFER_MIN
+        return max(0, min(v, 180))
+
+    def _minutes_needed(self, soc: float, target: float, buffer_min: int = 10) -> int | None:
+        """Charge time in minutes to reach target plus ``buffer_min`` of slack, or
+        None without an energy model. One formula for every deadline: the window
+        end passes the finish buffer, a departure keeps the 10-minute default."""
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
             power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
@@ -1171,7 +1181,7 @@ class ChargeAssistant:
         if batt <= 0 or power <= 0:
             return None
         needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
-        return int(needed_kwh / power * 60) + 10
+        return int(needed_kwh / power * 60) + int(buffer_min)
 
     def _planned_start_dt(self, soc: float, target: float) -> tuple[datetime | None, str]:
         """Clock time the windowed / departure plan will start (aware UTC), or
@@ -1182,6 +1192,7 @@ class ChargeAssistant:
             return None, ""
         now = dt_util.utcnow()
         if opts.get(CA_WINDOW_ENABLED):
+            mins_needed = self._minutes_needed(soc, target, self._window_finish_buffer())
             end = charge_window.to_minutes(opts.get(CA_WINDOW_END))
             start = charge_window.to_minutes(opts.get(CA_WINDOW_START))
             if end is None or start is None:
@@ -2964,14 +2975,7 @@ class ChargeAssistant:
         if dep is not None:
             mins_to_dep = max(0, int((dep - dt_util.utcnow()).total_seconds() // 60))
             if soc is not None and target is not None:
-                try:
-                    batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-                    power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
-                    if batt > 0 and power > 0:
-                        needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
-                        mins_needed = int(needed_kwh / power * 60) + 10  # 10-min buffer
-                except (TypeError, ValueError):
-                    pass
+                mins_needed = self._minutes_needed(soc, target)  # departure: 10-min buffer
         return charge_window.evaluate(
             now_min,
             start=self._opts.get(CA_WINDOW_START),

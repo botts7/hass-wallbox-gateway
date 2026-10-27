@@ -66,6 +66,11 @@ CA_WINDOW_END = "window_end"              # local "HH:MM"
 CA_WINDOW_OVERRUN = "window_overrun"      # keep charging past end until target met
 CA_WINDOW_PRESTART = "window_prestart"    # start before window to be ready by departure
 CA_WINDOW_COST_WARN = "window_cost_warn"  # notify when a charge runs outside the window
+# Aim to FINISH this many minutes before the window ends, not exactly at it, so
+# a late start, a slower real charge rate (charging losses) or the BMS taper
+# still lands inside the cheap window.
+CA_WINDOW_FINISH_BUFFER = "window_finish_buffer_min"
+DEFAULT_WINDOW_FINISH_BUFFER_MIN = 30
 
 # Coexistence (#152): solar-by-day + native-schedule-by-night. When on (Solar /
 # Smart+Solar only, and only meaningful with a charge window set), the schedule
