@@ -239,6 +239,9 @@ _START_ASSERT_RETRIES = 3
 # command we stand down for a cooldown so we never fight the user.
 _OWNER = "integration"
 _MANUAL_OVERRIDE_COOLDOWN_S = 1800  # 30 min
+# A charge that starts this soon after our own stop is our stop's fallout.
+_ADOPT_WINDOW = timedelta(minutes=3)
+_ADOPT_COOLDOWN = timedelta(minutes=30)
 
 
 def release_action(controlling: bool, default: str, owner: str, is_charging: bool) -> str | None:
@@ -351,6 +354,12 @@ class ChargeAssistant:
         # Did *we* start the current charge? Cheapest-window only ever stops a
         # charge it started itself — never a manual / app-initiated one.
         self._we_started = False
+        # Safety net (27 Oct): when a charge starts within _ADOPT_WINDOW of our
+        # own stop / hand-back, it's fallout from that command (a Pulsar MAX
+        # resumes a paused session on a second stop), not a deliberate native
+        # charge, so we adopt it and the target / window rules still apply.
+        self._last_own_stop: datetime | None = None
+        self._last_adopt: datetime | None = None
         # One-shot guard for the "charging outside your cheap window" cost
         # warning (re-armed once we're back inside the window / not charging).
         self._cost_warned = False
@@ -569,6 +578,7 @@ class ChargeAssistant:
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
         self._expire_user_stop()   # any new charge or an unplug ends the hold
+        self._maybe_adopt_restart()
         self._maybe_auto_resume(sc)
         self._maybe_release_default(sc)
         self._maybe_identity()
@@ -2200,6 +2210,7 @@ class ChargeAssistant:
             # Next start should re-assert the current from scratch.
             self._applied_current = None
             self._we_started = False
+            self._last_own_stop = dt_util.utcnow()
         else:
             self._we_started = True
         self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
@@ -2442,9 +2453,13 @@ class ChargeAssistant:
                 s["attempts"], _START_ASSERT_RETRIES,
             )
             if self._is_paused():
-                # Clear the sticky Eco/schedule pause first, then re-issue start.
-                self.hass.async_create_task(self._resume_native())
-            self._set_charging(True)   # re-issue the owner-tagged start (overrides Eco)
+                # Clear the sticky Eco/schedule pause FIRST, then re-issue the
+                # start, in order: s_cmode after the start hands control to
+                # Eco-Smart and re-queues it (measured on a MAX). Two separate
+                # tasks used to race.
+                self.hass.async_create_task(self._reassert_start())
+            else:
+                self._set_charging(True)   # re-issue the owner-tagged start (overrides Eco)
             try:
                 self._start_unsub = async_call_later(
                     self.hass, _START_VERIFY_DELAY_S, self._verify_start
@@ -2462,6 +2477,42 @@ class ChargeAssistant:
             "Tried to start charging but the charger keeps re-queuing it "
             "(Eco-Smart / Solar-Only may be on). You may need to start it from the app."
         )))
+
+    async def _reassert_start(self) -> None:
+        """Un-pause, THEN start (awaited in order, unlike two separate tasks)."""
+        await self._resume_native()
+        self._set_charging(True)   # owner-tagged start (overrides Eco)
+
+    def _maybe_adopt_restart(self) -> None:
+        """Adopt a charge that started right after our own stop / hand-back.
+
+        A charge we didn't start is normally left alone (hand-back mode treats
+        it as native solar). But one that starts within _ADOPT_WINDOW of our
+        own stop, with no other controller's command since, is fallout from
+        that stop (27 Oct: a second stop resumed a paused MAX at 7 kW and it
+        ran 2 h past the target). Adopting it makes the target and window rules
+        stop it again. At most once per _ADOPT_COOLDOWN, so a charger that keeps
+        bouncing can't loop us."""
+        if self._we_started or self._last_own_stop is None:
+            return
+        if not self._is_charging() or self._plugged_in() is not True:
+            return
+        now = dt_util.utcnow()
+        if now - self._last_own_stop > _ADOPT_WINDOW:
+            return
+        if self._last_adopt is not None and now - self._last_adopt < _ADOPT_COOLDOWN:
+            return
+        st = self._status()
+        by = str(st.get("last_command_by") or "")
+        if by and by != _OWNER:
+            return   # someone else (a person, an automation) started it: hands off
+        self._last_adopt = now
+        self._we_started = True
+        self._managed = True
+        _LOGGER.warning(
+            "Charge Assistant: charging restarted %ds after our stop — treating it as ours",
+            int((now - self._last_own_stop).total_seconds()),
+        )
 
     async def _resume_native(self) -> None:
         """Clear the charger's sticky Eco/schedule pause (gen flag) so a re-

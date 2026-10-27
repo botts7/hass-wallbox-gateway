@@ -639,6 +639,7 @@ def test_charger_adapter_eco_and_resume():
 
     class FakeClient:
         async def get(self, url): sent.append(("get", url))
+        async def command(self, payload): sent.append(("command", payload))
         async def bapi(self, met, par=None, wait_ms=None): sent.append(("bapi", met, par))
 
     class FakeCoord2:
@@ -656,7 +657,11 @@ def test_charger_adapter_eco_and_resume():
 
     eco_calls = [c for c in sent if c[0] == "bapi" and c[1] == "s_ecos"]
     assert eco_calls and _json.loads(eco_calls[0][2])["esm"] == 0, sent
-    assert any(c[0] == "get" and "resume" in c[1] for c in sent), sent
+    # The resume is owner-tagged (27 Oct): untagged, the gateway logged it as
+    # "manual" and the assistant read its own hand-back as a manual override.
+    resumes = [c[1] for c in sent if c[0] == "command" and c[1].get("action") == "resume"]
+    assert resumes and resumes[0].get("owner") == "integration", sent
+    assert not any(c[0] == "get" and "resume" in c[1] for c in sent), sent
 
 
 # ── native-schedule import: decode round-trips ──────────────────────
@@ -1178,6 +1183,55 @@ def test_current_bounds_use_charger_ceiling():
     ca._opts[C.CA_MAX_CURRENT] = 32
     ca._opts[C.CA_MIN_CURRENT] = 20
     assert ca._current_bounds() == (16, 16), "installer limit below the min"
+
+
+# ── 27 Oct overnight: adopt our stop's fallout; un-pause before restart ──
+def _adopt_case(by, secs_since_stop, charging=True):
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                   C.CA_TARGET_PCT: 75}, {"sensor.soc": FakeState("76")})
+    ca._coordinator().data["raw_status"] = {"control_owner": "integration",
+                                            "last_command_by": by}
+    ca._is_charging = lambda: charging
+    ca._we_started = False
+    ca._last_own_stop = dt_util.utcnow() - timedelta(seconds=secs_since_stop)
+    ca._maybe_adopt_restart()
+    return ca
+
+
+@case
+def test_adopts_restart_right_after_our_stop():
+    ca = _adopt_case("integration", 20)   # restarted 20 s after our stop
+    assert ca._we_started is True and ca._managed is True,         "our stop's fallout must be adopted so the target / window still apply"
+
+
+@case
+def test_never_adopts_someone_elses_start():
+    ca = _adopt_case("manual", 20)        # a person / automation started it
+    assert ca._we_started is False
+
+
+@case
+def test_adopt_only_inside_window_and_once():
+    assert _adopt_case("integration", 400)._we_started is False, "too long after our stop"
+    assert _adopt_case("integration", 20, charging=False)._we_started is False
+    ca = _adopt_case("integration", 20)
+    assert ca._we_started is True
+    ca._we_started = False                 # it bounced again...
+    ca._maybe_adopt_restart()
+    assert ca._we_started is False, "at most once per cooldown, so no loop"
+
+
+@case
+def test_reassert_start_unpauses_before_starting():
+    import asyncio
+    ca, calls = build({C.CA_MODE: C.MODE_TARGET}, {})
+    order = []
+    async def _resume():
+        order.append("resume")
+    ca._resume_native = _resume
+    ca._set_charging = lambda on: order.append(("start", on))
+    asyncio.run(ca._reassert_start())
+    assert order == ["resume", ("start", True)], order
 
 
 # ── commute-based adaptive target ───────────────────────────────────

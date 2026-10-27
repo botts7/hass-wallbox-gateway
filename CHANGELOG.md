@@ -16,6 +16,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the "next charge start" estimate both use it. A departure deadline keeps
   its 10-minute margin.
 
+### Fixed
+- **An overnight charge no longer restarts after the window-end stop and runs
+  past the target (27 Oct).** Three things lined up: the hand-back `resume` was
+  sent without the integration's owner tag, so the gateway logged it as a
+  manual command and the assistant then treated its own command as a manual
+  override and stood down for 30 minutes; the gateway's resume could send a
+  second stop that resumed the paused session (fixed in gateway firmware); and
+  hand-back mode left the restarted charge alone as if it were native solar.
+  Now the resume is owner-tagged, and a charge that starts within 3 minutes of
+  the assistant's own stop is treated as the assistant's, so the target and
+  window rules stop it again (once per 30 minutes, never for a charge someone
+  else started).
+- **The overnight start holds, and no longer waits 40 minutes to retry.** The
+  start retry un-paused the charger and restarted it as two racing tasks; on a
+  Pulsar MAX the un-pause landing second re-queued the charge under Eco-Smart.
+  It's now un-pause, then start, in order. The 40-minute gap was the 30-minute
+  manual-override back-off triggered by the untagged resume.
+
 ## [0.37.4] - 2026-10-26
 
 ### Fixed
