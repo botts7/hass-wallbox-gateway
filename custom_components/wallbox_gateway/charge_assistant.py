@@ -374,6 +374,11 @@ class ChargeAssistant:
         # min ended with the charger in Error).
         self._start_failed_this_plug = False
         self._error_notified = False
+        # When HA last received gateway data. The start watcher only trusts a
+        # charger status newer than its own start: HA polls every ~10 s, so at
+        # the 12 s check it can still hold the pre-start status (live test
+        # 28 Oct: a stale "queued" triggered a false re-assert).
+        self._last_coord_update: datetime | None = None
         # One-shot guard for the "charging outside your cheap window" cost
         # warning (re-armed once we're back inside the window / not charging).
         self._cost_warned = False
@@ -585,6 +590,7 @@ class ChargeAssistant:
     def _on_coord_update(self) -> None:
         """Coordinator tick — reconcile whenever the gateway's applied state
         doesn't yet match what we want (covers post-reboot retries)."""
+        self._last_coord_update = dt_util.utcnow()
         if self._arbiter is None:
             return
         self._update_repair()
@@ -2428,7 +2434,8 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     def _schedule_start_verify(self, reason: str, target: float) -> None:
         self._cancel_start_verify()
-        self._starting = {"reason": reason, "target": target, "check": 0, "reasserted": False}
+        self._starting = {"reason": reason, "target": target, "check": 0, "reasserted": False,
+                          "at": dt_util.utcnow()}
         self._arm_start_check(start_watch.CHECK_DELAYS_S[0])
 
     def _arm_start_check(self, delay: float) -> None:
@@ -2436,6 +2443,13 @@ class ChargeAssistant:
             self._start_unsub = async_call_later(self.hass, delay, self._verify_start)
         except Exception:  # noqa: BLE001 — no event loop (tests); watchdog is best-effort
             self._start_unsub = None
+        # Ask for fresh gateway data so the check sees the charger as it is now.
+        coord = self._coordinator()
+        if coord is not None and hasattr(coord, "async_request_refresh"):
+            try:
+                self.hass.async_create_task(coord.async_request_refresh())
+            except Exception:  # noqa: BLE001
+                pass
 
     def _cancel_start_verify(self) -> None:
         """Drop any pending start re-assert (we stopped, finished, or tore down)
@@ -2465,7 +2479,11 @@ class ChargeAssistant:
         if soc is not None and target is not None and soc >= float(target):
             self._starting = None
             return  # already at target — nothing to hold
-        code = self._charger_code()
+        # Only a status HA received AFTER our start counts; until then it's
+        # unknown (None), which can only wait (or give up at the last check).
+        fresh = (self._last_coord_update is not None and s.get("at") is not None
+                 and self._last_coord_update > s["at"])
+        code = self._charger_code() if fresh else None
         decision = start_watch.outcome(code, self._is_charging(), s["check"], s["reasserted"])
         if decision == start_watch.DONE:
             self._starting = None

@@ -47,7 +47,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (only if one is started, so a stop can never switch charging on), hands
     control back so Eco-Smart can run, sends one notification ("unplug and
     replug the car"), and doesn't auto-start again until the car is unplugged;
-  - a charger Error stops all auto-starts and is notified once.
+  - a charger Error stops all auto-starts and is notified once;
+  - it only trusts a charger status that arrived after its own start (HA polls
+    every ~10 s, so at the first check it can still hold the pre-start status;
+    a live test caught that being read as "taken back").
   Safe for chargers we can't test: the original Pulsar gets no stop or
   hand-back at give-up, and its re-assert is a plain start.
 - **A charge the assistant didn't start is no longer stopped after a failed

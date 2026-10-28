@@ -86,7 +86,12 @@ def _assistant(code, charging=False, status=None):
     created = []
     ca.hass.async_create_task = lambda coro: (created.append(coro), coro.close())
     ca._arm_start_check = lambda delay: None
-    ca._starting = {"reason": "test", "target": 75.0, "check": 0, "reasserted": False}
+    from homeassistant.util import dt as dt_util
+    from datetime import timedelta
+    started = dt_util.utcnow() - timedelta(seconds=12)
+    ca._starting = {"reason": "test", "target": 75.0, "check": 0, "reasserted": False,
+                    "at": started}
+    ca._last_coord_update = dt_util.utcnow()    # data received after the start
     return ca, calls, abandoned, created
 
 
@@ -161,6 +166,24 @@ def test_error_blocks_starts_and_notifies_once():
     ca._track_plug_and_error()
     ca._track_plug_and_error()
     assert len(created) == 1, "one error notification per episode"
+
+
+@case
+def test_stale_pre_start_status_is_not_a_take_back():
+    # Live test 28 Oct: at the 12 s check HA still held the pre-start status
+    # ("queued", 18) and the watcher re-asserted. Status older than the start
+    # must count as unknown: wait, never re-assert.
+    if not _HA_OK:
+        return
+    ca, calls, _, created = _assistant(18)
+    ca._last_coord_update = ca._starting["at"]  # nothing newer than the start
+    ca._is_paused = lambda: False
+    ca._verify_start()
+    assert calls == [] and created == [] and ca._starting is not None, calls
+    from homeassistant.util import dt as dt_util
+    ca._last_coord_update = dt_util.utcnow()    # fresh data, still queued
+    ca._verify_start()
+    assert calls == [True], "a fresh 'queued' is a real take-back"
 
 
 # ── the give-up itself, per charger family ──────────────────────────

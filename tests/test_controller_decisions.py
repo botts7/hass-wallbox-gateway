@@ -854,6 +854,8 @@ def test_start_verify_reasserts_on_eco_requeue():
         ca._coordinator().data["charger_realtime"] = {"charger_status": 18}
         ca._is_paused = lambda: False
         ca._schedule_start_verify("test", 80.0)
+        from datetime import timedelta as _td
+        ca._last_coord_update = dt_util.utcnow() + _td(seconds=1)   # data newer than the start
         assert ca._starting is not None and sched.get("delay") == 12
         sched["cb"](None)                      # watchdog fires
         assert calls == [True], f"should re-assert start, got {calls}"
