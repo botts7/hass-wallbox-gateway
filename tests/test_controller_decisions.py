@@ -848,12 +848,16 @@ def test_start_verify_reasserts_on_eco_requeue():
         ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
                            C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
         ca._we_started = True
-        ca._is_charging = lambda: False        # charger re-queued it
+        ca._is_charging = lambda: False
+        # Eco-Smart took the start back (status 18): one re-assert. (Status 2,
+        # waiting for the car, must NOT be re-asserted; see test_start_watch.)
+        ca._coordinator().data["charger_realtime"] = {"charger_status": 18}
+        ca._is_paused = lambda: False
         ca._schedule_start_verify("test", 80.0)
         assert ca._starting is not None and sched.get("delay") == 12
         sched["cb"](None)                      # watchdog fires
         assert calls == [True], f"should re-assert start, got {calls}"
-        assert ca._starting["attempts"] == 2
+        assert ca._starting["reasserted"] is True
     finally:
         ca_mod.async_call_later = orig
 
@@ -885,12 +889,19 @@ def test_start_verify_gives_up_after_retries():
                            C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
         ca._we_started = True
         ca._is_charging = lambda: False
+        # 28 Oct: the charger sat at status 2 (waiting for the car). Nothing may
+        # be sent while it waits (a start there PAUSES a MAX session); only the
+        # last check (90 s) gives up, and the give-up runs as one task.
+        ca._coordinator().data["charger_realtime"] = {"charger_status": 2}
+        given_up = []
+        async def _abandon(code):
+            given_up.append(code)
+        ca._abandon_start = _abandon
         ca._schedule_start_verify("test", 80.0)
-        sched["cb"](None)      # attempt 2 (re-assert)
-        sched["cb"](None)      # attempt 3 (re-assert)
-        sched["cb"](None)      # cap → give up
+        for _ in range(4):     # checks at 12, 30, 60, 90 s
+            sched["cb"](None)
         assert ca._starting is None
-        assert calls == [True, True], f"two re-asserts then give up, got {calls}"
+        assert calls == [], f"no re-assert while waiting for the car, got {calls}"
     finally:
         ca_mod.async_call_later = orig
 
@@ -1194,6 +1205,9 @@ def _adopt_case(by, secs_since_stop, charging=True):
     ca._is_charging = lambda: charging
     ca._we_started = False
     ca._last_own_stop = dt_util.utcnow() - timedelta(seconds=secs_since_stop)
+    # A real restart: the charger was seen idle after our stop, then charging
+    # again (status lag right after the stop doesn't count; test_start_watch).
+    ca._seen_idle_after_own_stop = True
     ca._maybe_adopt_restart()
     return ca
 

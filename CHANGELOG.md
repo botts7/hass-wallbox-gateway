@@ -33,6 +33,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Pulsar MAX the un-pause landing second re-queued the charge under Eco-Smart.
   It's now un-pause, then start, in order. The 40-minute gap was the 30-minute
   manual-override back-off triggered by the untagged resume.
+- **Overnight start no longer fights the car (28 Oct: no charge, then charger
+  Error).** The start check re-asserted after 12 s. A car takes 10 to 16 s to
+  start drawing, and on a Pulsar MAX a start sent while the charger is "waiting
+  for car" pauses the session (measured), so the re-assert broke the
+  handshake; it then retried every 10 minutes until the charger went into
+  Error, and left it paused so Eco-Smart couldn't run in the morning. Now:
+  - while the charger is starting or waiting for the car, nothing is sent; it
+    checks at 12, 30, 60 and 90 s and succeeds once charging;
+  - one re-assert, only if the charger actually took the start back (paused or
+    queued by Eco-Smart);
+  - if it still hasn't started at 90 s it gives up cleanly: ends the session
+    (only if one is started, so a stop can never switch charging on), hands
+    control back so Eco-Smart can run, sends one notification ("unplug and
+    replug the car"), and doesn't auto-start again until the car is unplugged;
+  - a charger Error stops all auto-starts and is notified once.
+  Safe for chargers we can't test: the original Pulsar gets no stop or
+  hand-back at give-up, and its re-assert is a plain start.
+- **A charge the assistant didn't start is no longer stopped after a failed
+  night.** The failed start left it believing the next charge was its own, so
+  a daytime charge was stopped as "outside the window".
+- **The restart safety net no longer misfires right after its own stop.** HA's
+  status lags a few seconds, so "still charging" just after a stop looked like
+  a restart; it now needs the charger seen idle first.
 - **Schedules on pre-6.11 Pulsar Plus firmware (#13 follow-up, field report
   from a Pulsar Plus Socket on 6.7.43):**
   - Slot 0 can be edited when the charger reports a schedule there. New
