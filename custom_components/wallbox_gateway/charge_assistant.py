@@ -238,6 +238,7 @@ _START_VERIFY_DELAY_S = 12   # first check (start_watch.CHECK_DELAYS_S drives th
 # While charging the battery reading moves 1% every ~8 min at 7 kW, ~35 min at
 # the 6 A minimum (82 kWh pack); one this old means the car stopped reporting.
 _SOC_STALE_MIN = 60
+_TARGET_TICK = timedelta(seconds=60)
 # After the stop that ends a failed start, before handing back: the session has
 # to leave "waiting for car" first (the charger rejects the hand-back there).
 _ABANDON_SETTLE_S = 5
@@ -998,9 +999,11 @@ class ChargeAssistant:
         # Departure / cheapest are time-driven; autostart needs a steady tick too
         # so a plug-in that's stable across an HA restart (no SOC/plug edge to
         # react to) still gets evaluated and started.
+        # Every minute: the window-end stop and the just-in-time start are only
+        # as punctual as this tick (29 Oct: at 5 min the stop came 4m51s late).
         if self._departure_active() or cheapest or self._opts.get(CA_TARGET_AUTOSTART):
             self._unsubs.append(
-                async_track_time_interval(self.hass, self._on_target_tick, timedelta(minutes=5))
+                async_track_time_interval(self.hass, self._on_target_tick, _TARGET_TICK)
             )
         _LOGGER.info(
             "Charge Assistant: target mode active — cap %s%% on %s (autostart=%s, departure=%s)",
