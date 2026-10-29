@@ -11,7 +11,10 @@ So the rules:
 - status 2 / 3 (handshake in progress): never send anything, just wait.
 - status 1 or power flowing: done.
 - status 4 / 18 (the charger took it back, e.g. Eco-Smart re-queued it): one
-  re-assert, and only once.
+  re-assert, and only once, and only after the charger has visibly reacted to
+  our start (1 / 2 / 3 or power) or from the 30 s check on. On 29 Oct the 12 s
+  check still read the pre-start 18 (the gateway polls r_sta every 30 s) while
+  the charger was already in 2: a re-assert there would pause the session.
 - status 7 (Error): stop at once.
 - still not charging at the last check: give up cleanly.
 
@@ -26,6 +29,7 @@ CHECK_DELAYS_S = (12, 18, 30, 30)
 WAITING = frozenset({2, 3})     # handshake in progress: never interrupt
 STARTED = frozenset({1, 2})     # a started session: a stop is safe (measured on a MAX)
 TAKEN_BACK = frozenset({4, 18})  # paused / queued by Eco-Smart
+RESPONDED = WAITING | STARTED   # the charger visibly acted on our start
 ERROR = 7
 
 DONE = "done"
@@ -35,14 +39,20 @@ GIVE_UP = "give_up"
 FAULT = "error"
 
 
-def outcome(code: int | None, charging: bool, check_index: int, reasserted: bool) -> str:
-    """Decision at check number ``check_index`` (0-based) of CHECK_DELAYS_S."""
+def outcome(code: int | None, charging: bool, check_index: int, reasserted: bool,
+            responded: bool = False) -> str:
+    """Decision at check number ``check_index`` (0-based) of CHECK_DELAYS_S.
+
+    ``responded``: a status in RESPONDED (or power) was seen since the start.
+    Without it, a take-back status at the first check may be the pre-start
+    value still sitting in a cache, so it only waits."""
     if charging or code == 1:
         return DONE
     if code == ERROR:
         return FAULT
     last = check_index >= len(CHECK_DELAYS_S) - 1
-    if code in TAKEN_BACK and not reasserted and not last:
+    if (code in TAKEN_BACK and not reasserted and not last
+            and (responded or check_index >= 1)):
         return REASSERT
     if last:
         return GIVE_UP

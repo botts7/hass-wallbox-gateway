@@ -234,6 +234,9 @@ _FINISH_STILL_CHARGING_KW = 1.0
 # the start doesn't hold. After starting we verify it actually took and re-assert
 # a few times — mirroring how a manual start "sticks" — before warning the user.
 _START_VERIFY_DELAY_S = 12   # first check (start_watch.CHECK_DELAYS_S drives the rest)
+# While charging the battery reading moves 1% every ~8 min at 7 kW, ~35 min at
+# the 6 A minimum (82 kWh pack); one this old means the car stopped reporting.
+_SOC_STALE_MIN = 60
 # After the stop that ends a failed start, before handing back: the session has
 # to leave "waiting for car" first (the charger rejects the hand-back there).
 _ABANDON_SETTLE_S = 5
@@ -1117,6 +1120,26 @@ class ChargeAssistant:
                 return  # above the price cap — wait for a cheaper price
             self._begin_charge("smart charge to target", soc, target)
 
+    def _soc_age_min(self) -> float | None:
+        """Minutes since the car's battery reading last changed, or None."""
+        st = self.hass.states.get(self._opts.get(CA_SOC_ENTITY) or "")
+        updated = getattr(st, "last_updated", None)
+        if updated is None:
+            return None
+        return (dt_util.utcnow() - updated).total_seconds() / 60
+
+    def _window_end_message(self, soc: float, target: float) -> str:
+        """Window-end note. A sleeping car stops reporting its battery while it
+        charges (29 Oct: stuck at 67% from 04:42, really ~77% at 06:00), so an
+        old reading is reported as old, not as where the charge ended."""
+        age = self._soc_age_min()
+        if age is not None and age > _SOC_STALE_MIN:
+            return (f"Cheap window ended, charging stopped. The car last reported "
+                    f"{soc:.0f}% about {age:.0f} min ago, so it's likely higher now "
+                    f"(target {target:.0f}%).")
+        return (f"Cheap window ended, paused at {soc:.0f}% (target {target:.0f}%). "
+                "Turn on 'keep charging past the window' to finish anyway.")
+
     def _eval_target_windowed(self, soc: float, target: float, charging: bool) -> None:
         """Target charging when a cheap window is enabled — the window BOUNDS the
         charge. We charge as late as possible to finish by the window END (just-
@@ -1133,10 +1156,8 @@ class ChargeAssistant:
                     "Charge Assistant: cheap window — stopping charge at %.0f%% (target %.0f%%)",
                     soc, target,
                 )
-                self._finish_charge(soc, target, reached=False, message=(
-                    f"Cheap window ended — paused at {soc:.0f}% (target {target:.0f}%). "
-                    "Turn on 'keep charging past the window' to finish anyway."
-                ))
+                self._finish_charge(soc, target, reached=False,
+                                    message=self._window_end_message(soc, target))
             return
         # Charging is allowed right now (in-window, or a departure pre-start /
         # overrun). If already charging, keep going — just flag a pricier charge.
@@ -2484,7 +2505,11 @@ class ChargeAssistant:
         fresh = (self._last_coord_update is not None and s.get("at") is not None
                  and self._last_coord_update > s["at"])
         code = self._charger_code() if fresh else None
-        decision = start_watch.outcome(code, self._is_charging(), s["check"], s["reasserted"])
+        charging = self._is_charging()
+        if charging or code in start_watch.RESPONDED:
+            s["responded"] = True
+        decision = start_watch.outcome(code, charging, s["check"], s["reasserted"],
+                                       s.get("responded", False))
         if decision == start_watch.DONE:
             self._starting = None
             return
@@ -2550,12 +2575,15 @@ class ChargeAssistant:
         ))
 
     def _charger_code(self) -> int | None:
-        """The charger's status code: r_sta charger_status, else r_dat st."""
+        """The charger's status code: r_dat st, else r_sta charger_status.
+        r_dat first: the gateway polls it every 10 s, r_sta only every 30 s
+        (29 Oct: r_sta still said 18 twelve seconds after a start that r_dat
+        already showed as 2)."""
         coord = self._coordinator()
         data = getattr(coord, "data", None) if coord is not None else None
         if not isinstance(data, dict):
             return None
-        for key, field in (("charger_realtime", "charger_status"), ("charger_status", "st")):
+        for key, field in (("charger_status", "st"), ("charger_realtime", "charger_status")):
             v = (data.get(key) or {}).get(field) if isinstance(data.get(key), dict) else None
             if isinstance(v, int) and not isinstance(v, bool):
                 return v

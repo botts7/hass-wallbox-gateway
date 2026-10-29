@@ -857,7 +857,9 @@ def test_start_verify_reasserts_on_eco_requeue():
         from datetime import timedelta as _td
         ca._last_coord_update = dt_util.utcnow() + _td(seconds=1)   # data newer than the start
         assert ca._starting is not None and sched.get("delay") == 12
-        sched["cb"](None)                      # watchdog fires
+        sched["cb"](None)                      # 12 s: could be pre-start cache, wait
+        assert calls == [], f"must not re-assert at the first check, got {calls}"
+        sched["cb"](None)                      # 30 s: a real take-back
         assert calls == [True], f"should re-assert start, got {calls}"
         assert ca._starting["reasserted"] is True
     finally:

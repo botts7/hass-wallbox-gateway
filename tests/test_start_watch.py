@@ -47,10 +47,19 @@ def test_done_when_charging():
 
 @case
 def test_taken_back_reasserts_once():
-    assert W.outcome(18, False, 0, False) == W.REASSERT
+    assert W.outcome(18, False, 0, False, responded=True) == W.REASSERT
+    assert W.outcome(18, False, 1, False) == W.REASSERT     # 30 s: data is post-start
     assert W.outcome(18, False, 1, True) == W.WAIT
-    assert W.outcome(4, False, 0, False) == W.REASSERT
+    assert W.outcome(4, False, 0, False, responded=True) == W.REASSERT
     assert W.outcome(18, False, 3, True) == W.GIVE_UP
+
+
+@case
+def test_first_check_take_back_without_response_waits():
+    # 29 Oct: at 12 s the cached status still said 18 (pre-start) while the
+    # charger was already in 2. No sign the charger acted yet: just wait.
+    assert W.outcome(18, False, 0, False) == W.WAIT
+    assert W.outcome(4, False, 0, False) == W.WAIT
 
 
 @case
@@ -128,6 +137,8 @@ def test_eco_take_back_reasserts_once_only():
     ca, calls, _, _ = _assistant(18)
     ca._is_paused = lambda: False
     ca._verify_start()
+    assert calls == [], "12 s with no sign of the charger acting: wait"
+    ca._verify_start()
     assert calls == [True], calls
     for _ in range(2):
         ca._verify_start()
@@ -183,7 +194,57 @@ def test_stale_pre_start_status_is_not_a_take_back():
     from homeassistant.util import dt as dt_util
     ca._last_coord_update = dt_util.utcnow()    # fresh data, still queued
     ca._verify_start()
-    assert calls == [True], "a fresh 'queued' is a real take-back"
+    assert calls == [True], "a fresh 'queued' at 30 s is a real take-back"
+
+
+@case
+def test_29_oct_stale_r_sta_with_r_dat_waiting():
+    # Night of 29 Oct, exact data at the 12 s check: r_sta (polled every 30 s)
+    # still 18 from before the start, r_dat already 2. The watcher must read
+    # r_dat, see the handshake, and send nothing.
+    if not _HA_OK:
+        return
+    ca, calls, _, created = _assistant(18)
+    ca._coordinator().data["charger_status"] = {"st": 2}
+    ca._is_paused = lambda: True                  # control_mode 1 after our start
+    ca._verify_start()
+    assert calls == [] and created == [] and ca._starting is not None, calls
+    ca._coordinator().data["charger_status"] = {"st": 1}
+    ca._is_charging = lambda: True
+    ca._verify_start()
+    assert ca._starting is None and calls == []
+
+
+@case
+def test_take_back_after_charger_responded_reasserts_at_first_check():
+    # A real Eco-Smart take-back seen right after the charger acted on the
+    # start (2 seen, then a fresh 18) is still re-asserted, once.
+    if not _HA_OK:
+        return
+    ca, calls, _, _ = _assistant(2)
+    ca._is_paused = lambda: False
+    ca._verify_start()                              # 12 s: waiting -> responded
+    assert calls == []
+    ca._coordinator().data["charger_realtime"] = {"charger_status": 18}
+    ca._verify_start()
+    assert calls == [True], calls
+
+
+@case
+def test_window_end_message_flags_a_stale_battery_reading():
+    if not _HA_OK:
+        return
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    C = T.C
+    ca, _ = T.build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc"},
+                    {"sensor.soc": T.FakeState("67")})
+    st = ca.hass.states.get("sensor.soc")
+    st.last_updated = dt_util.utcnow() - timedelta(minutes=78)   # 04:42 -> 06:00
+    msg = ca._window_end_message(67, 76)
+    assert "about 78 min ago" in msg and "likely higher" in msg, msg
+    st.last_updated = dt_util.utcnow() - timedelta(minutes=5)
+    assert "paused at 67%" in ca._window_end_message(67, 76)
 
 
 # ── the give-up itself, per charger family ──────────────────────────
