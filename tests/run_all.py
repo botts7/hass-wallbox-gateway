@@ -32,6 +32,7 @@ MODULES = [
     "test_schedule_arbiter",       # coexistence schedule scoping (#152); self-skips w/o HA
     "test_current_limits",         # charger current ceiling (US 40/48 A, #39)
     "test_start_watch",            # start watcher: never interrupt the handshake (28 Oct)
+    "test_own_charge",             # our charge survives an HA restart (29 Oct)
     "test_pulsar_schedule",        # original Pulsar schedules, snoop replay (#68)
     "test_legacy_schedule",        # pre-6.11 Plus w_sch fallback (#13)
     "test_schedule_days",          # set_schedule Sunday-first day encoding (#11); self-skips w/o HA

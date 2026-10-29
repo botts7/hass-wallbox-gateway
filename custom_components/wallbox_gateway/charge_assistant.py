@@ -164,6 +164,7 @@ from . import ca_config
 from . import charge_window
 from .legacy_schedule import is_original_pulsar
 from . import start_watch
+from . import own_charge
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -362,6 +363,11 @@ class ChargeAssistant:
         # Did *we* start the current charge? Cheapest-window only ever stops a
         # charge it started itself — never a manual / app-initiated one.
         self._we_started = False
+        # _we_started survives an HA restart through a saved record (own_charge):
+        # _own_record is the live one, _restored_own the one loaded at startup
+        # and still to be checked against the charger (29 Oct live test).
+        self._own_record: dict | None = None
+        self._restored_own: dict | None = None
         # Safety net (27 Oct): when a charge starts within _ADOPT_WINDOW of our
         # own stop / hand-back, it's fallout from that command (a Pulsar MAX
         # resumes a paused session on a second stop), not a deliberate native
@@ -490,6 +496,8 @@ class ChargeAssistant:
                 )
             data = await self._balance_store.async_load()
             self._last_balance = (data or {}).get("last_balance")
+            self._restored_own = (data or {}).get("own_charge")
+            self._own_record = self._restored_own
         except Exception as err:  # noqa: BLE001 — never block startup on this
             _LOGGER.debug("Charge Assistant: balance-state load failed: %s", err)
             self._last_balance = None
@@ -602,6 +610,8 @@ class ChargeAssistant:
             self.hass.async_create_task(self._apply_control(sc))
         self._expire_user_stop()   # any new charge or an unplug ends the hold
         self._track_plug_and_error()
+        self._maybe_reclaim_after_restart()
+        self._note_own_session()
         self._maybe_adopt_restart()
         self._maybe_auto_resume(sc)
         self._maybe_release_default(sc)
@@ -1448,9 +1458,76 @@ class ChargeAssistant:
         if self._balance_store is None:
             return
         try:
-            await self._balance_store.async_save({"last_balance": self._last_balance})
+            await self._balance_store.async_save({"last_balance": self._last_balance,
+                                                  "own_charge": self._own_record})
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Charge Assistant: balance-state save failed: %s", err)
+
+    def _set_own_record(self, on: bool) -> None:
+        """Save (start) or clear (stop / give-up) the 'this charge is ours'
+        record so it survives an HA restart (own_charge)."""
+        # The session id is filled in once the charge is seen running
+        # (_note_own_session): at the start command it may still be the last one.
+        rec = own_charge.record(dt_util.utcnow().timestamp()) if on else None
+        if rec == self._own_record:
+            return
+        self._own_record = rec
+        self._restored_own = None
+        try:
+            self.hass.async_create_task(self._save_balance_state())
+        except Exception:  # noqa: BLE001 — no event loop (tests)
+            pass
+
+    def _note_own_session(self) -> None:
+        """Our charge is running: remember its session id in the saved record."""
+        rec = self._own_record
+        if not self._we_started or rec is None or rec.get("usid") is not None:
+            return
+        if not self._is_charging():
+            return
+        usid = self._session_id()
+        if usid is None:
+            return
+        self._own_record = {**rec, "usid": usid}
+        try:
+            self.hass.async_create_task(self._save_balance_state())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _session_id(self) -> int | None:
+        """The charger's session id (r_dat usid), or None."""
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        v = ((data or {}).get("charger_status") or {}).get("usid") if isinstance(data, dict) else None
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    def _maybe_reclaim_after_restart(self) -> None:
+        """After an HA restart, take back a charge we started before it, so the
+        window end and target still stop it (own_charge rules)."""
+        saved = self._restored_own
+        if saved is None:
+            return
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        loaded = (isinstance(data, dict) and bool(data.get("raw_status"))
+                  and bool(data.get("charger_status")))
+        st = self._status() if loaded else {}
+        verdict = own_charge.decide(
+            saved, now_s=dt_util.utcnow().timestamp(), loaded=loaded,
+            charging=self._is_charging(), plugged=self._plugged_in(),
+            last_by=str(st.get("last_command_by") or ""), manual=self._is_paused(),
+            usid=self._session_id(),
+        )
+        if verdict == own_charge.WAIT:
+            return
+        self._restored_own = None
+        if verdict == own_charge.KEEP:
+            self._we_started = True
+            self._managed = True
+            _LOGGER.warning("Charge Assistant: a charge it started before HA restarted "
+                            "is still running, taking it back")
+        else:
+            self._set_own_record(False)
 
     def target_status(self) -> dict | None:
         """Read-only snapshot of the resolved acting target, for the effective-
@@ -2257,6 +2334,7 @@ class ChargeAssistant:
             self._seen_idle_after_own_stop = False
         else:
             self._we_started = True
+        self._set_own_record(on)
         self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
 
     async def _send_command(self, coord, action: str, value=None) -> None:
@@ -2543,6 +2621,7 @@ class ChargeAssistant:
         self._start_failed_this_plug = True
         self._managed = False
         self._we_started = False
+        self._set_own_record(False)
         self._cancel_grace()
         coord = self._coordinator()
         if coord is None:
@@ -2649,6 +2728,7 @@ class ChargeAssistant:
         self._last_adopt = now
         self._we_started = True
         self._managed = True
+        self._set_own_record(True)
         _LOGGER.warning(
             "Charge Assistant: charging restarted %ds after our stop — treating it as ours",
             int((now - self._last_own_stop).total_seconds()),
