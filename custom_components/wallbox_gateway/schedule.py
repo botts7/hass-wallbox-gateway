@@ -19,6 +19,7 @@ charger stores (matching the dashboard's local<->UTC handling).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -32,10 +33,15 @@ from homeassistant.util import dt as dt_util
 from .api import GatewayClient, GatewayError, GatewayUnreachable
 from .const import CA_IMPORTED_SCHEDULES, DOMAIN
 from .current_limits import current_ceiling
+from . import pulsar_schedule as pulsar
 from .legacy_schedule import (
+    check_clear_sid,
     days_bitmask,
     is_no_dispatch,
+    is_original_pulsar,
     pick_legacy_sid,
+    row_applied,
+    slot_cleared,
     wsch_clear_par,
     wsch_par,
 )
@@ -124,6 +130,10 @@ def _days_from_array(arr: object) -> list[str]:
     return []
 
 
+def _real_current(v: object) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 6
+
+
 def _decode_schedule(row: object) -> dict | None:
     """A raw r_schs row -> the friendly shape the set_schedule service accepts."""
     if not isinstance(row, dict):
@@ -140,10 +150,39 @@ def _decode_schedule(row: object) -> dict | None:
         "start": _utc_int_to_local_hhmm(row.get("start")),
         "stop": _utc_int_to_local_hhmm(row.get("stop")),
         "days": _days_from_array(row.get("days")),
-        "max_current": row.get("mcr"),
+        # Pre-6.11 firmware reports a meaningless mcr (1 on a 32 A Pulsar Plus
+        # Socket, #13); a real limit is never below 6 A.
+        "max_current": row.get("mcr") if _real_current(row.get("mcr")) else None,
         "enabled": bool(row.get("enabled")),
         "energy_target_kwh": kwh,
     }
+
+
+def _device_entry_ids(device: dr.DeviceEntry) -> list[str]:
+    """The device's config entry id(s). HA 2026.10 deprecates
+    DeviceEntry.config_entries for config_entry_id (removed 2027.10), but our
+    minimum HA (2024.12) predates config_entry_id, so prefer it when present."""
+    one = getattr(device, "config_entry_id", None)
+    if one:
+        return [one]
+    return list(getattr(device, "config_entries", None) or [])
+
+
+_RESOLVE_WAIT_S = 5.0
+
+
+async def _await_coord_entry(hass: HomeAssistant, device_id: str | None):
+    """_resolve_coord_entry, waiting up to _RESOLVE_WAIT_S while the entry is
+    reloading (any options change reloads it, and for that moment the device
+    looks unknown, #13)."""
+    deadline = asyncio.get_running_loop().time() + _RESOLVE_WAIT_S
+    while True:
+        try:
+            return _resolve_coord_entry(hass, device_id)
+        except HomeAssistantError:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise
+            await asyncio.sleep(0.5)
 
 
 def _resolve_coord_entry(hass: HomeAssistant, device_id: str | None):
@@ -153,32 +192,13 @@ def _resolve_coord_entry(hass: HomeAssistant, device_id: str | None):
     if device_id:
         device = dr.async_get(hass).async_get(device_id)
         if device:
-            for entry_id in device.config_entries:
+            for entry_id in _device_entry_ids(device):
                 if entry_id in coordinators:
                     return coordinators[entry_id], entry_id
         raise HomeAssistantError("That device isn't a Wallbox Gateway charger.")
     if len(coordinators) == 1:
         entry_id, coord = next(iter(coordinators.items()))
         return coord, entry_id
-    raise HomeAssistantError(
-        "Multiple Wallbox Gateways configured — pass device_id to pick one."
-    )
-
-
-def _resolve_client(hass: HomeAssistant, device_id: str | None) -> GatewayClient:
-    """Find the GatewayClient for the targeted device, or the sole entry."""
-    store = hass.data.get(DOMAIN, {})
-    # Coordinators are stored under their entry_id (plus the "_assistants" key).
-    coordinators = {k: v for k, v in store.items() if k != "_assistants"}
-    if device_id:
-        device = dr.async_get(hass).async_get(device_id)
-        if device:
-            for entry_id in device.config_entries:
-                if entry_id in coordinators:
-                    return coordinators[entry_id].client
-        raise HomeAssistantError("That device isn't a Wallbox Gateway charger.")
-    if len(coordinators) == 1:
-        return next(iter(coordinators.values())).client
     raise HomeAssistantError(
         "Multiple Wallbox Gateways configured — pass device_id to pick one."
     )
@@ -204,16 +224,96 @@ def _schedule_rows(res: object) -> list:
     return r if isinstance(r, list) else []
 
 
-async def _existing_sids(client: GatewayClient) -> list[int]:
-    """Schedule ids currently on the charger ([] if unreadable)."""
+async def _read_rows(client: GatewayClient) -> list | None:
+    """The charger's schedule rows, or None if they couldn't be read."""
     try:
         res = await client.command(
             {"action": "bapi", "met": "r_schs", "par": "null", "wait": "5000"}
         )
     except (GatewayError, GatewayUnreachable):
-        return []
-    rows = _schedule_rows(res)
+        return None
+    if isinstance(res, dict) and res.get("error"):
+        return None
+    return _schedule_rows(res)
+
+
+async def _existing_sids(client: GatewayClient) -> list[int]:
+    """Schedule ids currently on the charger ([] if unreadable)."""
+    rows = await _read_rows(client) or []
     return [int(r["sid"]) for r in rows if isinstance(r, dict) and "sid" in r]
+
+
+_READBACK_DELAYS_S = (0.5, 1.5, 3.0)
+
+
+async def _confirm(client: GatewayClient, check, reader=None) -> bool:
+    """Re-read the schedules a few times until check(rows) holds."""
+    read = reader or _read_rows
+    for delay in _READBACK_DELAYS_S:
+        await asyncio.sleep(delay)
+        rows = await read(client)
+        if rows is not None and check(rows):
+            return True
+    return False
+
+
+async def _read_pulsar_rows(client: GatewayClient) -> list | None:
+    """Original Pulsar: its four slots, one r_sch each (no r_schs on it)."""
+    rows = []
+    for sid in pulsar.SLOTS:
+        try:
+            res = await client.command(
+                {"action": "bapi", "met": "r_sch", "par": str(sid), "wait": "4000"}
+            )
+        except (GatewayError, GatewayUnreachable):
+            return None
+        r = res.get("r") if isinstance(res, dict) else None
+        if not isinstance(r, dict):
+            return None
+        rows.append(r)
+    return rows
+
+
+async def _set_pulsar(
+    client: GatewayClient, requested: int | None, start: int, stop: int, days: list[str]
+) -> None:
+    """Original Pulsar: the 12-character w_sch from the app snoop (#68)."""
+    rows = await _read_pulsar_rows(client)
+    if rows is None:
+        raise HomeAssistantError("set_schedule: couldn't read the charger's schedules")
+    mask = days_bitmask(days)
+    try:
+        sid = pulsar.pick_sid(requested, rows)
+        par = pulsar.wsch_par(sid, start, stop, mask)
+    except ValueError as e:
+        raise HomeAssistantError(f"set_schedule: {e}") from e
+    res = await _bapi(client, "w_sch", par)
+    _raise_on_error(res, "set_schedule (original Pulsar w_sch)")
+    if not await _confirm(
+        client, lambda r: pulsar.row_applied(r, sid, start, stop, mask), _read_pulsar_rows
+    ):
+        raise HomeAssistantError(
+            f"set_schedule: the charger accepted slot {sid} but the schedule didn't "
+            "update. Check it on the gateway dashboard."
+        )
+    _LOGGER.info("Wallbox Gateway: set_schedule #%s via original-Pulsar w_sch %s", sid, par)
+
+
+async def _delete_pulsar(client: GatewayClient, sids: list[int]) -> None:
+    for sid in sids:
+        try:
+            clear = pulsar.clear_par(sid)
+        except ValueError as e:
+            raise HomeAssistantError(f"delete_schedule: {e}") from e
+        r = await _bapi(client, "w_sch", clear)
+        _raise_on_error(r, f"delete_schedule #{sid} (original Pulsar w_sch)")
+        if not await _confirm(client, lambda rows, s=sid: pulsar.slot_cleared(rows, s),
+                              _read_pulsar_rows):
+            raise HomeAssistantError(
+                f"delete_schedule: the charger accepted the delete of slot {sid} but "
+                "the schedule is still there. Check it on the gateway dashboard."
+            )
+    _LOGGER.info("Wallbox Gateway: delete_schedule %s via original-Pulsar w_sch", sids)
 
 
 async def _next_sid(client: GatewayClient) -> int:
@@ -236,20 +336,50 @@ async def _set_legacy(
 ) -> None:
     """Pre-6.11 Pulsar Plus: write via the packed legacy w_sch (#13). No
     enabled / current / energy-target fields exist on this firmware."""
+    existing = await _existing_sids(client)
+    mask = days_bitmask(days)
     try:
-        sid = pick_legacy_sid(requested, await _existing_sids(client))
-        par = wsch_par(sid, start, stop, days_bitmask(days))
+        sid = pick_legacy_sid(requested, existing)
+        par = wsch_par(sid, start, stop, mask)
     except ValueError as e:
         raise HomeAssistantError(f"set_schedule: {e}") from e
     res = await _bapi(client, "w_sch", par)
     _raise_on_error(res, "set_schedule (legacy w_sch)")
+    # The charger can accept a legacy write and drop it (a Pulsar Plus Socket
+    # ignores a write to an empty slot, #13), so confirm it was stored.
+    if not await _confirm(client, lambda rows: row_applied(rows, sid, start, stop, mask)):
+        if sid not in existing:
+            raise HomeAssistantError(
+                f"set_schedule: the charger accepted slot {sid} but didn't store it. "
+                "This charger firmware may only allow editing existing schedules; "
+                "create new ones in the Wallbox app, then edit them from here."
+            )
+        raise HomeAssistantError(
+            f"set_schedule: the charger accepted the change to slot {sid} but the "
+            "schedule didn't update. Check it in the Wallbox app."
+        )
     _LOGGER.info("Wallbox Gateway: set_schedule #%s via legacy w_sch %s -> %s", sid, par, res)
+
+
+def _is_original_pulsar(coord) -> bool:
+    """The original (Zentri, no-WiFi) Pulsar: its own schedule format and no
+    r_schs, so it takes the pulsar_schedule path."""
+    data = getattr(coord, "data", None) or {}
+    return is_original_pulsar(data.get("raw_status"))
 
 
 async def _handle_set(hass: HomeAssistant, call: ServiceCall) -> None:
     data = call.data
-    coord, _entry_id = _resolve_coord_entry(hass, data.get("device_id"))
+    coord, _entry_id = await _await_coord_entry(hass, data.get("device_id"))
     client = coord.client
+    if _is_original_pulsar(coord):
+        await _set_pulsar(
+            client, data.get("sid"),
+            _local_hhmm_to_utc_int(hass, data["start"]),
+            _local_hhmm_to_utc_int(hass, data["stop"]),
+            data["days"],
+        )
+        return
     ceiling = current_ceiling(getattr(coord, "data", None))
     max_current = data.get("max_current")
     if max_current is None:
@@ -290,21 +420,32 @@ async def _handle_set(hass: HomeAssistant, call: ServiceCall) -> None:
 
 async def _handle_delete(hass: HomeAssistant, call: ServiceCall) -> None:
     data = call.data
-    client = _resolve_client(hass, data.get("device_id"))
+    coord, _entry_id = await _await_coord_entry(hass, data.get("device_id"))
+    client = coord.client
     sids = [int(s) for s in data["sid"]]
+    if _is_original_pulsar(coord):
+        await _delete_pulsar(client, sids)
+        return
     par = json.dumps({"sid": sids}, separators=(",", ":"))
     _LOGGER.debug("delete_schedule par=%s", par)
     res = await _bapi(client, "clr_sch", par)
     if is_no_dispatch(res):
         # Firmware without clr_sch (pre-6.11 Pulsar Plus): empty each slot via
         # the legacy w_sch, as the gateway dashboard does (#13).
+        existing = await _existing_sids(client)
         for sid in sids:
             try:
+                check_clear_sid(sid, existing)
                 clear = wsch_clear_par(sid)
             except ValueError as e:
                 raise HomeAssistantError(f"delete_schedule: {e}") from e
             r = await _bapi(client, "w_sch", clear)
             _raise_on_error(r, f"delete_schedule #{sid} (legacy w_sch)")
+            if not await _confirm(client, lambda rows, s=sid: slot_cleared(rows, s)):
+                raise HomeAssistantError(
+                    f"delete_schedule: the charger accepted the delete of slot {sid} "
+                    "but the schedule is still there. Delete it in the Wallbox app."
+                )
         _LOGGER.info("Wallbox Gateway: delete_schedule %s via legacy w_sch", sids)
         return
     _raise_on_error(res, "delete_schedule")
@@ -321,15 +462,22 @@ async def _handle_import(hass: HomeAssistant, call: ServiceCall) -> dict:
     charge control, so this preserves a visible, persisted snapshot in the
     config entry — nothing is lost and the user never has to re-create them.
     """
-    coord, entry_id = _resolve_coord_entry(hass, call.data.get("device_id"))
-    try:
-        res = await coord.client.command(
-            {"action": "bapi", "met": "r_schs", "par": "null", "wait": "6000"}
-        )
-    except (GatewayError, GatewayUnreachable) as e:
-        raise HomeAssistantError(f"Couldn't reach the charger: {e}") from e
-    _raise_on_error(res, "import_native_schedules")
-    schedules = [s for s in (_decode_schedule(r) for r in _schedule_rows(res)) if s]
+    coord, entry_id = await _await_coord_entry(hass, call.data.get("device_id"))
+    if _is_original_pulsar(coord):
+        rows = await _read_pulsar_rows(coord.client)
+        if rows is None:
+            raise HomeAssistantError("import_native_schedules: couldn't read the charger's schedules")
+        rows = [r for r in rows if pulsar.in_use(r)]
+    else:
+        try:
+            res = await coord.client.command(
+                {"action": "bapi", "met": "r_schs", "par": "null", "wait": "6000"}
+            )
+        except (GatewayError, GatewayUnreachable) as e:
+            raise HomeAssistantError(f"Couldn't reach the charger: {e}") from e
+        _raise_on_error(res, "import_native_schedules")
+        rows = _schedule_rows(res)
+    schedules = [s for s in (_decode_schedule(r) for r in rows) if s]
     snapshot = {"at": dt_util.utcnow().isoformat(), "schedules": schedules}
     entry = hass.config_entries.async_get_entry(entry_id)
     if entry is not None:

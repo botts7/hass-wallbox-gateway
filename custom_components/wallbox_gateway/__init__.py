@@ -22,6 +22,7 @@ from .api import ClientConfig, GatewayClient
 from .ca_config import sanitize_options
 from .charge_assistant import ChargeAssistant
 from .const import (
+    CA_IMPORTED_SCHEDULES,
     CA_KEY,
     DEFAULT_USERNAME,
     DOMAIN,
@@ -85,6 +86,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await assistant.async_start()
     hass.data[DOMAIN].setdefault("_assistants", {})[entry.entry_id] = assistant
     # Re-run setup (and thus re-read the assistant config) on options change.
+    _OPTIONS_SEEN[entry.entry_id] = dict(entry.options)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # One-time service: fire a test reminder notification on demand, so the
@@ -182,8 +184,30 @@ def _reenable_default_disabled(hass: HomeAssistant, entry: ConfigEntry) -> None:
             )
 
 
+# Options as of the last setup / reload, per entry. Kept here, not in
+# hass.data[DOMAIN], where every key but "_assistants" is read as a gateway.
+_OPTIONS_SEEN: dict[str, dict] = {}
+
+# Options keys that are stored data, not configuration: changing them must not
+# reload the integration.
+_NO_RELOAD_KEYS = frozenset({CA_IMPORTED_SCHEDULES})
+
+
+def options_need_reload(before: dict, after: dict) -> bool:
+    """True unless the only options that changed are stored data (e.g. the
+    import_native_schedules snapshot). A reload makes the device briefly
+    unknown, so a set_schedule right after an import failed (#13)."""
+    keys = (set(before) | set(after)) - _NO_RELOAD_KEYS
+    return any(before.get(k) != after.get(k) for k in keys)
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when the Charge Assistant options change."""
+    """Reload the entry when its configuration options change."""
+    before = _OPTIONS_SEEN.get(entry.entry_id)
+    after = dict(entry.options)
+    _OPTIONS_SEEN[entry.entry_id] = after
+    if before is not None and not options_need_reload(before, after):
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -221,4 +245,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        _OPTIONS_SEEN.pop(entry.entry_id, None)
     return unloaded

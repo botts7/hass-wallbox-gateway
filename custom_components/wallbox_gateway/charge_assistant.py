@@ -25,6 +25,7 @@ Scheduled / Prompt modes are reserved for later phases.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -146,6 +147,8 @@ from .const import (
     CA_WINDOW_END,
     CA_WINDOW_OVERRUN,
     CA_WINDOW_PRESTART,
+    CA_WINDOW_FINISH_BUFFER,
+    DEFAULT_WINDOW_FINISH_BUFFER_MIN,
     CA_WINDOW_COST_WARN,
     CA_KEEP_SCHEDULE,
     TRIG_ARRIVAL,
@@ -159,6 +162,9 @@ from .const import (
 from . import balance_schedule
 from . import ca_config
 from . import charge_window
+from .legacy_schedule import is_original_pulsar
+from . import start_watch
+from . import own_charge
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -228,8 +234,14 @@ _FINISH_STILL_CHARGING_KW = 1.0
 # queue it a beat later (Eco-Smart re-asserts when there's no solar at night), so
 # the start doesn't hold. After starting we verify it actually took and re-assert
 # a few times — mirroring how a manual start "sticks" — before warning the user.
-_START_VERIFY_DELAY_S = 12
-_START_ASSERT_RETRIES = 3
+_START_VERIFY_DELAY_S = 12   # first check (start_watch.CHECK_DELAYS_S drives the rest)
+# While charging the battery reading moves 1% every ~8 min at 7 kW, ~35 min at
+# the 6 A minimum (82 kWh pack); one this old means the car stopped reporting.
+_SOC_STALE_MIN = 60
+_TARGET_TICK = timedelta(seconds=60)
+# After the stop that ends a failed start, before handing back: the session has
+# to leave "waiting for car" first (the charger rejects the hand-back there).
+_ABANDON_SETTLE_S = 5
 
 # Charge-control arbitration (see esp32-wallbox docs/control-owner.md). The
 # gateway's control_owner says who may autonomously drive charging; the acting
@@ -237,6 +249,9 @@ _START_ASSERT_RETRIES = 3
 # command we stand down for a cooldown so we never fight the user.
 _OWNER = "integration"
 _MANUAL_OVERRIDE_COOLDOWN_S = 1800  # 30 min
+# A charge that starts this soon after our own stop is our stop's fallout.
+_ADOPT_WINDOW = timedelta(minutes=3)
+_ADOPT_COOLDOWN = timedelta(minutes=30)
 
 
 def release_action(controlling: bool, default: str, owner: str, is_charging: bool) -> str | None:
@@ -349,6 +364,31 @@ class ChargeAssistant:
         # Did *we* start the current charge? Cheapest-window only ever stops a
         # charge it started itself — never a manual / app-initiated one.
         self._we_started = False
+        # _we_started survives an HA restart through a saved record (own_charge):
+        # _own_record is the live one, _restored_own the one loaded at startup
+        # and still to be checked against the charger (29 Oct live test).
+        self._own_record: dict | None = None
+        self._restored_own: dict | None = None
+        # Safety net (27 Oct): when a charge starts within _ADOPT_WINDOW of our
+        # own stop / hand-back, it's fallout from that command (a Pulsar MAX
+        # resumes a paused session on a second stop), not a deliberate native
+        # charge, so we adopt it and the target / window rules still apply.
+        self._last_own_stop: datetime | None = None
+        self._last_adopt: datetime | None = None
+        # True once the charger was seen NOT charging after our own stop: only a
+        # charge that starts after that is a restart worth adopting (HA's status
+        # lags a few seconds, so "still charging" right after a stop isn't one).
+        self._seen_idle_after_own_stop = False
+        # A start we made didn't take (car not drawing, charger error, ...): no
+        # more auto-starts until the car is unplugged (28 Oct: retrying every 10
+        # min ended with the charger in Error).
+        self._start_failed_this_plug = False
+        self._error_notified = False
+        # When HA last received gateway data. The start watcher only trusts a
+        # charger status newer than its own start: HA polls every ~10 s, so at
+        # the 12 s check it can still hold the pre-start status (live test
+        # 28 Oct: a stale "queued" triggered a false re-assert).
+        self._last_coord_update: datetime | None = None
         # One-shot guard for the "charging outside your cheap window" cost
         # warning (re-armed once we're back inside the window / not charging).
         self._cost_warned = False
@@ -457,6 +497,8 @@ class ChargeAssistant:
                 )
             data = await self._balance_store.async_load()
             self._last_balance = (data or {}).get("last_balance")
+            self._restored_own = (data or {}).get("own_charge")
+            self._own_record = self._restored_own
         except Exception as err:  # noqa: BLE001 — never block startup on this
             _LOGGER.debug("Charge Assistant: balance-state load failed: %s", err)
             self._last_balance = None
@@ -560,6 +602,7 @@ class ChargeAssistant:
     def _on_coord_update(self) -> None:
         """Coordinator tick — reconcile whenever the gateway's applied state
         doesn't yet match what we want (covers post-reboot retries)."""
+        self._last_coord_update = dt_util.utcnow()
         if self._arbiter is None:
             return
         self._update_repair()
@@ -567,6 +610,10 @@ class ChargeAssistant:
         if sc != self._applied_sc:
             self.hass.async_create_task(self._apply_control(sc))
         self._expire_user_stop()   # any new charge or an unplug ends the hold
+        self._track_plug_and_error()
+        self._maybe_reclaim_after_restart()
+        self._note_own_session()
+        self._maybe_adopt_restart()
         self._maybe_auto_resume(sc)
         self._maybe_release_default(sc)
         self._maybe_identity()
@@ -952,9 +999,11 @@ class ChargeAssistant:
         # Departure / cheapest are time-driven; autostart needs a steady tick too
         # so a plug-in that's stable across an HA restart (no SOC/plug edge to
         # react to) still gets evaluated and started.
+        # Every minute: the window-end stop and the just-in-time start are only
+        # as punctual as this tick (29 Oct: at 5 min the stop came 4m51s late).
         if self._departure_active() or cheapest or self._opts.get(CA_TARGET_AUTOSTART):
             self._unsubs.append(
-                async_track_time_interval(self.hass, self._on_target_tick, timedelta(minutes=5))
+                async_track_time_interval(self.hass, self._on_target_tick, _TARGET_TICK)
             )
         _LOGGER.info(
             "Charge Assistant: target mode active — cap %s%% on %s (autostart=%s, departure=%s)",
@@ -1055,6 +1104,7 @@ class ChargeAssistant:
         if self._plugged_in() is not True:
             self._cancel_grace("car unplugged")
             self._reached_target = False   # fresh session next plug-in
+            self._start_failed_this_plug = False
             return
 
         # Window governs: when a cheap window is enabled it BOUNDS grid charging
@@ -1083,6 +1133,26 @@ class ChargeAssistant:
                 return  # above the price cap — wait for a cheaper price
             self._begin_charge("smart charge to target", soc, target)
 
+    def _soc_age_min(self) -> float | None:
+        """Minutes since the car's battery reading last changed, or None."""
+        st = self.hass.states.get(self._opts.get(CA_SOC_ENTITY) or "")
+        updated = getattr(st, "last_updated", None)
+        if updated is None:
+            return None
+        return (dt_util.utcnow() - updated).total_seconds() / 60
+
+    def _window_end_message(self, soc: float, target: float) -> str:
+        """Window-end note. A sleeping car stops reporting its battery while it
+        charges (29 Oct: stuck at 67% from 04:42, really ~77% at 06:00), so an
+        old reading is reported as old, not as where the charge ended."""
+        age = self._soc_age_min()
+        if age is not None and age > _SOC_STALE_MIN:
+            return (f"Cheap window ended, charging stopped. The car last reported "
+                    f"{soc:.0f}% about {age:.0f} min ago, so it's likely higher now "
+                    f"(target {target:.0f}%).")
+        return (f"Cheap window ended, paused at {soc:.0f}% (target {target:.0f}%). "
+                "Turn on 'keep charging past the window' to finish anyway.")
+
     def _eval_target_windowed(self, soc: float, target: float, charging: bool) -> None:
         """Target charging when a cheap window is enabled — the window BOUNDS the
         charge. We charge as late as possible to finish by the window END (just-
@@ -1099,10 +1169,8 @@ class ChargeAssistant:
                     "Charge Assistant: cheap window — stopping charge at %.0f%% (target %.0f%%)",
                     soc, target,
                 )
-                self._finish_charge(soc, target, reached=False, message=(
-                    f"Cheap window ended — paused at {soc:.0f}% (target {target:.0f}%). "
-                    "Turn on 'keep charging past the window' to finish anyway."
-                ))
+                self._finish_charge(soc, target, reached=False,
+                                    message=self._window_end_message(soc, target))
             return
         # Charging is allowed right now (in-window, or a departure pre-start /
         # overrun). If already charging, keep going — just flag a pricier charge.
@@ -1144,9 +1212,8 @@ class ChargeAssistant:
         now_local = dt_util.now()
         now_min = now_local.hour * 60 + now_local.minute
         mins_to_end = (end - now_min) % (24 * 60)
-        needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
-        mins_needed = int(needed_kwh / power * 60) + 10  # 10-min safety buffer
-        return mins_to_end <= mins_needed
+        mins_needed = self._minutes_needed(soc, target, self._window_finish_buffer())
+        return mins_needed is None or mins_to_end <= mins_needed
 
     # ------------------------------------------------------------------
     # Next-start estimate (display) — "when will it start charging?"
@@ -1160,9 +1227,18 @@ class ChargeAssistant:
             cand = cand + timedelta(days=1)
         return dt_util.as_utc(cand)
 
-    def _minutes_needed(self, soc: float, target: float) -> int | None:
-        """Charge time (minutes, +10 buffer) to reach target, or None without an
-        energy model."""
+    def _window_finish_buffer(self) -> int:
+        """Minutes to finish before the window END (CA_WINDOW_FINISH_BUFFER)."""
+        try:
+            v = int(self._opts.get(CA_WINDOW_FINISH_BUFFER, DEFAULT_WINDOW_FINISH_BUFFER_MIN))
+        except (TypeError, ValueError):
+            v = DEFAULT_WINDOW_FINISH_BUFFER_MIN
+        return max(0, min(v, 180))
+
+    def _minutes_needed(self, soc: float, target: float, buffer_min: int = 10) -> int | None:
+        """Charge time in minutes to reach target plus ``buffer_min`` of slack, or
+        None without an energy model. One formula for every deadline: the window
+        end passes the finish buffer, a departure keeps the 10-minute default."""
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
             power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
@@ -1171,7 +1247,7 @@ class ChargeAssistant:
         if batt <= 0 or power <= 0:
             return None
         needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
-        return int(needed_kwh / power * 60) + 10
+        return int(needed_kwh / power * 60) + int(buffer_min)
 
     def _planned_start_dt(self, soc: float, target: float) -> tuple[datetime | None, str]:
         """Clock time the windowed / departure plan will start (aware UTC), or
@@ -1182,6 +1258,7 @@ class ChargeAssistant:
             return None, ""
         now = dt_util.utcnow()
         if opts.get(CA_WINDOW_ENABLED):
+            mins_needed = self._minutes_needed(soc, target, self._window_finish_buffer())
             end = charge_window.to_minutes(opts.get(CA_WINDOW_END))
             start = charge_window.to_minutes(opts.get(CA_WINDOW_START))
             if end is None or start is None:
@@ -1384,9 +1461,76 @@ class ChargeAssistant:
         if self._balance_store is None:
             return
         try:
-            await self._balance_store.async_save({"last_balance": self._last_balance})
+            await self._balance_store.async_save({"last_balance": self._last_balance,
+                                                  "own_charge": self._own_record})
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Charge Assistant: balance-state save failed: %s", err)
+
+    def _set_own_record(self, on: bool) -> None:
+        """Save (start) or clear (stop / give-up) the 'this charge is ours'
+        record so it survives an HA restart (own_charge)."""
+        # The session id is filled in once the charge is seen running
+        # (_note_own_session): at the start command it may still be the last one.
+        rec = own_charge.record(dt_util.utcnow().timestamp()) if on else None
+        if rec == self._own_record:
+            return
+        self._own_record = rec
+        self._restored_own = None
+        try:
+            self.hass.async_create_task(self._save_balance_state())
+        except Exception:  # noqa: BLE001 — no event loop (tests)
+            pass
+
+    def _note_own_session(self) -> None:
+        """Our charge is running: remember its session id in the saved record."""
+        rec = self._own_record
+        if not self._we_started or rec is None or rec.get("usid") is not None:
+            return
+        if not self._is_charging():
+            return
+        usid = self._session_id()
+        if usid is None:
+            return
+        self._own_record = {**rec, "usid": usid}
+        try:
+            self.hass.async_create_task(self._save_balance_state())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _session_id(self) -> int | None:
+        """The charger's session id (r_dat usid), or None."""
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        v = ((data or {}).get("charger_status") or {}).get("usid") if isinstance(data, dict) else None
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    def _maybe_reclaim_after_restart(self) -> None:
+        """After an HA restart, take back a charge we started before it, so the
+        window end and target still stop it (own_charge rules)."""
+        saved = self._restored_own
+        if saved is None:
+            return
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        loaded = (isinstance(data, dict) and bool(data.get("raw_status"))
+                  and bool(data.get("charger_status")))
+        st = self._status() if loaded else {}
+        verdict = own_charge.decide(
+            saved, now_s=dt_util.utcnow().timestamp(), loaded=loaded,
+            charging=self._is_charging(), plugged=self._plugged_in(),
+            last_by=str(st.get("last_command_by") or ""), manual=self._is_paused(),
+            usid=self._session_id(),
+        )
+        if verdict == own_charge.WAIT:
+            return
+        self._restored_own = None
+        if verdict == own_charge.KEEP:
+            self._we_started = True
+            self._managed = True
+            _LOGGER.warning("Charge Assistant: a charge it started before HA restarted "
+                            "is still running, taking it back")
+        else:
+            self._set_own_record(False)
 
     def target_status(self) -> dict | None:
         """Read-only snapshot of the resolved acting target, for the effective-
@@ -2189,8 +2333,11 @@ class ChargeAssistant:
             # Next start should re-assert the current from scratch.
             self._applied_current = None
             self._we_started = False
+            self._last_own_stop = dt_util.utcnow()
+            self._seen_idle_after_own_stop = False
         else:
             self._we_started = True
+        self._set_own_record(on)
         self.hass.async_create_task(self._send_command(coord, "start" if on else "stop"))
 
     async def _send_command(self, coord, action: str, value=None) -> None:
@@ -2316,6 +2463,8 @@ class ChargeAssistant:
             return
         if self._autostart_suppressed():
             return  # user said 'Not now' recently
+        if self._start_blocked():
+            return
         grace = self._grace_minutes()
         if grace <= 0:
             self._do_start(reason, soc, target)
@@ -2342,6 +2491,8 @@ class ChargeAssistant:
             return
         ok, _ = self._may_control()
         if not ok or self._plugged_in() is not True or self._is_charging():
+            return
+        if self._start_blocked():
             return
         soc = self._read_float(self._opts.get(CA_SOC_ENTITY))
         target = pending.get("target")
@@ -2385,13 +2536,22 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     def _schedule_start_verify(self, reason: str, target: float) -> None:
         self._cancel_start_verify()
-        self._starting = {"reason": reason, "target": target, "attempts": 1}
+        self._starting = {"reason": reason, "target": target, "check": 0, "reasserted": False,
+                          "at": dt_util.utcnow()}
+        self._arm_start_check(start_watch.CHECK_DELAYS_S[0])
+
+    def _arm_start_check(self, delay: float) -> None:
         try:
-            self._start_unsub = async_call_later(
-                self.hass, _START_VERIFY_DELAY_S, self._verify_start
-            )
+            self._start_unsub = async_call_later(self.hass, delay, self._verify_start)
         except Exception:  # noqa: BLE001 — no event loop (tests); watchdog is best-effort
             self._start_unsub = None
+        # Ask for fresh gateway data so the check sees the charger as it is now.
+        coord = self._coordinator()
+        if coord is not None and hasattr(coord, "async_request_refresh"):
+            try:
+                self.hass.async_create_task(coord.async_request_refresh())
+            except Exception:  # noqa: BLE001
+                pass
 
     def _cancel_start_verify(self) -> None:
         """Drop any pending start re-assert (we stopped, finished, or tore down)
@@ -2406,13 +2566,13 @@ class ChargeAssistant:
 
     @callback
     def _verify_start(self, _now=None) -> None:
-        """Did the start hold? If charging, done. If we still want it but the
-        charger re-queued it (Eco-Smart), re-assert a few times, then warn."""
+        """Watch a start we made until it charges (start_watch rules): never
+        interrupt the car's handshake, re-assert at most once and only if the
+        charger took the start back, and give up cleanly at the last check."""
         self._start_unsub = None
         s = self._starting
         if s is None:
             return
-        # Only re-assert a charge we still want running.
         if not self._we_started or self._plugged_in() is not True:
             self._starting = None
             return
@@ -2421,36 +2581,161 @@ class ChargeAssistant:
         if soc is not None and target is not None and soc >= float(target):
             self._starting = None
             return  # already at target — nothing to hold
-        if self._is_charging():
+        # Only a status HA received AFTER our start counts; until then it's
+        # unknown (None), which can only wait (or give up at the last check).
+        fresh = (self._last_coord_update is not None and s.get("at") is not None
+                 and self._last_coord_update > s["at"])
+        code = self._charger_code() if fresh else None
+        charging = self._is_charging()
+        if charging or code in start_watch.RESPONDED:
+            s["responded"] = True
+        decision = start_watch.outcome(code, charging, s["check"], s["reasserted"],
+                                       s.get("responded", False))
+        if decision == start_watch.DONE:
             self._starting = None
-            return  # start took — done
-        if s["attempts"] < _START_ASSERT_RETRIES:
-            s["attempts"] += 1
-            _LOGGER.warning(
-                "Charge Assistant: start didn't hold (Eco-Smart re-queue?) — re-asserting %d/%d",
-                s["attempts"], _START_ASSERT_RETRIES,
-            )
-            if self._is_paused():
-                # Clear the sticky Eco/schedule pause first, then re-issue start.
-                self.hass.async_create_task(self._resume_native())
-            self._set_charging(True)   # re-issue the owner-tagged start (overrides Eco)
-            try:
-                self._start_unsub = async_call_later(
-                    self.hass, _START_VERIFY_DELAY_S, self._verify_start
-                )
-            except Exception:  # noqa: BLE001
-                self._start_unsub = None
             return
-        # Charger keeps re-queuing it — give up and tell the user.
-        self._starting = None
-        _LOGGER.error(
-            "Charge Assistant: charge wouldn't hold after %d attempts (Eco-Smart override?)",
-            _START_ASSERT_RETRIES,
+        if decision in (start_watch.GIVE_UP, start_watch.FAULT):
+            self._starting = None
+            self.hass.async_create_task(self._abandon_start(code))
+            return
+        if decision == start_watch.REASSERT:
+            s["reasserted"] = True
+            _LOGGER.warning(
+                "Charge Assistant: the charger took the start back (status %s), re-asserting once",
+                code,
+            )
+            coord = self._coordinator()
+            data = (getattr(coord, "data", None) or {}) if coord is not None else {}
+            # The original Pulsar resumes a paused session with a plain start
+            # (app snoop, #68); its s_cmode is untested, so never send it there.
+            if self._is_paused() and not is_original_pulsar(data.get("raw_status")):
+                self.hass.async_create_task(self._reassert_start())
+            else:
+                self._set_charging(True)
+        s["check"] += 1
+        if s["check"] < len(start_watch.CHECK_DELAYS_S):
+            self._arm_start_check(start_watch.CHECK_DELAYS_S[s["check"]])
+
+    async def _abandon_start(self, code: int | None) -> None:
+        """A start we made didn't take: end the session cleanly (a stop is safe
+        while waiting for the car, measured), hand control back so Eco-Smart and
+        native schedules can run, forget it was ours, and don't try again until
+        the car is unplugged. One notification."""
+        self._start_failed_this_plug = True
+        self._managed = False
+        self._we_started = False
+        self._set_own_record(False)
+        self._cancel_grace()
+        coord = self._coordinator()
+        if coord is None:
+            return
+        charger = WallboxGatewayCharger(coord)
+        data = getattr(coord, "data", None) or {}
+        original_pulsar = is_original_pulsar(data.get("raw_status"))
+        # End the session only when the status shows one is started (1 / 2):
+        # on a Pulsar MAX, and on Pulsar Plus firmware that treats w_cha as a
+        # toggle (#23), a stop to a session that ISN'T started turns charging
+        # ON, and gateway firmware before the stop guard sends it regardless.
+        # The original Pulsar uses different codes and an untested s_cmode, so
+        # there we send nothing and just stop trying.
+        if not original_pulsar and code in start_watch.STARTED:
+            try:
+                await charger.stop()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Charge Assistant: stop after a failed start failed: %s", err)
+            await asyncio.sleep(_ABANDON_SETTLE_S)
+        if not original_pulsar and code != start_watch.ERROR:
+            try:
+                await charger.resume()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Charge Assistant: hand-back after a failed start failed: %s", err)
+        _LOGGER.error("Charge Assistant: start didn't take (charger status %s); not retrying "
+                      "until the car is unplugged", code)
+        await self._send_notification("target", message_override=(
+            start_watch.ERROR_MESSAGE if code == start_watch.ERROR
+            else start_watch.give_up_message(code)
+        ))
+
+    def _charger_code(self) -> int | None:
+        """The charger's status code: r_dat st, else r_sta charger_status.
+        r_dat first: the gateway polls it every 10 s, r_sta only every 30 s
+        (29 Oct: r_sta still said 18 twelve seconds after a start that r_dat
+        already showed as 2)."""
+        coord = self._coordinator()
+        data = getattr(coord, "data", None) if coord is not None else None
+        if not isinstance(data, dict):
+            return None
+        for key, field in (("charger_status", "st"), ("charger_realtime", "charger_status")):
+            v = (data.get(key) or {}).get(field) if isinstance(data.get(key), dict) else None
+            if isinstance(v, int) and not isinstance(v, bool):
+                return v
+        return None
+
+    def _start_blocked(self) -> bool:
+        """No auto-start: a start already failed for this plug-in, the charger
+        reports an error, or a start / stop of ours is still being watched."""
+        if self._start_failed_this_plug:
+            return True
+        if self._charger_code() == start_watch.ERROR:
+            return True
+        return self._starting is not None or self._finishing is not None
+
+    def _track_plug_and_error(self) -> None:
+        """Per tick: an unplug re-arms auto-start after a failed one; an Error
+        is announced once per episode; a not-charging reading after our own
+        stop arms the restart safety net."""
+        if self._plugged_in() is False:
+            self._start_failed_this_plug = False
+        code = self._charger_code()
+        if code == start_watch.ERROR:
+            if not self._error_notified:
+                self._error_notified = True
+                self._cancel_grace()
+                self.hass.async_create_task(self._send_notification(
+                    "target", message_override=start_watch.ERROR_MESSAGE))
+        else:
+            self._error_notified = False
+        if self._last_own_stop is not None and not self._is_charging():
+            self._seen_idle_after_own_stop = True
+
+    async def _reassert_start(self) -> None:
+        """Un-pause, THEN start (awaited in order, unlike two separate tasks)."""
+        await self._resume_native()
+        self._set_charging(True)   # owner-tagged start (overrides Eco)
+
+    def _maybe_adopt_restart(self) -> None:
+        """Adopt a charge that started right after our own stop / hand-back.
+
+        A charge we didn't start is normally left alone (hand-back mode treats
+        it as native solar). But one that starts within _ADOPT_WINDOW of our
+        own stop, with no other controller's command since, is fallout from
+        that stop (27 Oct: a second stop resumed a paused MAX at 7 kW and it
+        ran 2 h past the target). Adopting it makes the target and window rules
+        stop it again. At most once per _ADOPT_COOLDOWN, so a charger that keeps
+        bouncing can't loop us."""
+        if self._we_started or self._last_own_stop is None:
+            return
+        if not self._seen_idle_after_own_stop:
+            return   # still the tail of our own stop (HA status lag), not a restart
+        if not self._is_charging() or self._plugged_in() is not True:
+            return
+        now = dt_util.utcnow()
+        if now - self._last_own_stop > _ADOPT_WINDOW:
+            return
+        if self._last_adopt is not None and now - self._last_adopt < _ADOPT_COOLDOWN:
+            return
+        st = self._status()
+        by = str(st.get("last_command_by") or "")
+        if by and by != _OWNER:
+            return   # someone else (a person, an automation) started it: hands off
+        self._last_adopt = now
+        self._we_started = True
+        self._managed = True
+        self._set_own_record(True)
+        _LOGGER.warning(
+            "Charge Assistant: charging restarted %ds after our stop — treating it as ours",
+            int((now - self._last_own_stop).total_seconds()),
         )
-        self.hass.async_create_task(self._send_notification("target", message_override=(
-            "Tried to start charging but the charger keeps re-queuing it "
-            "(Eco-Smart / Solar-Only may be on). You may need to start it from the app."
-        )))
 
     async def _resume_native(self) -> None:
         """Clear the charger's sticky Eco/schedule pause (gen flag) so a re-
@@ -2964,14 +3249,7 @@ class ChargeAssistant:
         if dep is not None:
             mins_to_dep = max(0, int((dep - dt_util.utcnow()).total_seconds() // 60))
             if soc is not None and target is not None:
-                try:
-                    batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-                    power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
-                    if batt > 0 and power > 0:
-                        needed_kwh = max(0.0, (target - soc) / 100.0 * batt)
-                        mins_needed = int(needed_kwh / power * 60) + 10  # 10-min buffer
-                except (TypeError, ValueError):
-                    pass
+                mins_needed = self._minutes_needed(soc, target)  # departure: 10-min buffer
         return charge_window.evaluate(
             now_min,
             start=self._opts.get(CA_WINDOW_START),

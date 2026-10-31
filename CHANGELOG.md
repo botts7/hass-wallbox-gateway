@@ -4,6 +4,99 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.5] - 2026-10-31
+
+### Changed
+- **Smart charge aims to finish before the cheap window ends, not exactly at
+  it.** New option "Finish this many minutes before the window ends" (default
+  30 min). The plan used to target the window end with only 10 minutes of
+  slack, so a late start or a real charge rate below the configured one (for
+  example charging losses: one night gained 7.6 %/h against a modelled
+  8.3 %/h) spilled the end of the charge past the window. The start decision
+  and the "next charge start" estimate both use it. A departure deadline keeps
+  its 10-minute margin.
+
+### Fixed
+- **An overnight charge no longer restarts after the window-end stop and runs
+  past the target (27 Oct).** Three things lined up: the hand-back `resume` was
+  sent without the integration's owner tag, so the gateway logged it as a
+  manual command and the assistant then treated its own command as a manual
+  override and stood down for 30 minutes; the gateway's resume could send a
+  second stop that resumed the paused session (fixed in gateway firmware); and
+  hand-back mode left the restarted charge alone as if it were native solar.
+  Now the resume is owner-tagged, and a charge that starts within 3 minutes of
+  the assistant's own stop is treated as the assistant's, so the target and
+  window rules stop it again (once per 30 minutes, never for a charge someone
+  else started).
+- **The overnight start holds, and no longer waits 40 minutes to retry.** The
+  start retry un-paused the charger and restarted it as two racing tasks; on a
+  Pulsar MAX the un-pause landing second re-queued the charge under Eco-Smart.
+  It's now un-pause, then start, in order. The 40-minute gap was the 30-minute
+  manual-override back-off triggered by the untagged resume.
+- **Overnight start no longer fights the car (28 Oct: no charge, then charger
+  Error).** The start check re-asserted after 12 s. A car takes 10 to 16 s to
+  start drawing, and on a Pulsar MAX a start sent while the charger is "waiting
+  for car" pauses the session (measured), so the re-assert broke the
+  handshake; it then retried every 10 minutes until the charger went into
+  Error, and left it paused so Eco-Smart couldn't run in the morning. Now:
+  - while the charger is starting or waiting for the car, nothing is sent; it
+    checks at 12, 30, 60 and 90 s and succeeds once charging;
+  - one re-assert, only if the charger actually took the start back (paused or
+    queued by Eco-Smart);
+  - if it still hasn't started at 90 s it gives up cleanly: ends the session
+    (only if one is started, so a stop can never switch charging on), hands
+    control back so Eco-Smart can run, sends one notification ("unplug and
+    replug the car"), and doesn't auto-start again until the car is unplugged;
+  - a charger Error stops all auto-starts and is notified once;
+  - it only trusts a charger status that arrived after its own start (HA polls
+    every ~10 s, so at the first check it can still hold the pre-start status;
+    a live test caught that being read as "taken back");
+  - it reads the charger's fast status (refreshed every 10 s) rather than the
+    slow one (every 30 s), and doesn't re-assert at the first check unless the
+    charger has visibly reacted to the start (29 Oct: the slow status still
+    said "queued" 12 s after a start that was already waiting for the car).
+  Safe for chargers we can't test: the original Pulsar gets no stop or
+  hand-back at give-up, and its re-assert is a plain start.
+- **A charge the assistant started survives a Home Assistant restart.** It
+  saves a small record when it starts a charge and, after a restart, takes the
+  charge back only when everything still matches (car plugged in and charging,
+  gateway still crediting the integration, charger still in manual mode, same
+  session). Before, a restart mid-charge left the window-end stop undone and
+  the car charged on at peak rates. Tested live with a restart during a charge.
+- **The window-end stop and the planned start happen within a minute.** The
+  assistant now checks every minute instead of every 5 (the stop came almost 5
+  minutes late in a live test).
+- **The window-end message says when the car's battery reading is old.** A
+  sleeping car stops reporting while it charges, so instead of "paused at 67%"
+  it now says the car last reported 67% some minutes ago and is likely higher.
+- **A charge the assistant didn't start is no longer stopped after a failed
+  night.** The failed start left it believing the next charge was its own, so
+  a daytime charge was stopped as "outside the window".
+- **The restart safety net no longer misfires right after its own stop.** HA's
+  status lags a few seconds, so "still charging" just after a stop looked like
+  a restart; it now needs the charger seen idle first.
+- **Schedules on pre-6.11 Pulsar Plus firmware (#13 follow-up, field report
+  from a Pulsar Plus Socket on 6.7.43):**
+  - Slot 0 can be edited when the charger reports a schedule there. New
+    schedules still never go in slot 0 (it corrupts schedules on a 6.7.41 Plus).
+  - Legacy writes and deletes are read back. Some chargers accept a write to an
+    empty slot and silently drop it; that's now a clear error ("create new
+    schedules in the Wallbox app") instead of a false success.
+  - `import_native_schedules` shows `max_current` as not reported when the
+    charger returns a meaningless value (below 6 A).
+- **Schedules on the original (no-WiFi) Pulsar.** `set_schedule`,
+  `delete_schedule` and `import_native_schedules` now work there, using its own
+  format decoded from a Bluetooth capture of the Wallbox app (esp32-wallbox#68):
+  four slots (0 to 3), each read separately, written as a 12-character
+  `w_sch`, and read back to confirm. It has no per-schedule current or energy
+  limit, so `max_current` and `energy_target_kwh` are ignored there.
+- **`set_schedule` right after `import_native_schedules` no longer fails** with
+  "isn't a Wallbox Gateway charger". Saving the imported snapshot reloaded the
+  integration; stored data now doesn't, and the schedule services wait up to
+  5 s for a reload that's in progress.
+- **No more `DeviceEntry.config_entries` deprecation warning** (HA 2026.10+);
+  older Home Assistant versions keep working.
+
 ## [0.37.4] - 2026-10-26
 
 ### Fixed

@@ -116,8 +116,12 @@ class WallboxGatewayCharger(ChargerControl):
 
     async def resume(self) -> None:
         # action=resume → s_cmode {"mode":0}; clears the manual-override flag so
-        # the charger's schedule + Eco-Smart loops control it again.
-        await self._coord.client.get("/api/command?action=resume")
+        # the charger's schedule + Eco-Smart loops control it again. Owner-
+        # tagged like every other command: untagged, the gateway recorded it as
+        # "manual", and the assistant then read its own hand-back as a manual
+        # override and stood down for 30 min (the 40-min start delay and the
+        # un-stopped restart on 27 Oct).
+        await self._send("resume")
 
     async def release_owner(self) -> None:
         # Hand charge-control ownership back to the charger (owner=none) so the

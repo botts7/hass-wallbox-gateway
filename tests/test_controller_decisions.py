@@ -639,6 +639,7 @@ def test_charger_adapter_eco_and_resume():
 
     class FakeClient:
         async def get(self, url): sent.append(("get", url))
+        async def command(self, payload): sent.append(("command", payload))
         async def bapi(self, met, par=None, wait_ms=None): sent.append(("bapi", met, par))
 
     class FakeCoord2:
@@ -656,7 +657,11 @@ def test_charger_adapter_eco_and_resume():
 
     eco_calls = [c for c in sent if c[0] == "bapi" and c[1] == "s_ecos"]
     assert eco_calls and _json.loads(eco_calls[0][2])["esm"] == 0, sent
-    assert any(c[0] == "get" and "resume" in c[1] for c in sent), sent
+    # The resume is owner-tagged (27 Oct): untagged, the gateway logged it as
+    # "manual" and the assistant read its own hand-back as a manual override.
+    resumes = [c[1] for c in sent if c[0] == "command" and c[1].get("action") == "resume"]
+    assert resumes and resumes[0].get("owner") == "integration", sent
+    assert not any(c[0] == "get" and "resume" in c[1] for c in sent), sent
 
 
 # ── native-schedule import: decode round-trips ──────────────────────
@@ -731,6 +736,61 @@ def test_window_jit_starts_when_late():
     assert calls == [True], f"late in window should start, got {calls}"
 
 
+# ── finish buffer: aim to finish BEFORE the window ends (2026-10-27 night) ──
+def _night(buffer=None, end_h=3.75):
+    # The 27 Oct night: 82 kWh, 6.8 kW, 46% -> 75% = 209 min of charge.
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+            C.CA_TARGET_PCT: 75, C.CA_TARGET_AUTOSTART: True,
+            C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(end_h),
+            C.CA_BATTERY_KWH: 82, C.CA_CHARGE_POWER_KW: 6.8}
+    if buffer is not None:
+        opts[C.CA_WINDOW_FINISH_BUFFER] = buffer
+    return build(opts, {"sensor.soc": FakeState("46")})
+
+
+@case
+def test_finish_buffer_default_starts_earlier():
+    # 225 min to window end. Old rule (209 + 10 = 219) would still wait; the
+    # default 30-min finish buffer (209 + 30 = 239) starts now.
+    ca, calls = _night()
+    ca._eval_target()
+    assert calls == [True], f"default buffer should start with 225 min left, got {calls}"
+
+
+@case
+def test_finish_buffer_zero_waits():
+    # Buffer 0 -> needs 209 min, 225 left -> still waits (user's choice).
+    ca, calls = _night(buffer=0)
+    ca._eval_target()
+    assert calls == [], f"buffer 0 should wait with 225 min left, got {calls}"
+
+
+@case
+def test_finish_buffer_plan_display_matches():
+    # The "next charge start" estimate uses the same buffer as the start gate:
+    # window end minus (209 + 30) minutes.
+    ca, _ = _night(end_h=6)
+    start, reason = ca._planned_start_dt(46.0, 75.0)
+    end = ca_mod.charge_window.to_minutes(ca._opts[C.CA_WINDOW_END])
+    end_dt = ca._next_local_minute(end)
+    assert start is not None and "75%" in reason
+    assert int((end_dt - start).total_seconds() // 60) == 239, (end_dt - start)
+    ca._opts[C.CA_WINDOW_FINISH_BUFFER] = 60
+    start2, _ = ca._planned_start_dt(46.0, 75.0)
+    assert int((end_dt - start2).total_seconds() // 60) == 269
+
+
+@case
+def test_finish_buffer_bad_value_falls_back():
+    ca, _ = _night(buffer="lots")
+    assert ca._window_finish_buffer() == C.DEFAULT_WINDOW_FINISH_BUFFER_MIN
+    ca._opts[C.CA_WINDOW_FINISH_BUFFER] = 999
+    assert ca._window_finish_buffer() == 180
+    ca._opts[C.CA_WINDOW_FINISH_BUFFER] = -5
+    assert ca._window_finish_buffer() == 0
+
+
 @case
 def test_window_stops_when_outside_no_overrun():
     # Charging but now OUTSIDE the window with overrun OFF → stop (bounded).
@@ -788,12 +848,20 @@ def test_start_verify_reasserts_on_eco_requeue():
         ca, calls = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
                            C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
         ca._we_started = True
-        ca._is_charging = lambda: False        # charger re-queued it
+        ca._is_charging = lambda: False
+        # Eco-Smart took the start back (status 18): one re-assert. (Status 2,
+        # waiting for the car, must NOT be re-asserted; see test_start_watch.)
+        ca._coordinator().data["charger_realtime"] = {"charger_status": 18}
+        ca._is_paused = lambda: False
         ca._schedule_start_verify("test", 80.0)
+        from datetime import timedelta as _td
+        ca._last_coord_update = dt_util.utcnow() + _td(seconds=1)   # data newer than the start
         assert ca._starting is not None and sched.get("delay") == 12
-        sched["cb"](None)                      # watchdog fires
+        sched["cb"](None)                      # 12 s: could be pre-start cache, wait
+        assert calls == [], f"must not re-assert at the first check, got {calls}"
+        sched["cb"](None)                      # 30 s: a real take-back
         assert calls == [True], f"should re-assert start, got {calls}"
-        assert ca._starting["attempts"] == 2
+        assert ca._starting["reasserted"] is True
     finally:
         ca_mod.async_call_later = orig
 
@@ -825,12 +893,19 @@ def test_start_verify_gives_up_after_retries():
                            C.CA_TARGET_PCT: 80}, {"sensor.soc": FakeState("55")})
         ca._we_started = True
         ca._is_charging = lambda: False
+        # 28 Oct: the charger sat at status 2 (waiting for the car). Nothing may
+        # be sent while it waits (a start there PAUSES a MAX session); only the
+        # last check (90 s) gives up, and the give-up runs as one task.
+        ca._coordinator().data["charger_realtime"] = {"charger_status": 2}
+        given_up = []
+        async def _abandon(code):
+            given_up.append(code)
+        ca._abandon_start = _abandon
         ca._schedule_start_verify("test", 80.0)
-        sched["cb"](None)      # attempt 2 (re-assert)
-        sched["cb"](None)      # attempt 3 (re-assert)
-        sched["cb"](None)      # cap → give up
+        for _ in range(4):     # checks at 12, 30, 60, 90 s
+            sched["cb"](None)
         assert ca._starting is None
-        assert calls == [True, True], f"two re-asserts then give up, got {calls}"
+        assert calls == [], f"no re-assert while waiting for the car, got {calls}"
     finally:
         ca_mod.async_call_later = orig
 
@@ -1123,6 +1198,58 @@ def test_current_bounds_use_charger_ceiling():
     ca._opts[C.CA_MAX_CURRENT] = 32
     ca._opts[C.CA_MIN_CURRENT] = 20
     assert ca._current_bounds() == (16, 16), "installer limit below the min"
+
+
+# ── 27 Oct overnight: adopt our stop's fallout; un-pause before restart ──
+def _adopt_case(by, secs_since_stop, charging=True):
+    ca, _ = build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                   C.CA_TARGET_PCT: 75}, {"sensor.soc": FakeState("76")})
+    ca._coordinator().data["raw_status"] = {"control_owner": "integration",
+                                            "last_command_by": by}
+    ca._is_charging = lambda: charging
+    ca._we_started = False
+    ca._last_own_stop = dt_util.utcnow() - timedelta(seconds=secs_since_stop)
+    # A real restart: the charger was seen idle after our stop, then charging
+    # again (status lag right after the stop doesn't count; test_start_watch).
+    ca._seen_idle_after_own_stop = True
+    ca._maybe_adopt_restart()
+    return ca
+
+
+@case
+def test_adopts_restart_right_after_our_stop():
+    ca = _adopt_case("integration", 20)   # restarted 20 s after our stop
+    assert ca._we_started is True and ca._managed is True,         "our stop's fallout must be adopted so the target / window still apply"
+
+
+@case
+def test_never_adopts_someone_elses_start():
+    ca = _adopt_case("manual", 20)        # a person / automation started it
+    assert ca._we_started is False
+
+
+@case
+def test_adopt_only_inside_window_and_once():
+    assert _adopt_case("integration", 400)._we_started is False, "too long after our stop"
+    assert _adopt_case("integration", 20, charging=False)._we_started is False
+    ca = _adopt_case("integration", 20)
+    assert ca._we_started is True
+    ca._we_started = False                 # it bounced again...
+    ca._maybe_adopt_restart()
+    assert ca._we_started is False, "at most once per cooldown, so no loop"
+
+
+@case
+def test_reassert_start_unpauses_before_starting():
+    import asyncio
+    ca, calls = build({C.CA_MODE: C.MODE_TARGET}, {})
+    order = []
+    async def _resume():
+        order.append("resume")
+    ca._resume_native = _resume
+    ca._set_charging = lambda on: order.append(("start", on))
+    asyncio.run(ca._reassert_start())
+    assert order == ["resume", ("start", True)], order
 
 
 # ── commute-based adaptive target ───────────────────────────────────
