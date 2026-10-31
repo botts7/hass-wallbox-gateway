@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.37.5] - 2026-10-27
+## [0.37.5] - 2026-10-31
 
 ### Changed
 - **Smart charge aims to finish before the cheap window ends, not exactly at
@@ -50,9 +50,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - a charger Error stops all auto-starts and is notified once;
   - it only trusts a charger status that arrived after its own start (HA polls
     every ~10 s, so at the first check it can still hold the pre-start status;
-    a live test caught that being read as "taken back").
+    a live test caught that being read as "taken back");
+  - it reads the charger's fast status (refreshed every 10 s) rather than the
+    slow one (every 30 s), and doesn't re-assert at the first check unless the
+    charger has visibly reacted to the start (29 Oct: the slow status still
+    said "queued" 12 s after a start that was already waiting for the car).
   Safe for chargers we can't test: the original Pulsar gets no stop or
   hand-back at give-up, and its re-assert is a plain start.
+- **A charge the assistant started survives a Home Assistant restart.** It
+  saves a small record when it starts a charge and, after a restart, takes the
+  charge back only when everything still matches (car plugged in and charging,
+  gateway still crediting the integration, charger still in manual mode, same
+  session). Before, a restart mid-charge left the window-end stop undone and
+  the car charged on at peak rates. Tested live with a restart during a charge.
+- **The window-end stop and the planned start happen within a minute.** The
+  assistant now checks every minute instead of every 5 (the stop came almost 5
+  minutes late in a live test).
+- **The window-end message says when the car's battery reading is old.** A
+  sleeping car stops reporting while it charges, so instead of "paused at 67%"
+  it now says the car last reported 67% some minutes ago and is likely higher.
 - **A charge the assistant didn't start is no longer stopped after a failed
   night.** The failed start left it believing the next charge was its own, so
   a daytime charge was stopped as "outside the window".
