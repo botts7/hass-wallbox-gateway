@@ -1,6 +1,6 @@
 """Start watcher (start_watch.py) and how the Charge Assistant acts on it.
 
-Replays the real nights on a Pulsar MAX + BYD:
+Replays the real nights on a Pulsar MAX:
 - 28 Oct: the charger sat in status 2 ("waiting for car"); the old watcher
   re-asserted at 12 s (a start in status 2 PAUSES a MAX session), the car never
   drew, it retried every 10 min and the charger went into Error.

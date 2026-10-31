@@ -1,6 +1,6 @@
 """What to do while a charge the assistant started is getting going.
 
-Measured on a Pulsar MAX with a BYD (27-28 Oct 2026), the charger reports
+Measured on a Pulsar MAX (27-28 Oct 2026), the charger reports
 3 -> 2 ("waiting for car") -> 1 (charging) and the car starts drawing 10-16 s
 after the start. The old watcher re-asserted at 12 s: on the MAX a start sent
 to a session in status 2 PAUSES it (start is a toggle), which interrupted the
