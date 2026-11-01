@@ -457,6 +457,9 @@
       "effective_target": {
         "name": "Effective charge target"
       },
+      "solar_plan": {
+        "name": "Tonight's planned charge"
+      },
       "projected_soc": {
         "name": "Projected SOC after a day's driving"
       },

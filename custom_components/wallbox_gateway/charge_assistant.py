@@ -165,6 +165,7 @@ from . import charge_window
 from .legacy_schedule import is_original_pulsar
 from . import start_watch
 from . import own_charge
+from .solar_planner import SolarPlanner
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -421,6 +422,9 @@ class ChargeAssistant:
         self._last_balance: str | None = None
         # Created lazily in async_start (Store needs a fully-initialised hass).
         self._balance_store: Store | None = None
+        # Plan the night around tomorrow's solar (solar_planner.py); created in
+        # async_start when the strategy charges to a target.
+        self._planner: SolarPlanner | None = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -535,6 +539,11 @@ class ChargeAssistant:
         # Plug-in reminder layer — independent, runs on top of ANY strategy.
         if self._rem.get(CA_TRIGGERS):
             await self._start_reminder()
+        # Plan around tomorrow's solar: only meaningful when charging to a target.
+        if strategy in (MODE_TARGET, MODE_SMART_SOLAR):
+            self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
+                                         lambda: self._opts)
+            await self._planner.async_start()
 
         # Native-schedule arbiter: while we actively control charging, the
         # charger's own schedules are disabled (and restored when we hand back).
@@ -835,6 +844,9 @@ class ChargeAssistant:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        if self._planner is not None:
+            await self._planner.async_stop()
+            self._planner = None
         # Cancel any pending auto-start countdown / finish-verify / start-verify
         # so none can fire post-teardown.
         self._cancel_grace("assistant stopping")
@@ -1356,7 +1368,21 @@ class ChargeAssistant:
         with what's actually enforced."""
         return self._resolve_target()[0]
 
-    def _resolve_target(self) -> tuple[float, str]:
+    def planner_inputs(self) -> dict:
+        """The active car's numbers for the solar planner: SOC, the target before
+        the planner's own adjustment, and battery size."""
+        car = self._active_car()
+        return {
+            "soc": self._read_float(self._cg(car, CA_SOC_ENTITY)),
+            "target_pct": self._resolve_target(plan=False)[0],
+            "battery_kwh": self._read_float_cg(car, CA_BATTERY_KWH),
+        }
+
+    def planner_result(self) -> dict | None:
+        """The latest solar plan, for the sensor (None when the planner is off)."""
+        return self._planner.result if self._planner is not None else None
+
+    def _resolve_target(self, plan: bool = True) -> tuple[float, str]:
         """The active SOC target and the source that set it.
 
         The everyday care target, replaced by the learned adaptive target when
@@ -1402,6 +1428,13 @@ class ChargeAssistant:
         )
         if resolved > base:  # the trip target won
             source = "trip"
+        # Plan around tomorrow's solar ("on" only): lower tonight's target when
+        # sunshine the car will be home for can make up the rest. Never on a
+        # balance or trip night, never below the morning floor (solar_planner).
+        if plan and self._planner is not None and source not in ("balance", "trip"):
+            planned = self._planner.night_target(resolved)
+            if planned < resolved:
+                resolved, source = planned, "solar-plan"
         return resolved, source
 
     # ------------------------------------------------------------------

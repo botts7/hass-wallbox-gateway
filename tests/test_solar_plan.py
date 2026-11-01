@@ -190,6 +190,90 @@ def test_nothing_needed():
     assert p.need_kwh == 0 and p.tonight_kwh == 0 and "No charge needed" in p.reason
 
 
+# ── the Charge Assistant hook ───────────────────────────────────────
+try:
+    sys.path.insert(0, HERE)
+    import test_controller_decisions as T   # reuse build() / FakeState
+    _HA_OK = T._HA_OK
+except Exception as e:  # pragma: no cover
+    print(f"--- test_solar_plan (assistant part): SKIPPED ({e})")
+    _HA_OK = False
+
+
+def _planner(mode, plan_target, floor=50.0, fresh=True):
+    """A real SolarPlanner with its plan filled in, no I/O."""
+    from homeassistant.util import dt as dt_util
+    import wallbox_gateway.solar_planner as SP
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    opts = {"solar_plan": mode, "solar_floor_pct": floor}
+    pl._opts = lambda: opts
+    pl._plan = OP.Plan(need_kwh=21, floor_kwh=0, solar_kwh=16, tonight_kwh=3,
+                       target_pct=plan_target)
+    pl._computed_at = dt_util.now() - (timedelta(0) if fresh else timedelta(hours=2))
+    pl.result = {"tonight_kwh": 3}
+    return pl
+
+
+def _ca(target=78):
+    C = T.C
+    ca, _ = T.build({C.CA_MODE: C.MODE_TARGET, C.CA_TARGET_PCT: target,
+                     C.CA_SOC_ENTITY: "sensor.soc"}, {"sensor.soc": T.FakeState("55")})
+    return ca
+
+
+@case
+def test_hook_on_lowers_the_night_target():
+    if not _HA_OK:
+        return
+    ca = _ca()
+    ca._planner = _planner("on", 58.4)
+    assert ca._resolve_target() == (58.4, "solar-plan")
+    assert ca._resolve_target(plan=False) == (78.0, "fixed")   # what the planner plans against
+
+
+@case
+def test_hook_preview_and_stale_change_nothing():
+    if not _HA_OK:
+        return
+    ca = _ca()
+    ca._planner = _planner("preview", 58.4)
+    assert ca._resolve_target() == (78.0, "fixed")
+    ca._planner = _planner("on", 58.4, fresh=False)
+    assert ca._resolve_target() == (78.0, "fixed")
+
+
+@case
+def test_hook_never_below_the_floor():
+    if not _HA_OK:
+        return
+    ca = _ca()
+    ca._planner = _planner("on", 20.0, floor=50.0)
+    assert ca._resolve_target() == (50.0, "solar-plan")
+
+
+@case
+def test_hook_skips_balance_and_trip_nights():
+    if not _HA_OK:
+        return
+    ca = _ca()
+    ca._planner = _planner("on", 58.4)
+    ca._balance_due = lambda: True
+    ca._balance_target = lambda: 100.0
+    ca._uncertain = lambda: False
+    assert ca._resolve_target() == (100.0, "balance")
+
+
+@case
+def test_planner_inputs_use_the_unplanned_target():
+    if not _HA_OK:
+        return
+    ca = _ca()
+    ca._planner = _planner("on", 58.4)
+    ca._opts[T.C.CA_BATTERY_KWH] = 82.56
+    i = ca.planner_inputs()
+    assert i["target_pct"] == 78.0 and i["soc"] == 55.0 and i["battery_kwh"] == 82.56
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
