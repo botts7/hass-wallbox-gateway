@@ -38,10 +38,35 @@ def ceiling_from(*sources: Mapping[str, Any] | None) -> int:
 
 
 def current_ceiling(data: Mapping[str, Any] | None) -> int:
-    """Ceiling from a coordinator's ``data`` dict (realtime first, then status)."""
+    """Ceiling from a coordinator's ``data`` dict: realtime first, then status,
+    then the gateway's saved ceiling (``max_current_ceiling`` in /api/status,
+    newer firmware), which is known from boot, before the first charger poll."""
     if not isinstance(data, Mapping):
         return DEFAULT_MAX_CURRENT_A
-    return ceiling_from(data.get("charger_realtime"), data.get("charger_status"))
+    c = ceiling_from(data.get("charger_realtime"), data.get("charger_status"))
+    if c != DEFAULT_MAX_CURRENT_A:
+        return c
+    raw = data.get("raw_status")
+    saved = raw.get("max_current_ceiling") if isinstance(raw, Mapping) else None
+    if isinstance(saved, int) and not isinstance(saved, bool) and             MIN_CURRENT_A <= saved <= ABSOLUTE_MAX_CURRENT_A:
+        return saved
+    return c
+
+
+def user_max(stored: Any, ceiling: int) -> int:
+    """The Charge Assistant's own maximum current: what the user saved, within
+    the ceiling; unset means the full ceiling. A saved 32 on a charger with a
+    higher ceiling is the old default (forms saved 32 before #39, or when the
+    ceiling hadn't loaded), so it counts as unset."""
+    try:
+        v = int(stored)
+    except (TypeError, ValueError):
+        return ceiling
+    if v <= 0:
+        return ceiling
+    if v == DEFAULT_MAX_CURRENT_A and ceiling > DEFAULT_MAX_CURRENT_A:
+        return ceiling
+    return max(MIN_CURRENT_A, min(v, ceiling))
 
 
 def clamp_current(amps: float, ceiling: int) -> int:

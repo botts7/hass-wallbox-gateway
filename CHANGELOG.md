@@ -4,6 +4,20 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- **40 A and 48 A chargers: the Charge Assistant's own current limit no longer
+  sticks at 32 A.** Its settings form saved 32 A as the maximum when the
+  charger's real ceiling wasn't known (older versions always did), so solar
+  and dynamic charging stayed capped there. A saved maximum of exactly 32 A on
+  a charger whose ceiling is higher is now treated as "not set" (the full
+  ceiling). To cap a 40/48 A charger at 32 A on purpose, pick 31 A or 33 A.
+- **The charger's ceiling is known straight after a gateway restart.** Newer
+  gateway firmware reports its saved ceiling (`max_current_ceiling`), which is
+  used until the first charger poll, so the current slider, schedules and the
+  settings form don't fall back to 32 A in the meantime.
+
 ## [0.37.5] - 2026-10-31
 
 ### Changed

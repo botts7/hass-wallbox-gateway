@@ -53,6 +53,32 @@ def test_clamp_current():
     assert C.clamp_current(40, 32) == 32
 
 
+@case
+def test_saved_gateway_ceiling_before_first_poll():
+    # Forum, 48 A Pulsar Plus: right after a gateway reboot neither realtime nor
+    # status carries the ceiling yet; the gateway's saved one is used.
+    d = {"charger_realtime": None, "charger_status": {"cur": 48},
+         "raw_status": {"max_current_ceiling": 48}}
+    assert C.current_ceiling(d) == 48
+    d["raw_status"]["max_current_ceiling"] = -1          # not known yet
+    assert C.current_ceiling(d) == 32
+    d["charger_realtime"] = {"max_available_current": 40}  # live value wins
+    d["raw_status"]["max_current_ceiling"] = 48
+    assert C.current_ceiling(d) == 40
+
+
+@case
+def test_user_max_treats_old_32_default_as_unset():
+    assert C.user_max(None, 48) == 48
+    assert C.user_max("", 48) == 48
+    assert C.user_max(32, 48) == 48     # the old default on a 48 A charger
+    assert C.user_max(32, 32) == 32
+    assert C.user_max(24, 48) == 24     # a real choice is kept
+    assert C.user_max(31, 48) == 31
+    assert C.user_max(60, 48) == 48     # never above the ceiling
+    assert C.user_max(3, 48) == 6
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

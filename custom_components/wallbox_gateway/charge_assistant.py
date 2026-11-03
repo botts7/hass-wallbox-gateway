@@ -174,7 +174,7 @@ from .charge_guards import (
     price_allows_charge,
     user_stop_holds,
 )
-from .current_limits import current_ceiling
+from .current_limits import current_ceiling, user_max
 from .charger_control import (
     WallboxGatewayCharger,
     ECO_DISABLED,
@@ -2911,12 +2911,8 @@ class ChargeAssistant:
             lo = int(self._opts.get(CA_MIN_CURRENT, MIN_CURRENT_A) or MIN_CURRENT_A)
         except (TypeError, ValueError):
             lo = MIN_CURRENT_A
-        try:
-            hi = int(self._opts.get(CA_MAX_CURRENT, ceiling) or ceiling)
-        except (TypeError, ValueError):
-            hi = ceiling
+        hi = user_max(self._opts.get(CA_MAX_CURRENT), ceiling)
         lo = max(MIN_CURRENT_A, min(lo, ceiling))
-        hi = max(MIN_CURRENT_A, min(hi, ceiling))
         if lo > hi:
             lo, hi = hi, lo
         return lo, hi
