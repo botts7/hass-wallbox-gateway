@@ -7,12 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
-- **40 A and 48 A chargers: the Charge Assistant's own current limit no longer
-  sticks at 32 A.** Its settings form saved 32 A as the maximum when the
-  charger's real ceiling wasn't known (older versions always did), so solar
-  and dynamic charging stayed capped there. A saved maximum of exactly 32 A on
-  a charger whose ceiling is higher is now treated as "not set" (the full
-  ceiling). To cap a 40/48 A charger at 32 A on purpose, pick 31 A or 33 A.
+- **40 A and 48 A chargers: the Charge Assistant no longer saves a 32 A limit
+  nobody chose.** Its settings form pre-filled **Maximum current** with 32 A
+  when the charger's real ceiling wasn't known (older versions always did), so
+  saving the form capped solar and dynamic charging there. The box is now
+  empty unless you typed a value, and empty means the charger's full ceiling.
+  A value you saved is kept as it is.
+- **New repair: "Solar charging is limited to X A, your charger can do Y A".**
+  Shown when Solar or Smart + Solar is on and the saved maximum is below the
+  charger's ceiling, so anyone who got the old 32 A pre-fill can clear it. If
+  the limit is deliberate, ignore it.
 - **The charger's ceiling is known straight after a gateway restart.** Newer
   gateway firmware reports its saved ceiling (`max_current_ceiling`), which is
   used until the first charger poll, so the current slider, schedules and the

@@ -68,15 +68,23 @@ def test_saved_gateway_ceiling_before_first_poll():
 
 
 @case
-def test_user_max_treats_old_32_default_as_unset():
-    assert C.user_max(None, 48) == 48
+def test_user_max_keeps_a_saved_value():
+    assert C.user_max(None, 48) == 48   # unset = the full ceiling
     assert C.user_max("", 48) == 48
-    assert C.user_max(32, 48) == 48     # the old default on a 48 A charger
-    assert C.user_max(32, 32) == 32
-    assert C.user_max(24, 48) == 24     # a real choice is kept
-    assert C.user_max(31, 48) == 31
+    assert C.user_max(32, 48) == 32     # kept: it may be deliberate
+    assert C.user_max(24, 48) == 24
     assert C.user_max(60, 48) == 48     # never above the ceiling
     assert C.user_max(3, 48) == 6
+
+
+@case
+def test_below_ceiling_flags_only_a_lower_saved_value():
+    assert C.below_ceiling(32, 48) == 32     # tell the user
+    assert C.below_ceiling(48, 48) is None
+    assert C.below_ceiling(32, 32) is None   # a 32 A charger: nothing to say
+    assert C.below_ceiling(None, 48) is None
+    assert C.below_ceiling("", 48) is None
+    assert C.below_ceiling(0, 48) is None
 
 
 def main():

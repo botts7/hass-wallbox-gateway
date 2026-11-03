@@ -711,9 +711,17 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
-                vol.Optional(CA_MAX_CURRENT, default=min(int(cur.get(CA_MAX_CURRENT) or self._ceiling()), self._ceiling())): selector.NumberSelector(
+                # Empty = the charger's full ceiling. Only a value the user typed
+                # is shown and saved (this used to default to the ceiling, and
+                # to 32 A before the ceiling had loaded, saving a limit nobody
+                # chose). The selector's max never hides a saved value.
+                vol.Optional(
+                    CA_MAX_CURRENT,
+                    description={"suggested_value": cur.get(CA_MAX_CURRENT)},
+                ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=6, max=self._ceiling(), unit_of_measurement="A",
+                        min=6, max=max(self._ceiling(), int(cur.get(CA_MAX_CURRENT) or 0)),
+                        unit_of_measurement="A",
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),

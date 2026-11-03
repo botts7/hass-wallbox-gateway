@@ -551,6 +551,10 @@
       "title": "Charge Assistant isn't the charge-control owner",
       "description": "You've set up a smart-charge / solar mode, but the gateway's **Charge Control Owner** is set to `{owner}`, so the Charge Assistant is standing down and won't start or stop charging.\n\nTo let it take over, open the gateway's config page (http://your-gateway-ip/config) and set **Charge Control Owner** to **Home Assistant Integration**."
     },
+    "ca_max_current_below_ceiling": {
+      "title": "Solar charging is limited to {saved} A, your charger can do {ceiling} A",
+      "description": "The Charge Assistant's **Maximum current** is set to {saved} A, so solar and dynamic charging never go above it, although your charger can do {ceiling} A.\n\nOlder versions of the settings form filled this in with 32 A on their own. If you didn't choose {saved} A on purpose, clear **Maximum current** in the Charge Assistant settings to use the charger's full {ceiling} A.\n\nIf the limit is deliberate, you can ignore this."
+    },
     "solar_reminder_no_surplus": {
       "title": "'Solar available' reminder has no surplus source",
       "description": "The plug-in reminder's **Solar available** trigger is on, but no surplus/solar source is set for it to detect surplus, so that nudge can't run (everything else is unaffected).\n\nTo fix it, either pick a surplus/solar power sensor for the reminder, or turn off the **Solar available** trigger in the Charge Assistant settings."

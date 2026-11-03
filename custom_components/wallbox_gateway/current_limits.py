@@ -55,18 +55,27 @@ def current_ceiling(data: Mapping[str, Any] | None) -> int:
 
 def user_max(stored: Any, ceiling: int) -> int:
     """The Charge Assistant's own maximum current: what the user saved, within
-    the ceiling; unset means the full ceiling. A saved 32 on a charger with a
-    higher ceiling is the old default (forms saved 32 before #39, or when the
-    ceiling hadn't loaded), so it counts as unset."""
+    the ceiling; unset (or not a number) means the full ceiling. A saved value
+    is always kept, even 32 on a 48 A charger: it can't be told apart from a
+    deliberate limit, so the user is told instead (see below_ceiling)."""
     try:
         v = int(stored)
     except (TypeError, ValueError):
         return ceiling
     if v <= 0:
         return ceiling
-    if v == DEFAULT_MAX_CURRENT_A and ceiling > DEFAULT_MAX_CURRENT_A:
-        return ceiling
     return max(MIN_CURRENT_A, min(v, ceiling))
+
+
+def below_ceiling(stored: Any, ceiling: int) -> int | None:
+    """The saved maximum when it is set and below the charger's ceiling (worth
+    telling the user: older settings forms saved 32 A on their own, which
+    holds a 40/48 A charger back), else None."""
+    try:
+        v = int(stored)
+    except (TypeError, ValueError):
+        return None
+    return v if 0 < v < ceiling else None
 
 
 def clamp_current(amps: float, ceiling: int) -> int:
