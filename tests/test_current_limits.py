@@ -53,6 +53,53 @@ def test_clamp_current():
     assert C.clamp_current(40, 32) == 32
 
 
+@case
+def test_saved_gateway_ceiling_before_first_poll():
+    # Forum, 48 A Pulsar Plus: right after a gateway reboot neither realtime nor
+    # status carries the ceiling yet; the gateway's saved one is used.
+    d = {"charger_realtime": None, "charger_status": {"cur": 48},
+         "raw_status": {"max_current_ceiling": 48}}
+    assert C.current_ceiling(d) == 48
+    d["raw_status"]["max_current_ceiling"] = -1          # not known yet
+    assert C.current_ceiling(d) == 32
+    d["charger_realtime"] = {"max_available_current": 40}  # live value wins
+    d["raw_status"]["max_current_ceiling"] = 48
+    assert C.current_ceiling(d) == 40
+
+
+@case
+def test_known_ceiling_is_none_until_reported():
+    # The below-ceiling Repair waits for this: before the first poll the 32 A
+    # default would name the wrong ceiling (a saved 20 on a 16 A charger).
+    assert C.known_ceiling(None) is None
+    assert C.known_ceiling({"charger_realtime": None, "charger_status": {"cur": 16}}) is None
+    assert C.known_ceiling({"raw_status": {"max_current_ceiling": 16}}) == 16
+    # A real 32 A report is known, and wins over a stale saved value.
+    assert C.known_ceiling({"charger_status": {"max_available_current": 32},
+                            "raw_status": {"max_current_ceiling": 48}}) == 32
+    assert C.known_ceiling({"raw_status": {"max_current_ceiling": True}}) is None
+
+
+@case
+def test_user_max_keeps_a_saved_value():
+    assert C.user_max(None, 48) == 48   # unset = the full ceiling
+    assert C.user_max("", 48) == 48
+    assert C.user_max(32, 48) == 32     # kept: it may be deliberate
+    assert C.user_max(24, 48) == 24
+    assert C.user_max(60, 48) == 48     # never above the ceiling
+    assert C.user_max(3, 48) == 6
+
+
+@case
+def test_below_ceiling_flags_only_a_lower_saved_value():
+    assert C.below_ceiling(32, 48) == 32     # tell the user
+    assert C.below_ceiling(48, 48) is None
+    assert C.below_ceiling(32, 32) is None   # a 32 A charger: nothing to say
+    assert C.below_ceiling(None, 48) is None
+    assert C.below_ceiling("", 48) is None
+    assert C.below_ceiling(0, 48) is None
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

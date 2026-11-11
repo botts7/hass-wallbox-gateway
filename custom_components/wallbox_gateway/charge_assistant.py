@@ -174,7 +174,7 @@ from .charge_guards import (
     price_allows_charge,
     user_stop_holds,
 )
-from .current_limits import current_ceiling
+from .current_limits import below_ceiling, current_ceiling, known_ceiling, user_max
 from .charger_control import (
     WallboxGatewayCharger,
     ECO_DISABLED,
@@ -774,6 +774,29 @@ class ChargeAssistant:
             )
         else:
             ir.async_delete_issue(self.hass, DOMAIN, solar_issue)
+
+        # The assistant's own maximum current is below what the charger can do.
+        # Older settings forms saved 32 A on their own, which holds a 40/48 A
+        # charger back in the solar strategies (where it's used). It can't be
+        # told apart from a deliberate limit, so say so and let the user choose
+        # (the Repair can be ignored if it's on purpose).
+        cap_issue = f"ca_max_current_below_ceiling_{self.entry.entry_id}"
+        # Only once the charger's ceiling is actually known: before the first
+        # poll the 32 A default would name the wrong ceiling.
+        coord = self._coordinator()
+        ceiling = known_ceiling(getattr(coord, "data", None))
+        low = below_ceiling(self._opts.get(CA_MAX_CURRENT), ceiling) if ceiling else None
+        strategy = ca_config.strategy_of(self._opts)
+        if low is not None and strategy in (MODE_SOLAR, MODE_SMART_SOLAR):
+            ir.async_create_issue(
+                self.hass, DOMAIN, cap_issue,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="ca_max_current_below_ceiling",
+                translation_placeholders={"saved": str(low), "ceiling": str(ceiling)},
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, cap_issue)
 
     async def _start_reminder(self) -> None:
         triggers = self._rem.get(CA_TRIGGERS) or []
@@ -2911,12 +2934,8 @@ class ChargeAssistant:
             lo = int(self._opts.get(CA_MIN_CURRENT, MIN_CURRENT_A) or MIN_CURRENT_A)
         except (TypeError, ValueError):
             lo = MIN_CURRENT_A
-        try:
-            hi = int(self._opts.get(CA_MAX_CURRENT, ceiling) or ceiling)
-        except (TypeError, ValueError):
-            hi = ceiling
+        hi = user_max(self._opts.get(CA_MAX_CURRENT), ceiling)
         lo = max(MIN_CURRENT_A, min(lo, ceiling))
-        hi = max(MIN_CURRENT_A, min(hi, ceiling))
         if lo > hi:
             lo, hi = hi, lo
         return lo, hi
