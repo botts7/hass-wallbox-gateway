@@ -68,6 +68,19 @@ def test_saved_gateway_ceiling_before_first_poll():
 
 
 @case
+def test_known_ceiling_is_none_until_reported():
+    # The below-ceiling Repair waits for this: before the first poll the 32 A
+    # default would name the wrong ceiling (a saved 20 on a 16 A charger).
+    assert C.known_ceiling(None) is None
+    assert C.known_ceiling({"charger_realtime": None, "charger_status": {"cur": 16}}) is None
+    assert C.known_ceiling({"raw_status": {"max_current_ceiling": 16}}) == 16
+    # A real 32 A report is known, and wins over a stale saved value.
+    assert C.known_ceiling({"charger_status": {"max_available_current": 32},
+                            "raw_status": {"max_current_ceiling": 48}}) == 32
+    assert C.known_ceiling({"raw_status": {"max_current_ceiling": True}}) is None
+
+
+@case
 def test_user_max_keeps_a_saved_value():
     assert C.user_max(None, 48) == 48   # unset = the full ceiling
     assert C.user_max("", 48) == 48

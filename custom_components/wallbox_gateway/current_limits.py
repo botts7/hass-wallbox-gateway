@@ -22,35 +22,49 @@ DEFAULT_MAX_CURRENT_A = 32   # when the charger doesn't report a ceiling
 ABSOLUTE_MAX_CURRENT_A = 80  # sanity bound for a reported ceiling
 
 
-def ceiling_from(*sources: Mapping[str, Any] | None) -> int:
-    """First valid max_available_current among ``sources``, else 32 A."""
+def _valid(v: Any) -> int | None:
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v if MIN_CURRENT_A <= v <= ABSOLUTE_MAX_CURRENT_A else None
+
+
+def _reported(*sources: Mapping[str, Any] | None) -> int | None:
+    """First valid max_available_current among ``sources``, else None."""
     for src in sources:
         if not isinstance(src, Mapping):
             continue
         v = src.get("max_available_current")
         if v is None:
             v = src.get("maxAvailableCurrent")
-        if isinstance(v, bool) or not isinstance(v, int):
-            continue
-        if MIN_CURRENT_A <= v <= ABSOLUTE_MAX_CURRENT_A:
+        if _valid(v) is not None:
             return v
-    return DEFAULT_MAX_CURRENT_A
+    return None
+
+
+def ceiling_from(*sources: Mapping[str, Any] | None) -> int:
+    """First valid max_available_current among ``sources``, else 32 A."""
+    v = _reported(*sources)
+    return DEFAULT_MAX_CURRENT_A if v is None else v
+
+
+def known_ceiling(data: Mapping[str, Any] | None) -> int | None:
+    """The ceiling when the charger or gateway has actually reported one:
+    realtime first, then status, then the gateway's saved ceiling
+    (``max_current_ceiling`` in /api/status, newer firmware), which is known
+    from boot, before the first charger poll. None when nothing has."""
+    if not isinstance(data, Mapping):
+        return None
+    v = _reported(data.get("charger_realtime"), data.get("charger_status"))
+    if v is not None:
+        return v
+    raw = data.get("raw_status")
+    return _valid(raw.get("max_current_ceiling")) if isinstance(raw, Mapping) else None
 
 
 def current_ceiling(data: Mapping[str, Any] | None) -> int:
-    """Ceiling from a coordinator's ``data`` dict: realtime first, then status,
-    then the gateway's saved ceiling (``max_current_ceiling`` in /api/status,
-    newer firmware), which is known from boot, before the first charger poll."""
-    if not isinstance(data, Mapping):
-        return DEFAULT_MAX_CURRENT_A
-    c = ceiling_from(data.get("charger_realtime"), data.get("charger_status"))
-    if c != DEFAULT_MAX_CURRENT_A:
-        return c
-    raw = data.get("raw_status")
-    saved = raw.get("max_current_ceiling") if isinstance(raw, Mapping) else None
-    if isinstance(saved, int) and not isinstance(saved, bool) and             MIN_CURRENT_A <= saved <= ABSOLUTE_MAX_CURRENT_A:
-        return saved
-    return c
+    """Ceiling from a coordinator's ``data`` dict (see known_ceiling), else 32 A."""
+    v = known_ceiling(data)
+    return DEFAULT_MAX_CURRENT_A if v is None else v
 
 
 def user_max(stored: Any, ceiling: int) -> int:

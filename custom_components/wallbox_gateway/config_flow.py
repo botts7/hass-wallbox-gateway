@@ -615,6 +615,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
+            # A cleared Max current leaves the form without the key; drop the
+            # saved one too, so empty really means the charger's full ceiling
+            # (the below-ceiling Repair tells people to clear it).
+            if CA_MAX_CURRENT not in user_input:
+                self._ca.pop(CA_MAX_CURRENT, None)
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
             )
