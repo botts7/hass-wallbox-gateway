@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.37.6] - 2026-11-11
 
 ### Fixed
 - **40 A and 48 A chargers: the Charge Assistant no longer saves a 32 A limit
