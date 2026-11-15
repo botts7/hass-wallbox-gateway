@@ -94,6 +94,8 @@ from .const import (
     CA_SURPLUS_STOP,
     CA_SOLAR_MAX_SOC,
     CA_TRIP_TARGET,
+    CA_SKIP_NIGHT_ABOVE,
+    CA_SKIP_NIGHT_DAYS,
     CA_TRIP_UNTIL,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -956,6 +958,11 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
+            # The form merges into the saved settings: a cleared skip level or
+            # no nights picked must remove the saved value, not keep it.
+            for key in (CA_SKIP_NIGHT_ABOVE, CA_SKIP_NIGHT_DAYS):
+                if not user_input.get(key):
+                    self._ca.pop(key, None)
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
             )
@@ -1055,6 +1062,34 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=0, step=0.01, mode=selector.NumberSelectorMode.BOX
+                    )
+                ),
+                # Skip the overnight grid charge on chosen nights when the car
+                # already has this much (night_skip.py). Empty = off; no nights
+                # picked = every night.
+                vol.Optional(
+                    CA_SKIP_NIGHT_ABOVE,
+                    description={"suggested_value": cur.get(CA_SKIP_NIGHT_ABOVE)},
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=100, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CA_SKIP_NIGHT_DAYS,
+                    description={"suggested_value": cur.get(CA_SKIP_NIGHT_DAYS) or []},
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=d, label=f"{n} night")
+                            for d, n in (("mon", "Monday"), ("tue", "Tuesday"),
+                                         ("wed", "Wednesday"), ("thu", "Thursday"),
+                                         ("fri", "Friday"), ("sat", "Saturday"),
+                                         ("sun", "Sunday"))
+                        ],
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 # Commute-based adaptive target — learn daily use from charge
