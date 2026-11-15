@@ -4,6 +4,23 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Skip the overnight grid charge when the car already has enough.** New
+  Smart charge option: on the nights you pick (for example Friday and Saturday,
+  leaving the weekend to solar), a car at or above the chosen battery level
+  isn't charged from the grid. The charger's own Eco-Smart solar fills it by
+  day. Below that level the night charges as usual. It lives in HA because the
+  charger never knows the car's battery level.
+  - Off by default. No nights picked means every night.
+  - A night runs noon to noon, so a window starting after midnight belongs to
+    the evening before it.
+  - An unknown battery level charges as usual, a trip target still wins, a due
+    battery-balance night still charges, and a charge the assistant already
+    started is never cut short by crossing the level.
+  - The Effective charge target sensor shows source `night-skip` when it applies.
+
 ## [0.37.6] - 2026-11-11
 
 ### Fixed

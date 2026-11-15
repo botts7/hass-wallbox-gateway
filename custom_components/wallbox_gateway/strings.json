@@ -130,6 +130,8 @@
           "trip_target_pct": "Trip target charge level (%) — for an upcoming trip",
           "trip_until": "Trip target applies until (then reverts to the everyday target)",
           "price_cap": "Never charge above this price (your departure time still wins)",
+          "skip_night_above_pct": "Skip the overnight grid charge when the battery is at or above (empty = off)",
+          "skip_night_days": "On these nights (none picked = every night)",
           "notify_service": "Notify me when it starts/stops (optional)",
           "window_enabled": "Only charge during a set window (cheap hours)",
           "autostart_grace_min": "Grace before auto-start (minutes, 0 = start immediately)",
