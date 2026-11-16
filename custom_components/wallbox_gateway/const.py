@@ -113,6 +113,10 @@ CA_PRICE_ENTITY = "price_entity"          # forecast-capable price sensor
 # it only until CA_TRIP_UNTIL (then auto-reverts by time — no one-shot state).
 CA_TRIP_TARGET = "trip_target_pct"        # higher target for an upcoming trip
 CA_TRIP_UNTIL = "trip_until"              # local "YYYY-MM-DDTHH:MM" — trip target applies until then
+# Skip the overnight grid charge on chosen nights when the car is at or above
+# this level, leaving the day to solar (night_skip.py). Off when unset or 0.
+CA_SKIP_NIGHT_ABOVE = "skip_night_above_pct"
+CA_SKIP_NIGHT_DAYS = "skip_night_days"    # ["fri", "sat", ...]; empty = every night
 # Hard cost ceiling: never charge above this price (departure floor overrides).
 CA_PRICE_CAP = "price_cap"                # in the price entity's own units
 

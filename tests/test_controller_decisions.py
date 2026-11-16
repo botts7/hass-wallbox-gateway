@@ -155,6 +155,55 @@ def test_autostart_allowed_below_price_cap():
     assert calls == [True], f"should start below cap, got {calls}"
 
 
+# ── skip the overnight grid charge at or above a level (night_skip) ──
+def _skip_opts(level, **extra):
+    # No nights chosen = every night, so these don't depend on today's weekday.
+    return {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_TARGET_AUTOSTART: True, C.CA_SKIP_NIGHT_ABOVE: level, **extra}
+
+
+@case
+def test_night_skip_at_or_above_level_does_not_start():
+    ca, calls = build(_skip_opts(60), {"sensor.soc": FakeState("65")})
+    ca._eval_target()
+    assert calls == [], f"at/above the skip level: no grid charge, got {calls}"
+    st = ca.target_status()
+    assert st["source"] == "night-skip" and st["target_pct"] == 65.0, st
+
+
+@case
+def test_night_skip_below_level_charges_as_usual():
+    ca, calls = build(_skip_opts(60), {"sensor.soc": FakeState("55")})
+    ca._eval_target()
+    assert calls == [True], f"below the skip level: charge as usual, got {calls}"
+    assert ca.target_status()["source"] == "fixed"
+
+
+@case
+def test_night_skip_off_or_unknown_soc_charges_as_usual():
+    ca, calls = build(_skip_opts(None), {"sensor.soc": FakeState("65")})
+    ca._eval_target()
+    assert calls == [True], "skip off: charge to the target"
+    ca, _ = build(_skip_opts(60), {"sensor.soc": FakeState("unavailable")})
+    assert ca.target_status()["source"] == "fixed", "unknown SOC: no skip"
+
+
+@case
+def test_night_skip_never_cuts_a_charge_the_assistant_started():
+    # Started at 58 % (below 60); crossing 60 mid-charge must not stop it.
+    ca, _ = build(_skip_opts(60), {"sensor.soc": FakeState("61")})
+    ca._own_record = {"t": 1}
+    assert ca._target_pct() == 80.0
+
+
+@case
+def test_night_skip_trip_target_still_wins():
+    until = (dt_util.utcnow() + timedelta(hours=6)).isoformat()
+    ca, _ = build(_skip_opts(60, **{C.CA_TRIP_TARGET: 100, C.CA_TRIP_UNTIL: until}),
+                  {"sensor.soc": FakeState("65")})
+    assert ca._target_pct() == 100.0
+
+
 @case
 def test_trip_target_keeps_charging_past_daily():
     # SOC 90 is above the daily 80 (would stop) but below the active trip 100.
