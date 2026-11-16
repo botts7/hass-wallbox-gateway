@@ -20,6 +20,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     battery-balance night still charges, and a charge the assistant already
     started is never cut short by crossing the level.
   - The Effective charge target sensor shows source `night-skip` when it applies.
+  - In both Smart charge and Smart + Solar.
 
 ## [0.37.6] - 2026-11-11
 
