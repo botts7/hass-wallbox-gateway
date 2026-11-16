@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.37.7] - 2026-11-16
 
 ### Added
 - **Skip the overnight grid charge when the car already has enough.** New
