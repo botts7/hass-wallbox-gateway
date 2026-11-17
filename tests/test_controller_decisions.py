@@ -162,22 +162,6 @@ def _cap_ca(soc, cap=90, charging=True):
     ca, calls = build(opts, {"sensor.soc": FakeState(str(soc))})
     ca._eco_smart_supported = lambda: True
     ca._is_charging = lambda: charging
-# ── floor at any time (floor_guard) ─────────────────────────────────
-class _PlannerOn:
-    def mode(self):
-        return "on"
-    def night_target(self, resolved):
-        return resolved
-
-
-def _floor_ca(soc, charging=False, mins_to_window=600, planner=True):
-    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
-            C.CA_TARGET_AUTOSTART: True, C.CA_WINDOW_ENABLED: True,
-            C.CA_WINDOW_START: "00:00", C.CA_WINDOW_END: "06:00", C.CA_SOLAR_FLOOR_PCT: 50}
-    ca, calls = build(opts, {"sensor.soc": FakeState(str(soc))})
-    ca._planner = _PlannerOn() if planner else None
-    ca._is_charging = lambda: charging
-    ca._mins_to_window = lambda: mins_to_window
     return ca, calls
 
 
@@ -217,6 +201,28 @@ def test_solar_cap_never_stops_its_own_charge_for_the_cap():
     ca._finish_charge = lambda *a, **k: calls.append("finish")
     ca._eval_target()
     assert not ca._cap_hold and calls == ["finish"], (calls, ca._cap_hold)
+
+
+# ── floor at any time (floor_guard) ─────────────────────────────────
+class _PlannerOn:
+    def mode(self):
+        return "on"
+    def night_target(self, resolved):
+        return resolved
+
+
+def _floor_ca(soc, charging=False, mins_to_window=600, planner=True):
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_TARGET_AUTOSTART: True, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: "00:00", C.CA_WINDOW_END: "06:00", C.CA_SOLAR_FLOOR_PCT: 50}
+    ca, calls = build(opts, {"sensor.soc": FakeState(str(soc))})
+    ca._planner = _PlannerOn() if planner else None
+    ca._is_charging = lambda: charging
+    ca._mins_to_window = lambda: mins_to_window
+    return ca, calls
+
+
+@case
 def test_floor_charges_below_the_floor_outside_the_window():
     ca, calls = _floor_ca(40)
     ca._eval_target()
