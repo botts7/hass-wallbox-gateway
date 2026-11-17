@@ -394,6 +394,23 @@ def test_outlook_hours_capped_at_the_inverter():
 
 
 @case
+def test_inverter_rating_replaces_the_learned_cap():
+    """17 Nov: a 10 kW inverter learned only 7.7 kWh/h (export-limit throttling)."""
+    if not _HA_OK:
+        return
+    import wallbox_gateway.solar_planner as SP
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    pl._max_hour_kwh = 7.7
+    opts = {}
+    pl._opts = lambda: opts
+    assert pl._hour_cap() == 7.7
+    opts["solar_inverter_kw"] = 10
+    assert pl._hour_cap() == 10.0
+    opts["solar_inverter_kw"] = ""
+    assert pl._hour_cap() == 7.7
+
+
+@case
 def test_departure_hour_needs_both_half_hours():
     """Leaving about 9 (8:09 to 9:22 on weekdays): the 8:00 hour must not count
     the full hour when 8:30 is often away."""

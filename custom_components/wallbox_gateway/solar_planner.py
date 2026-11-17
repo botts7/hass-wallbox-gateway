@@ -40,6 +40,7 @@ from .const import (
     CA_SOLAR_FLOOR_PCT,
     CA_SOLAR_FORECAST_ENTRIES,
     CA_SOLAR_HOME_SCHEDULE,
+    CA_SOLAR_INVERTER_KW,
     CA_SOLAR_HOME_THRESHOLD,
     CA_SOLAR_MIN_HISTORY_DAYS,
     CA_SOLAR_NOTIFY,
@@ -256,13 +257,20 @@ class SolarPlanner:
         out = SO.from_hourly_attr(st.attributes.get("hourly"))
         return {dt_util.as_local(h): v for h, v in out.items()} or None
 
+    def _hour_cap(self) -> float | None:
+        """Most solar one hour can give: the inverter's rating when set, else
+        the most it has been seen to make in an hour. The learned figure can
+        sit below the rating when an export limit throttles the inverter."""
+        rated = self._o(CA_SOLAR_INVERTER_KW, 0.0)
+        return rated if rated > 0 else self._max_hour_kwh
+
     async def _spare_by_hour(self) -> tuple[dict, str, float | None]:
         """(spare kWh per local hour, source used, correction factor)."""
         src = str(self._opts().get(CA_SOLAR_SOURCE) or "auto")
         if src in ("auto", SOLAR_SOURCE_SENSOR):
             sens = self._sensor_outlook()
             if sens:
-                return SO.cap(sens, self._max_hour_kwh), "sensor", None
+                return SO.cap(sens, self._hour_cap()), "sensor", None
             if src == SOLAR_SOURCE_SENSOR:
                 return {}, "sensor (no hourly outlook)", None
         if src in ("auto", SOLAR_SOURCE_FORECAST):
@@ -273,7 +281,7 @@ class SolarPlanner:
                 day["forecast"] = round(sum(SO.for_day(prod, dt_util.now().date()).values()), 2)
                 factor = SO.learn_factor(self._fc)
                 baseline = self._o(CA_SOLAR_BASELINE_KW, DEFAULT_SOLAR_BASELINE_KW)
-                return SO.spare(prod, factor, baseline, self._max_hour_kwh), "forecast", factor
+                return SO.spare(prod, factor, baseline, self._hour_cap()), "forecast", factor
         return {}, "none", None
 
     # ---- the plan -------------------------------------------------------------
