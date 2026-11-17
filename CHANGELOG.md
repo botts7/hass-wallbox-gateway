@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.37.7] - 2026-11-16
 
 ### Added
 - **Skip the overnight grid charge when the car already has enough.** New
@@ -20,6 +20,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     battery-balance night still charges, and a charge the assistant already
     started is never cut short by crossing the level.
   - The Effective charge target sensor shows source `night-skip` when it applies.
+  - In both Smart charge and Smart + Solar.
 
 ## [0.37.6] - 2026-11-11
 

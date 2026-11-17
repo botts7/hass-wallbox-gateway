@@ -356,6 +356,45 @@ class WallboxGatewayConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
+_NIGHTS = (("mon", "Monday"), ("tue", "Tuesday"), ("wed", "Wednesday"),
+           ("thu", "Thursday"), ("fri", "Friday"), ("sat", "Saturday"), ("sun", "Sunday"))
+
+
+def _night_skip_fields(cur: dict) -> dict:
+    """Form fields to skip the overnight grid charge on chosen nights when the
+    car already has enough (night_skip.py), shared by Smart charge and Smart +
+    Solar. Empty level = off; no nights picked = every night."""
+    return {
+        vol.Optional(
+            CA_SKIP_NIGHT_ABOVE,
+            description={"suggested_value": cur.get(CA_SKIP_NIGHT_ABOVE)},
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=1, max=100, unit_of_measurement="%",
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Optional(
+            CA_SKIP_NIGHT_DAYS,
+            description={"suggested_value": cur.get(CA_SKIP_NIGHT_DAYS) or []},
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[selector.SelectOptionDict(value=d, label=f"{n} night") for d, n in _NIGHTS],
+                multiple=True,
+                mode=selector.SelectSelectorMode.LIST,
+            )
+        ),
+    }
+
+
+def _drop_cleared_night_skip(ca: dict, user_input: dict) -> None:
+    """The form merges into the saved settings: a cleared skip level or no
+    nights picked must remove the saved value, not keep it."""
+    for key in (CA_SKIP_NIGHT_ABOVE, CA_SKIP_NIGHT_DAYS):
+        if not user_input.get(key):
+            ca.pop(key, None)
+
+
 class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
     """Guided Charge Assistant wizard — choose-your-own-adventure.
 
@@ -867,6 +906,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
+            _drop_cleared_night_skip(self._ca, user_input)
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
             )
@@ -889,6 +929,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CA_SOLAR_MAX_SOC, default=cur.get(CA_SOLAR_MAX_SOC, 100)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=100, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER)
                 ),
+                **_night_skip_fields(cur),
                 vol.Optional(CA_DEPARTURE, default=cur.get(CA_DEPARTURE, vol.UNDEFINED)): selector.TimeSelector(),
                 vol.Optional(CA_BATTERY_KWH, default=cur.get(CA_BATTERY_KWH, vol.UNDEFINED)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=200, step=0.1, unit_of_measurement="kWh", mode=selector.NumberSelectorMode.BOX)
@@ -958,11 +999,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
-            # The form merges into the saved settings: a cleared skip level or
-            # no nights picked must remove the saved value, not keep it.
-            for key in (CA_SKIP_NIGHT_ABOVE, CA_SKIP_NIGHT_DAYS):
-                if not user_input.get(key):
-                    self._ca.pop(key, None)
+            _drop_cleared_night_skip(self._ca, user_input)
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
             )
@@ -1064,34 +1101,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                         min=0, step=0.01, mode=selector.NumberSelectorMode.BOX
                     )
                 ),
-                # Skip the overnight grid charge on chosen nights when the car
-                # already has this much (night_skip.py). Empty = off; no nights
-                # picked = every night.
-                vol.Optional(
-                    CA_SKIP_NIGHT_ABOVE,
-                    description={"suggested_value": cur.get(CA_SKIP_NIGHT_ABOVE)},
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1, max=100, unit_of_measurement="%",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Optional(
-                    CA_SKIP_NIGHT_DAYS,
-                    description={"suggested_value": cur.get(CA_SKIP_NIGHT_DAYS) or []},
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(value=d, label=f"{n} night")
-                            for d, n in (("mon", "Monday"), ("tue", "Tuesday"),
-                                         ("wed", "Wednesday"), ("thu", "Thursday"),
-                                         ("fri", "Friday"), ("sat", "Saturday"),
-                                         ("sun", "Sunday"))
-                        ],
-                        multiple=True,
-                        mode=selector.SelectSelectorMode.LIST,
-                    )
-                ),
+                **_night_skip_fields(cur),
                 # Commute-based adaptive target — learn daily use from charge
                 # history and size the target to it (capped at CA_TARGET_PCT).
                 vol.Optional(
