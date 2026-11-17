@@ -168,6 +168,7 @@ CA_SOLAR_FLOOR_PCT = "solar_floor_pct"             # always charged overnight
 CA_SOLAR_HOME_THRESHOLD = "solar_home_threshold_pct"  # count an hour from this home chance
 CA_SOLAR_EFFICIENCY = "solar_efficiency_pct"       # charging efficiency
 CA_SOLAR_MIN_HISTORY_DAYS = "solar_min_history_days"  # pattern history before trusting it
+CA_SOLAR_INVERTER_KW = "solar_inverter_kw"       # optional AC rating; caps a solar hour (else learned)
 CA_SOLAR_HOME_SCHEDULE = "solar_home_schedule"   # optional text; replaces the learned pattern
 CA_SOLAR_NOTIFY = "solar_plan_notify"              # bool: evening note (default True)
 DEFAULT_SOLAR_BASELINE_KW = 0.5
