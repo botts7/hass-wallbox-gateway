@@ -792,7 +792,8 @@ def _night(buffer=None, end_h=3.75):
             C.CA_TARGET_PCT: 75, C.CA_TARGET_AUTOSTART: True,
             C.CA_WINDOW_ENABLED: True,
             C.CA_WINDOW_START: _hhmm(-1), C.CA_WINDOW_END: _hhmm(end_h),
-            C.CA_BATTERY_KWH: 82, C.CA_CHARGE_POWER_KW: 6.8}
+            C.CA_BATTERY_KWH: 82, C.CA_CHARGE_POWER_KW: 6.8,
+            C.CA_SOLAR_EFFICIENCY: 100}   # buffer arithmetic only; efficiency tested below
     if buffer is not None:
         opts[C.CA_WINDOW_FINISH_BUFFER] = buffer
     return build(opts, {"sensor.soc": FakeState("46")})
@@ -813,6 +814,28 @@ def test_finish_buffer_zero_waits():
     ca, calls = _night(buffer=0)
     ca._eval_target()
     assert calls == [], f"buffer 0 should wait with 225 min left, got {calls}"
+
+
+@case
+def test_charge_time_includes_charging_losses():
+    # 17 Nov: 7.05 kW at the wall put about 6.2 kW into the battery. At the
+    # default 90% the 27 Oct night needs 233 min, not 209, so buffer 0 with
+    # 225 min left now starts instead of finishing late.
+    ca, calls = _night(buffer=0)
+    del ca._opts[C.CA_SOLAR_EFFICIENCY]
+    assert ca._minutes_needed(46.0, 75.0, 0) == 233
+    ca._eval_target()
+    assert calls == [True], f"with losses it should start, got {calls}"
+
+
+@case
+def test_learned_charge_power_wins_over_the_setting():
+    ca, _ = _night()
+    assert ca.charge_wall_kw() == 6.8
+    for m in range(40):
+        ca_mod.charge_rate.add_sample(ca._rate_samples, m * 60, 7.05)
+    assert ca.charge_wall_kw() == 7.05
+    assert abs(ca._charge_kw() - 7.05) < 1e-9     # efficiency 100 in _night
 
 
 @case
