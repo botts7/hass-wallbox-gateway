@@ -34,6 +34,7 @@ MODULES = [
     "test_night_skip",             # skip the overnight grid charge on chosen nights
     "test_start_watch",            # start watcher: never interrupt the handshake (28 Oct)
     "test_solar_plan",             # plan around tomorrow's solar (pure modules)
+    "test_home_schedule",          # manual home schedule for the solar planner
     "test_own_charge",             # our charge survives an HA restart (29 Oct)
     "test_pulsar_schedule",        # original Pulsar schedules, snoop replay (#68)
     "test_legacy_schedule",        # pre-6.11 Plus w_sch fallback (#13)

@@ -323,6 +323,30 @@ def test_replans_when_the_soc_loads_after_a_restart():
         SP.async_track_state_change_event = orig
 
 
+@case
+def test_home_schedule_replaces_the_learned_pattern():
+    """A set schedule counts only its hours, with no history; unreadable text
+    falls back to the learned pattern and says why."""
+    if not _HA_OK:
+        return
+    import wallbox_gateway.solar_planner as SP
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    pl._home = {}                              # no history at all
+    opts = {"solar_home_schedule": "Mon-Fri 17:00-08:00; Sat,Sun 00:00-24:00"}
+    pl._opts = lambda: opts
+    sched, err = pl._schedule()
+    assert sched and err is None
+    chance = pl._home_chance(date(2026, 11, 17), 14, sched)
+    assert chance(_t(date(2026, 11, 18), 11)) == 0.0     # Wed 11:00, away
+    assert chance(_t(date(2026, 11, 21), 11)) == 1.0     # Sat 11:00, home
+    opts["solar_home_schedule"] = "Mox 10-12"
+    sched, err = pl._schedule()
+    assert sched is None and "Mox" in err
+    assert pl._home_chance(date(2026, 11, 17), 14, sched)(_t(date(2026, 11, 21), 11)) is None
+    opts["solar_home_schedule"] = "  "
+    assert pl._schedule() == (None, None)
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
