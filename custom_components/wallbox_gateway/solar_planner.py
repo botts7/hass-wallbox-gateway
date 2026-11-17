@@ -20,11 +20,16 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from . import home_pattern as HP
+from . import home_schedule as HS
 from . import overnight_plan as OP
 from . import solar_outlook as SO
 from .const import (
@@ -34,6 +39,7 @@ from .const import (
     CA_SOLAR_ENTITY,
     CA_SOLAR_FLOOR_PCT,
     CA_SOLAR_FORECAST_ENTRIES,
+    CA_SOLAR_HOME_SCHEDULE,
     CA_SOLAR_HOME_THRESHOLD,
     CA_SOLAR_MIN_HISTORY_DAYS,
     CA_SOLAR_NOTIFY,
@@ -86,6 +92,7 @@ class SolarPlanner:
         self.result: dict | None = None       # the latest plan, for the sensor
         self._computed_at: datetime | None = None
         self._plan: OP.Plan | None = None
+        self._input_unsub: Callable | None = None   # waiting for the SOC to load
 
     # ---- settings ---------------------------------------------------------
     def mode(self) -> str:
@@ -121,6 +128,7 @@ class SolarPlanner:
         for u in self._unsubs:
             u()
         self._unsubs.clear()
+        self._stop_input_watch()
         await self._save()
 
     async def _save(self) -> None:
@@ -263,7 +271,22 @@ class SolarPlanner:
         noon, today's after midnight."""
         return now.date() + timedelta(days=1) if now.hour >= 12 else now.date()
 
-    def _home_chance(self, today, min_days: int):
+    def _schedule(self) -> tuple[list | None, str | None]:
+        """The manual home schedule: (parsed, None), (None, None) when unset,
+        or (None, error) when it can't be read (then the learned pattern is used)."""
+        text = str(self._opts().get(CA_SOLAR_HOME_SCHEDULE) or "").strip()
+        if not text:
+            return None, None
+        try:
+            sched = HS.parse(text)
+        except HS.ScheduleError as err:
+            return None, str(err)
+        return (sched or None), None
+
+    def _home_chance(self, today, min_days: int, sched: list | None = None):
+        if sched:
+            return lambda hour: HS.hour_chance(sched, hour)
+
         def chance(hour: datetime):
             a = HP.probability(self._home, hour, today, min_days)
             b = HP.probability(self._home, hour + timedelta(minutes=30), today, min_days)
@@ -284,12 +307,15 @@ class SolarPlanner:
         if not inputs or inputs.get("soc") is None or not inputs.get("battery_kwh"):
             self.result = {"reason": "Needs the car's battery level and battery size."}
             self._plan = None
+            self._watch_inputs()
             return
+        self._stop_input_watch()
         now = dt_util.now()
         spare, source, factor = await self._spare_by_hour()
         day = self._solar_day(now)
         spare_day = SO.for_day(spare, day)
         min_days = int(self._o(CA_SOLAR_MIN_HISTORY_DAYS, DEFAULT_SOLAR_MIN_HISTORY_DAYS))
+        sched, sched_err = self._schedule()
         p = OP.plan(
             soc=float(inputs["soc"]),
             target_pct=float(inputs["target_pct"]),
@@ -297,15 +323,19 @@ class SolarPlanner:
             battery_kwh=float(inputs["battery_kwh"]),
             efficiency=self._o(CA_SOLAR_EFFICIENCY, DEFAULT_SOLAR_EFFICIENCY) / 100.0,
             spare_by_hour=spare_day,
-            home_chance=self._home_chance(now.date(), min_days),
+            home_chance=self._home_chance(now.date(), min_days, sched),
             threshold=self._o(CA_SOLAR_HOME_THRESHOLD, DEFAULT_SOLAR_HOME_THRESHOLD) / 100.0,
             charger_kw=self._o(CA_CHARGE_POWER_KW, 7.0),
         )
         self._plan, self._computed_at = p, now
         hist = HP.history_days(self._home)
         reason = p.reason
-        if hist < min_days:
+        if sched:
+            reason += " Using your home schedule."
+        elif hist < min_days:
             reason += f" Still learning when the car is home ({hist} of {min_days} days)."
+        if sched_err:
+            reason += f" Home schedule ignored ({sched_err})."
         self.result = {
             "tonight_kwh": p.tonight_kwh,
             "target_pct": p.target_pct,
@@ -318,9 +348,39 @@ class SolarPlanner:
             "source": source,
             "correction_factor": round(factor, 2) if factor is not None else None,
             "history_days": hist,
+            "home_source": "schedule" if sched else "learned",
             "mode": self.mode(),
             "reason": reason,
         }
+
+    # ---- re-plan as soon as the inputs load ------------------------------------
+    def _watch_inputs(self) -> None:
+        """After a restart the car's SOC sensor can load after the planner's
+        first run; re-plan the moment it gets a value instead of waiting for
+        the next 10-minute run."""
+        if self._input_unsub is not None:
+            return
+        try:
+            eids = [e for e in self._ca.planner_input_entities() if e]
+        except Exception:  # noqa: BLE001
+            eids = []
+        if not eids:
+            return
+
+        @callback
+        def _changed(event) -> None:
+            new = event.data.get("new_state")
+            if new is None or new.state in ("unknown", "unavailable", ""):
+                return
+            self._stop_input_watch()
+            self.hass.async_create_task(self.async_compute())
+
+        self._input_unsub = async_track_state_change_event(self.hass, eids, _changed)
+
+    def _stop_input_watch(self) -> None:
+        if self._input_unsub is not None:
+            self._input_unsub()
+            self._input_unsub = None
 
     @callback
     def _on_recompute(self, _now) -> None:

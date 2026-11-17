@@ -272,6 +272,79 @@ def test_planner_inputs_use_the_unplanned_target():
     ca._opts[T.C.CA_BATTERY_KWH] = 82.56
     i = ca.planner_inputs()
     assert i["target_pct"] == 78.0 and i["soc"] == 55.0 and i["battery_kwh"] == 82.56
+    assert ca.planner_input_entities() == ["sensor.soc"]
+
+
+@case
+def test_replans_when_the_soc_loads_after_a_restart():
+    """No SOC on the first run: watch the SOC entity, re-plan once it has a
+    value, and stop watching."""
+    if not _HA_OK:
+        return
+    import asyncio
+    import wallbox_gateway.solar_planner as SP
+
+    class _Ev:
+        def __init__(self, state):
+            self.data = {"new_state": None if state is None else T.FakeState(state)}
+
+    class _Hass:
+        tasks = []
+        def async_create_task(self, coro):
+            self.tasks.append(coro); coro.close()
+
+    class _CA:
+        def planner_inputs(self):
+            return {"soc": None, "target_pct": 78.0, "battery_kwh": 82.56}
+        def planner_input_entities(self):
+            return ["sensor.soc"]
+
+    watched, unsubbed = {}, []
+    def _track(hass, eids, cb):
+        watched["eids"], watched["cb"] = eids, cb
+        return lambda: unsubbed.append(True)
+
+    orig = SP.async_track_state_change_event
+    SP.async_track_state_change_event = _track
+    try:
+        pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+        pl.hass, pl._ca, pl._input_unsub = _Hass(), _CA(), None
+        pl._opts = lambda: {"solar_plan": "on"}
+        asyncio.run(pl.async_compute())
+        assert watched["eids"] == ["sensor.soc"] and pl._input_unsub is not None
+        asyncio.run(pl.async_compute())          # a second miss doesn't stack a watch
+        assert not unsubbed
+        watched["cb"](_Ev("unavailable"))         # still loading: keep waiting
+        assert not pl.hass.tasks and not unsubbed
+        watched["cb"](_Ev("55"))                  # loaded: re-plan, stop watching
+        assert len(pl.hass.tasks) == 1 and unsubbed == [True]
+        assert pl._input_unsub is None
+    finally:
+        SP.async_track_state_change_event = orig
+
+
+@case
+def test_home_schedule_replaces_the_learned_pattern():
+    """A set schedule counts only its hours, with no history; unreadable text
+    falls back to the learned pattern and says why."""
+    if not _HA_OK:
+        return
+    import wallbox_gateway.solar_planner as SP
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    pl._home = {}                              # no history at all
+    opts = {"solar_home_schedule": "Mon-Fri 17:00-08:00; Sat,Sun 00:00-24:00"}
+    pl._opts = lambda: opts
+    sched, err = pl._schedule()
+    assert sched and err is None
+    chance = pl._home_chance(date(2026, 11, 17), 14, sched)
+    assert chance(_t(date(2026, 11, 18), 11)) == 0.0     # Wed 11:00, away
+    assert chance(_t(date(2026, 11, 21), 11)) == 1.0     # Sat 11:00, home
+    opts["solar_home_schedule"] = "Mox 10-12"
+    sched, err = pl._schedule()
+    assert sched is None and "Mox" in err
+    assert pl._home_chance(date(2026, 11, 17), 14, sched)(_t(date(2026, 11, 21), 11)) is None
+    opts["solar_home_schedule"] = "  "
+    assert pl._schedule() == (None, None)
 
 
 def main():
