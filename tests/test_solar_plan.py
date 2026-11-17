@@ -361,6 +361,56 @@ def test_replans_when_the_soc_loads_after_a_restart():
 
 
 @case
+def test_replans_when_the_outlook_updates():
+    """17 Nov: after a restart the plan ran 13 s before Solar Comfort rebuilt
+    its outlook; a rebuilt outlook now triggers a re-plan."""
+    if not _HA_OK:
+        return
+    import asyncio
+    import wallbox_gateway.solar_planner as SP
+
+    class _Store:
+        async def async_load(self):
+            return {"home": {}, "fc": {}, "pattern_v": SP._PATTERN_V}
+
+    class _Hass:
+        tasks = []
+        def async_create_task(self, coro):
+            self.tasks.append(coro); coro.close()
+
+    watched = {}
+    def _track(hass, eids, cb):
+        watched.setdefault("eids", []).append(eids); watched["cb"] = cb
+        return lambda: None
+
+    origs = (SP.async_track_state_change_event, SP.async_track_time_change,
+             SP.async_track_time_interval)
+    SP.async_track_state_change_event = _track
+    SP.async_track_time_change = lambda *a, **k: (lambda: None)
+    SP.async_track_time_interval = lambda *a, **k: (lambda: None)
+    try:
+        for src, expect in (("auto", True), ("forecast", False)):
+            watched.clear()
+            pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+            pl.hass, pl._store, pl._unsubs, pl._home = _Hass(), _Store(), [], {}
+            pl._ca = type("CA", (), {"_connected_entity": None})()   # no recorder seed
+            opts = {"solar_plan": "on", "solar_source": src,
+                    "solar_outlook_entity": "sensor.outlook"}
+            pl._opts = lambda: opts
+            pl.hass.tasks = []
+            asyncio.run(pl.async_start())
+            assert (["sensor.outlook"] in watched.get("eids", [])) is expect, src
+        pl.hass.tasks = []
+        pl._on_outlook_change(type("E", (), {"data": {"new_state": T.FakeState("unavailable")}})())
+        assert not pl.hass.tasks
+        pl._on_outlook_change(type("E", (), {"data": {"new_state": T.FakeState("14.4")}})())
+        assert len(pl.hass.tasks) == 1
+    finally:
+        (SP.async_track_state_change_event, SP.async_track_time_change,
+         SP.async_track_time_interval) = origs
+
+
+@case
 def test_home_schedule_replaces_the_learned_pattern():
     """A set schedule counts only its hours, with no history; unreadable text
     falls back to the learned pattern and says why."""
