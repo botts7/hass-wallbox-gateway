@@ -100,8 +100,9 @@ def is_home(sched: list, when: datetime) -> bool:
 
 
 def hour_chance(sched: list, hour: datetime) -> float:
-    """Share of the hour starting at ``hour`` inside the schedule, in halves
-    (0, 0.5 or 1), matching the learned pattern's half-hour slots."""
+    """1.0 when both half hours of the hour starting at ``hour`` are inside
+    the schedule, else 0.0: like the learned pattern, the whole hour must be
+    home to count."""
     a = is_home(sched, hour)
     b = is_home(sched, hour + timedelta(minutes=30))
-    return (a + b) / 2
+    return 1.0 if (a and b) else 0.0

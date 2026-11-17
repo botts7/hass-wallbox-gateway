@@ -54,9 +54,9 @@ def test_several_ranges_daily_and_wrapping_day_range():
 
 
 @case
-def test_hour_chance_in_halves():
+def test_hour_chance_needs_the_whole_hour():
     s = HS.parse("Tue 10:30-12:00")
-    assert HS.hour_chance(s, _at(1, 10)) == 0.5
+    assert HS.hour_chance(s, _at(1, 10)) == 0.0
     assert HS.hour_chance(s, _at(1, 11)) == 1.0
     assert HS.hour_chance(s, _at(1, 12)) == 0.0
 

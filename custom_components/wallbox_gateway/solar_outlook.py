@@ -122,6 +122,14 @@ def spare(production: dict, factor: float, baseline_kw: float,
     return out
 
 
+def cap(hourly: dict, max_hour_kwh: float | None) -> dict:
+    """Cap each hour of an outlook at what the panels have ever made in an
+    hour: spare solar can't exceed the inverter's output."""
+    if max_hour_kwh is None or max_hour_kwh <= 0:
+        return dict(hourly)
+    return {h: min(v, max_hour_kwh) for h, v in hourly.items()}
+
+
 def for_day(hourly: dict, day) -> dict:
     """Only the hours of local calendar date ``day``."""
     return {h: v for h, v in hourly.items() if h.date() == day}

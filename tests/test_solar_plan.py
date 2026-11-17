@@ -347,6 +347,35 @@ def test_home_schedule_replaces_the_learned_pattern():
     assert pl._schedule() == (None, None)
 
 
+@case
+def test_outlook_hours_capped_at_the_inverter():
+    """17 Nov: an outlook said 5.72 kWh in one hour on a 5 kW inverter."""
+    d = date(2026, 11, 18)
+    out = {_t(d, 7): 2.9, _t(d, 8): 5.72, _t(d, 11): 6.81}
+    assert SO.cap(out, 4.9) == {_t(d, 7): 2.9, _t(d, 8): 4.9, _t(d, 11): 4.9}
+    assert SO.cap(out, None) == out and SO.cap(out, 0) == out
+
+
+@case
+def test_departure_hour_needs_both_half_hours():
+    """Leaving about 9 (8:09 to 9:22 on weekdays): the 8:00 hour must not count
+    the full hour when 8:30 is often away."""
+    if not _HA_OK:
+        return
+    import wallbox_gateway.solar_planner as SP
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    pl._home = {}
+    d = date(2026, 11, 18)
+    probs = {_t(d, 8): 1.0, _t(d, 8, 30): 0.55, _t(d, 7): 1.0, _t(d, 7, 30): 1.0}
+    orig = SP.HP.probability
+    SP.HP.probability = lambda days, t, today, n: probs.get(t)
+    try:
+        chance = pl._home_chance(d, 14)
+        assert chance(_t(d, 8)) == 0.55 and chance(_t(d, 7)) == 1.0
+    finally:
+        SP.HP.probability = orig
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
