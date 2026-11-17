@@ -1404,6 +1404,11 @@ class ChargeAssistant:
             "battery_kwh": self._read_float_cg(car, CA_BATTERY_KWH),
         }
 
+    def planner_input_entities(self) -> list:
+        """Entities planner_inputs() reads, so the planner can re-plan when
+        they load after a restart."""
+        return [self._cg(self._active_car(), CA_SOC_ENTITY)]
+
     def planner_result(self) -> dict | None:
         """The latest solar plan, for the sensor (None when the planner is off)."""
         return self._planner.result if self._planner is not None else None

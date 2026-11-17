@@ -272,6 +272,55 @@ def test_planner_inputs_use_the_unplanned_target():
     ca._opts[T.C.CA_BATTERY_KWH] = 82.56
     i = ca.planner_inputs()
     assert i["target_pct"] == 78.0 and i["soc"] == 55.0 and i["battery_kwh"] == 82.56
+    assert ca.planner_input_entities() == ["sensor.soc"]
+
+
+@case
+def test_replans_when_the_soc_loads_after_a_restart():
+    """No SOC on the first run: watch the SOC entity, re-plan once it has a
+    value, and stop watching."""
+    if not _HA_OK:
+        return
+    import asyncio
+    import wallbox_gateway.solar_planner as SP
+
+    class _Ev:
+        def __init__(self, state):
+            self.data = {"new_state": None if state is None else T.FakeState(state)}
+
+    class _Hass:
+        tasks = []
+        def async_create_task(self, coro):
+            self.tasks.append(coro); coro.close()
+
+    class _CA:
+        def planner_inputs(self):
+            return {"soc": None, "target_pct": 78.0, "battery_kwh": 82.56}
+        def planner_input_entities(self):
+            return ["sensor.soc"]
+
+    watched, unsubbed = {}, []
+    def _track(hass, eids, cb):
+        watched["eids"], watched["cb"] = eids, cb
+        return lambda: unsubbed.append(True)
+
+    orig = SP.async_track_state_change_event
+    SP.async_track_state_change_event = _track
+    try:
+        pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+        pl.hass, pl._ca, pl._input_unsub = _Hass(), _CA(), None
+        pl._opts = lambda: {"solar_plan": "on"}
+        asyncio.run(pl.async_compute())
+        assert watched["eids"] == ["sensor.soc"] and pl._input_unsub is not None
+        asyncio.run(pl.async_compute())          # a second miss doesn't stack a watch
+        assert not unsubbed
+        watched["cb"](_Ev("unavailable"))         # still loading: keep waiting
+        assert not pl.hass.tasks and not unsubbed
+        watched["cb"](_Ev("55"))                  # loaded: re-plan, stop watching
+        assert len(pl.hass.tasks) == 1 and unsubbed == [True]
+        assert pl._input_unsub is None
+    finally:
+        SP.async_track_state_change_event = orig
 
 
 def main():

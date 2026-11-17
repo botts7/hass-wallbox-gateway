@@ -20,7 +20,11 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -86,6 +90,7 @@ class SolarPlanner:
         self.result: dict | None = None       # the latest plan, for the sensor
         self._computed_at: datetime | None = None
         self._plan: OP.Plan | None = None
+        self._input_unsub: Callable | None = None   # waiting for the SOC to load
 
     # ---- settings ---------------------------------------------------------
     def mode(self) -> str:
@@ -121,6 +126,7 @@ class SolarPlanner:
         for u in self._unsubs:
             u()
         self._unsubs.clear()
+        self._stop_input_watch()
         await self._save()
 
     async def _save(self) -> None:
@@ -284,7 +290,9 @@ class SolarPlanner:
         if not inputs or inputs.get("soc") is None or not inputs.get("battery_kwh"):
             self.result = {"reason": "Needs the car's battery level and battery size."}
             self._plan = None
+            self._watch_inputs()
             return
+        self._stop_input_watch()
         now = dt_util.now()
         spare, source, factor = await self._spare_by_hour()
         day = self._solar_day(now)
@@ -321,6 +329,35 @@ class SolarPlanner:
             "mode": self.mode(),
             "reason": reason,
         }
+
+    # ---- re-plan as soon as the inputs load ------------------------------------
+    def _watch_inputs(self) -> None:
+        """After a restart the car's SOC sensor can load after the planner's
+        first run; re-plan the moment it gets a value instead of waiting for
+        the next 10-minute run."""
+        if self._input_unsub is not None:
+            return
+        try:
+            eids = [e for e in self._ca.planner_input_entities() if e]
+        except Exception:  # noqa: BLE001
+            eids = []
+        if not eids:
+            return
+
+        @callback
+        def _changed(event) -> None:
+            new = event.data.get("new_state")
+            if new is None or new.state in ("unknown", "unavailable", ""):
+                return
+            self._stop_input_watch()
+            self.hass.async_create_task(self.async_compute())
+
+        self._input_unsub = async_track_state_change_event(self.hass, eids, _changed)
+
+    def _stop_input_watch(self) -> None:
+        if self._input_unsub is not None:
+            self._input_unsub()
+            self._input_unsub = None
 
     @callback
     def _on_recompute(self, _now) -> None:
