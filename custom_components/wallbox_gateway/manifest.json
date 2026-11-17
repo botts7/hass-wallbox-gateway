@@ -2,6 +2,7 @@
   "domain": "wallbox_gateway",
   "name": "Wallbox BLE Gateway",
   "after_dependencies": [
+    "energy",
     "recorder"
   ],
   "codeowners": [

@@ -73,6 +73,8 @@ from .const import (
     CA_BALANCE_TARGET_PCT,
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
+    CA_SOLAR_EFFICIENCY,
+    DEFAULT_SOLAR_EFFICIENCY,
     CA_CHEAPEST,
     CA_DEPARTURE,
     CA_HANDBACK_SOLAR,
@@ -82,6 +84,7 @@ from .const import (
     CA_TRIP_UNTIL,
     CA_SKIP_NIGHT_ABOVE,
     CA_SKIP_NIGHT_DAYS,
+    CA_SOLAR_CAP_PCT,
     CA_START_ACTION,
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
@@ -145,6 +148,9 @@ from .const import (
     MODE_SOLAR,
     MODE_TARGET,
     CA_WINDOW_ENABLED,
+    CA_SOLAR_FLOOR_PCT,
+    DEFAULT_SOLAR_FLOOR_PCT,
+    SOLAR_PLAN_ON,
     CA_WINDOW_START,
     CA_WINDOW_END,
     CA_WINDOW_OVERRUN,
@@ -162,12 +168,16 @@ from .const import (
     CA_HOME_ENTITY,
 )
 from . import balance_schedule
+from . import charge_rate
 from . import ca_config
 from . import charge_window
 from .legacy_schedule import is_original_pulsar
 from . import start_watch
 from . import own_charge
+from .solar_planner import SolarPlanner
 from . import night_skip
+from . import solar_cap
+from . import floor_guard
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -367,6 +377,10 @@ class ChargeAssistant:
         # Did *we* start the current charge? Cheapest-window only ever stops a
         # charge it started itself — never a manual / app-initiated one.
         self._we_started = False
+        # Holding a solar charge paused at the solar cap (solar_cap.py).
+        self._cap_hold = False
+        # A grid charge to the floor outside the cheap window (floor_guard.py).
+        self._floor_charging = False
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
         # and still to be checked against the charger (29 Oct live test).
@@ -424,6 +438,12 @@ class ChargeAssistant:
         self._last_balance: str | None = None
         # Created lazily in async_start (Store needs a fully-initialised hass).
         self._balance_store: Store | None = None
+        # The charger's full-speed power, learned from its readings (charge_rate.py).
+        self._rate_samples: list = []
+        self._rate_saved_at: float = 0.0
+        # Plan the night around tomorrow's solar (solar_planner.py); created in
+        # async_start when the strategy charges to a target.
+        self._planner: SolarPlanner | None = None
 
     # ------------------------------------------------------------------
     # Own-entity resolution
@@ -501,6 +521,7 @@ class ChargeAssistant:
             data = await self._balance_store.async_load()
             self._last_balance = (data or {}).get("last_balance")
             self._restored_own = (data or {}).get("own_charge")
+            self._rate_samples = list((data or {}).get("charge_rate") or [])
             self._own_record = self._restored_own
         except Exception as err:  # noqa: BLE001 — never block startup on this
             _LOGGER.debug("Charge Assistant: balance-state load failed: %s", err)
@@ -538,6 +559,11 @@ class ChargeAssistant:
         # Plug-in reminder layer — independent, runs on top of ANY strategy.
         if self._rem.get(CA_TRIGGERS):
             await self._start_reminder()
+        # Plan around tomorrow's solar: only meaningful when charging to a target.
+        if strategy in (MODE_TARGET, MODE_SMART_SOLAR):
+            self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
+                                         lambda: self._opts)
+            await self._planner.async_start()
 
         # Native-schedule arbiter: while we actively control charging, the
         # charger's own schedules are disabled (and restored when we hand back).
@@ -606,6 +632,7 @@ class ChargeAssistant:
         """Coordinator tick — reconcile whenever the gateway's applied state
         doesn't yet match what we want (covers post-reboot retries)."""
         self._last_coord_update = dt_util.utcnow()
+        self._sample_charge_rate()
         if self._arbiter is None:
             return
         self._update_repair()
@@ -675,6 +702,8 @@ class ChargeAssistant:
         the stop and the car's next request restarts charging (#67)."""
         if user_stop_holds(self._user_stop_at, dt_util.utcnow().timestamp()):
             return False
+        if self._cap_hold:
+            return False   # holding solar at the cap (solar_cap.py)
         coord = self._coordinator()
         data = getattr(coord, "data", None) if coord is not None else None
         schedules = data.get("schedules") if isinstance(data, dict) else None
@@ -696,6 +725,9 @@ class ChargeAssistant:
         paused trap of a bare 'stop', and degrades gracefully on chargers without
         solar (the un-pause still resumes their schedule; the eco-mode restore is
         a no-op). See release_action / _resume_and_restore_eco."""
+        if self._cap_hold:
+            self._release_since = None
+            return   # the pause at the solar cap is deliberate (solar_cap.py)
         default = str(self.entry.options.get(CA_RELEASE_DEFAULT, _DEFAULT_RELEASE))
         action = release_action(
             controlling, default, self.control_owner(), self._is_charging()
@@ -861,6 +893,9 @@ class ChargeAssistant:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        if self._planner is not None:
+            await self._planner.async_stop()
+            self._planner = None
         # Cancel any pending auto-start countdown / finish-verify / start-verify
         # so none can fire post-teardown.
         self._cancel_grace("assistant stopping")
@@ -1056,9 +1091,7 @@ class ChargeAssistant:
         if not self._opts.get(CA_DEPARTURE):
             return False
         try:
-            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and float(
-                self._opts.get(CA_CHARGE_POWER_KW) or 0
-            ) > 0
+            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and self._charge_kw() > 0
         except (TypeError, ValueError):
             return False
 
@@ -1085,7 +1118,7 @@ class ChargeAssistant:
             return False
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return False
         if batt <= 0 or power <= 0:
@@ -1110,6 +1143,10 @@ class ChargeAssistant:
             return
         target = self._target_pct()
         charging = self._is_charging()
+        if self._eval_solar_cap(soc, charging):
+            return
+        if self._eval_floor(soc, charging):
+            return
         if self._cheapest_active():
             self._eval_cheapest(soc, target, charging)
             return
@@ -1230,7 +1267,7 @@ class ChargeAssistant:
             return True
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return True
         if batt <= 0 or power <= 0:
@@ -1261,13 +1298,54 @@ class ChargeAssistant:
             v = DEFAULT_WINDOW_FINISH_BUFFER_MIN
         return max(0, min(v, 180))
 
+    # ------------------------------------------------------------------
+    # Charge power: learned from the charger's own readings (charge_rate.py)
+    # ------------------------------------------------------------------
+    def _sample_charge_rate(self) -> None:
+        coord = self._coordinator()
+        rt = ((getattr(coord, "data", None) or {}).get("charger_realtime") or {}) if coord else {}
+        try:
+            kw = float(rt.get("cp")) if rt.get("cp") is not None else None
+        except (TypeError, ValueError):
+            kw = None
+        now = dt_util.utcnow().timestamp()
+        if charge_rate.add_sample(self._rate_samples, now, kw) and (
+                now - self._rate_saved_at >= 1800):
+            self._rate_saved_at = now
+            self.hass.async_create_task(self._save_balance_state())
+
+    def charge_wall_kw(self) -> float | None:
+        """The charger's full-speed power at the wall: learned once there's
+        about half an hour of full-speed charging, else the configured
+        figure, else None."""
+        learned = charge_rate.learned_kw(self._rate_samples)
+        if learned:
+            return learned
+        try:
+            v = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    def _charge_kw(self) -> float:
+        """Power reaching the battery (wall power times charging efficiency),
+        for time-to-charge sums; 0 when unknown."""
+        wall = self.charge_wall_kw()
+        if not wall:
+            return 0.0
+        try:
+            eff = float(self._opts.get(CA_SOLAR_EFFICIENCY) or DEFAULT_SOLAR_EFFICIENCY) / 100.0
+        except (TypeError, ValueError):
+            eff = DEFAULT_SOLAR_EFFICIENCY / 100.0
+        return charge_rate.battery_kw(wall, eff)
+
     def _minutes_needed(self, soc: float, target: float, buffer_min: int = 10) -> int | None:
         """Charge time in minutes to reach target plus ``buffer_min`` of slack, or
         None without an energy model. One formula for every deadline: the window
         end passes the finish buffer, a departure keeps the 10-minute default."""
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return None
         if batt <= 0 or power <= 0:
@@ -1347,9 +1425,7 @@ class ChargeAssistant:
         if not self._opts.get(CA_CHEAPEST) or not self._opts.get(CA_PRICE_ENTITY):
             return False
         try:
-            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and float(
-                self._opts.get(CA_CHARGE_POWER_KW) or 0
-            ) > 0
+            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and self._charge_kw() > 0
         except (TypeError, ValueError):
             return False
 
@@ -1382,7 +1458,26 @@ class ChargeAssistant:
         with what's actually enforced."""
         return self._resolve_target()[0]
 
-    def _resolve_target(self) -> tuple[float, str]:
+    def planner_inputs(self) -> dict:
+        """The active car's numbers for the solar planner: SOC, the target before
+        the planner's own adjustment, and battery size."""
+        car = self._active_car()
+        return {
+            "soc": self._read_float(self._cg(car, CA_SOC_ENTITY)),
+            "target_pct": self._resolve_target(plan=False)[0],
+            "battery_kwh": self._read_float_cg(car, CA_BATTERY_KWH),
+        }
+
+    def planner_input_entities(self) -> list:
+        """Entities planner_inputs() reads, so the planner can re-plan when
+        they load after a restart."""
+        return [self._cg(self._active_car(), CA_SOC_ENTITY)]
+
+    def planner_result(self) -> dict | None:
+        """The latest solar plan, for the sensor (None when the planner is off)."""
+        return self._planner.result if self._planner is not None else None
+
+    def _resolve_target(self, plan: bool = True) -> tuple[float, str]:
         """The active SOC target and the source that set it.
 
         The everyday care target, replaced by the learned adaptive target when
@@ -1439,11 +1534,85 @@ class ChargeAssistant:
         )
         if resolved > base:  # the trip target won
             source = "trip"
+        # Plan around tomorrow's solar ("on" only): lower tonight's target when
+        # sunshine the car will be home for can make up the rest. Never on a
+        # balance or trip night, never below the morning floor (solar_planner).
+        if plan and self._planner is not None and source not in ("balance", "trip"):
+            planned = self._planner.night_target(resolved)
+            if planned < resolved:
+                resolved, source = planned, "solar-plan"
         return resolved, source
 
     # ------------------------------------------------------------------
     # Hand-back-to-solar + periodic battery balance
     # ------------------------------------------------------------------
+    def _eval_solar_cap(self, soc: float, charging: bool) -> bool:
+        """Stop the charger's own solar filling the car past the solar cap, and
+        hold that pause until the car is unplugged, drops below the cap, or the
+        cap is turned off (solar_cap.py). Only with hand back to solar on.
+        Returns True when it acted, so the rest of this tick is skipped."""
+        cap = self._opts.get(CA_SOLAR_CAP_PCT) if self._handback_solar() else None
+        action = solar_cap.decide(
+            cap=cap, soc=soc, charging=charging, we_started=self._we_started,
+            holding=self._cap_hold, plugged=self._plugged_in(),
+        )
+        if action == solar_cap.PAUSE:
+            _LOGGER.info("Charge Assistant: solar charge at %.0f%% reached the solar cap %s%%, pausing",
+                         soc, cap)
+            self._cap_hold = True
+            self._auto_resume_since = None
+            self._set_charging(False)
+            return True
+        if action == solar_cap.RELEASE:
+            _LOGGER.info("Charge Assistant: solar cap hold released (SOC %.0f%%), handing back to the charger's solar",
+                         soc)
+            self._cap_hold = False
+            self.hass.async_create_task(self._resume_and_restore_eco())
+    def _floor_now(self) -> float | None:
+        """The floor to hold at any time: the solar planner's floor while the
+        planner is On (it acts), else None."""
+        if self._planner is None or self._planner.mode() != SOLAR_PLAN_ON:
+            return None
+        return floor_guard.floor_of(self._opts.get(CA_SOLAR_FLOOR_PCT, DEFAULT_SOLAR_FLOOR_PCT))
+
+    def _mins_to_window(self) -> int | None:
+        """0 inside the cheap window, minutes until it starts, None without one."""
+        if not self._opts.get(CA_WINDOW_ENABLED):
+            return None
+        start = charge_window.to_minutes(self._opts.get(CA_WINDOW_START))
+        end = charge_window.to_minutes(self._opts.get(CA_WINDOW_END))
+        if start is None or end is None:
+            return None
+        now_local = dt_util.now()
+        now = now_local.hour * 60 + now_local.minute
+        inside = start <= now < end if start <= end else (now >= start or now < end)
+        return 0 if inside else (start - now) % (24 * 60)
+
+    def _eval_floor(self, soc: float, charging: bool) -> bool:
+        """Charge to the floor straight away when the car is plugged in below it
+        outside the cheap window (floor_guard.py). Returns True when the rest of
+        this tick must be skipped (our floor charge is running, or just
+        started/stopped), so the window logic doesn't stop it."""
+        floor = self._floor_now()
+        action = floor_guard.decide(
+            floor=floor, soc=soc, charging=charging, plugged=self._plugged_in(),
+            floor_charging=self._floor_charging, mins_to_window=self._mins_to_window(),
+        )
+        if action == floor_guard.START:
+            _LOGGER.info("Charge Assistant: SOC %.0f%% below the %.0f%% floor, charging to the floor", soc, floor)
+            self._floor_charging = True
+            self._begin_charge(f"below the {floor:.0f}% floor", soc, floor)
+            return True
+        if action == floor_guard.HOLD:
+            return True
+        if action == floor_guard.STOP:
+            self._floor_charging = False
+            if charging and self._we_started:
+                _LOGGER.info("Charge Assistant: floor charge done at %.0f%%, handing back", soc)
+                self._finish_charge(soc, floor if floor is not None else soc)
+                return True
+        return False
+
     def _handback_solar(self) -> bool:
         """User wants the SOC target treated as an overnight GRID FLOOR, handing
         straight back to the charger's native solar once reached (so free
@@ -1499,7 +1668,8 @@ class ChargeAssistant:
             return
         try:
             await self._balance_store.async_save({"last_balance": self._last_balance,
-                                                  "own_charge": self._own_record})
+                                                  "own_charge": self._own_record,
+                                                  "charge_rate": self._rate_samples})
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Charge Assistant: balance-state save failed: %s", err)
 
@@ -2197,7 +2367,9 @@ class ChargeAssistant:
         total_h = 0.0
         for c, d in needing:
             batt = self._read_float_cg(c, CA_BATTERY_KWH) or 0.0
-            pwr = self._read_float_cg(c, CA_CHARGE_POWER_KW) or 7.4
+            # A car's own figure (e.g. a slower on-board charger) wins.
+            pwr = self._read_float_cg(c, CA_CHARGE_POWER_KW) if CA_CHARGE_POWER_KW in c else None
+            pwr = pwr or self._charge_kw() or 7.4
             if batt > 0 and pwr > 0:
                 total_h += (d / 100.0 * batt) / pwr
         avail = self._available_charge_hours()
@@ -2284,7 +2456,7 @@ class ChargeAssistant:
         deadline = dep if dep is not None else now + timedelta(hours=24)
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH))
-            power = float(self._opts.get(CA_CHARGE_POWER_KW))
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return
         energy = max(0.0, (target - soc) / 100.0 * batt)

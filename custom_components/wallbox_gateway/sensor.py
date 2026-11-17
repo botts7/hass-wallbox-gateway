@@ -291,6 +291,24 @@ def _effective_target_attrs(entity: GatewayEntity) -> dict | None:
     return out
 
 
+def _solar_plan(entity: GatewayEntity) -> float | None:
+    """Tonight's planned grid charge (kWh) from the solar planner. Unavailable
+    while the planner is off or can't work out a plan."""
+    a = _assistant(entity)
+    r = a.planner_result() if a is not None else None
+    return r.get("tonight_kwh") if r else None
+
+
+def _solar_plan_attrs(entity: GatewayEntity) -> dict | None:
+    """Why: tomorrow's usable solar, the hours counted, the source, the
+    correction and how much home-pattern history there is."""
+    a = _assistant(entity)
+    r = a.planner_result() if a is not None else None
+    if not r:
+        return None
+    return {k: v for k, v in r.items() if k != "tonight_kwh"}
+
+
 def _control_owner(entity: GatewayEntity) -> str | None:
     # Charge-control arbitration: who may autonomously drive charging.
     o = entity._status().get("control_owner")
@@ -972,6 +990,17 @@ SENSORS: tuple[GatewaySensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_effective_target,
         attrs_fn=_effective_target_attrs,
+    ),
+    # ---- Plan around tomorrow's solar -----------------------------------
+    # Tonight's planned grid charge; attributes explain it (solar_planner.py).
+    GatewaySensorEntityDescription(
+        key="solar_plan",
+        translation_key="solar_plan",
+        name="Tonight's planned charge",
+        icon="mdi:solar-power-variant",
+        native_unit_of_measurement="kWh",
+        value_fn=_solar_plan,
+        attrs_fn=_solar_plan_attrs,
     ),
     GatewaySensorEntityDescription(
         key="projected_soc",

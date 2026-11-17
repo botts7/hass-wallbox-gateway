@@ -96,6 +96,7 @@ from .const import (
     CA_TRIP_TARGET,
     CA_SKIP_NIGHT_ABOVE,
     CA_SKIP_NIGHT_DAYS,
+    CA_SOLAR_CAP_PCT,
     CA_TRIP_UNTIL,
     CA_AUTOSTART_GRACE_MIN,
     CA_TARGET_AUTOSTART,
@@ -390,7 +391,13 @@ def _night_skip_fields(cur: dict) -> dict:
 def _drop_cleared_night_skip(ca: dict, user_input: dict) -> None:
     """The form merges into the saved settings: a cleared skip level or no
     nights picked must remove the saved value, not keep it."""
-    for key in (CA_SKIP_NIGHT_ABOVE, CA_SKIP_NIGHT_DAYS):
+    _drop_cleared(ca, user_input, (CA_SKIP_NIGHT_ABOVE, CA_SKIP_NIGHT_DAYS))
+
+
+def _drop_cleared(ca: dict, user_input: dict, keys) -> None:
+    """Remove each optional setting the form left empty (it would otherwise
+    keep its old saved value)."""
+    for key in keys:
         if not user_input.get(key):
             ca.pop(key, None)
 
@@ -1000,6 +1007,7 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
             user_input = self._apply_acting_extra(user_input)
             self._ca.update(user_input)
             _drop_cleared_night_skip(self._ca, user_input)
+            _drop_cleared(self._ca, user_input, (CA_SOLAR_CAP_PCT,))
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, CA_KEY: self._ca}
             )
@@ -1050,6 +1058,17 @@ class WallboxGatewayOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CA_HANDBACK_SOLAR, default=cur.get(CA_HANDBACK_SOLAR, False)
                 ): selector.BooleanSelector(),
+                # With hand back on: stop that solar filling the car past this
+                # level (solar_cap.py). Empty = no cap (solar fills to 100 %).
+                vol.Optional(
+                    CA_SOLAR_CAP_PCT,
+                    description={"suggested_value": cur.get(CA_SOLAR_CAP_PCT)},
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=50, max=99, unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
                 # Periodic battery-balance charge — lift the target to 100% (for
                 # LFP cell rebalancing) once every N days.
                 vol.Optional(

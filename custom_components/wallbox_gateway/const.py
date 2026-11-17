@@ -117,6 +117,9 @@ CA_TRIP_UNTIL = "trip_until"              # local "YYYY-MM-DDTHH:MM" — trip ta
 # this level, leaving the day to solar (night_skip.py). Off when unset or 0.
 CA_SKIP_NIGHT_ABOVE = "skip_night_above_pct"
 CA_SKIP_NIGHT_DAYS = "skip_night_days"    # ["fri", "sat", ...]; empty = every night
+# Smart charge with hand back to solar: stop the charger's own solar filling the
+# car past this level (solar_cap.py). Off when unset.
+CA_SOLAR_CAP_PCT = "solar_cap_pct"
 # Hard cost ceiling: never charge above this price (departure floor overrides).
 CA_PRICE_CAP = "price_cap"                # in the price entity's own units
 
@@ -143,6 +146,36 @@ CA_BALANCE_TARGET_PCT = "balance_target_pct"      # SOC to hit on a balance nigh
 CA_BALANCE_INTERVAL_DAYS = "balance_interval_days"  # days between balances (default 7)
 DEFAULT_BALANCE_TARGET_PCT = 100
 DEFAULT_BALANCE_INTERVAL_DAYS = 7
+
+# ---- Plan the night around tomorrow's solar (target mode) ----
+# On a night when tomorrow looks sunny and the car is usually home and plugged
+# in then, charge less overnight and leave the rest to solar, never below the
+# morning floor. "preview" works it out and shows it (sensor + evening note)
+# without changing anything; "on" lowers the night's target. Sources are all
+# optional: any forecast integration (Forecast.Solar, Solcast, Open-Meteo,
+# via HA's energy forecast hook) with a correction learned from a production
+# sensor, or a sensor that publishes an hourly spare-solar outlook (e.g. Solar
+# Comfort's). See solar_planner.py.
+CA_SOLAR_PLAN = "solar_plan"                       # off | preview | on (default off)
+SOLAR_PLAN_OFF, SOLAR_PLAN_PREVIEW, SOLAR_PLAN_ON = "off", "preview", "on"
+CA_SOLAR_SOURCE = "solar_source"                   # auto | forecast | sensor (default auto)
+SOLAR_SOURCE_AUTO, SOLAR_SOURCE_FORECAST, SOLAR_SOURCE_SENSOR = "auto", "forecast", "sensor"
+CA_SOLAR_FORECAST_ENTRIES = "solar_forecast_entries"   # config entry ids (default: all)
+CA_SOLAR_OUTLOOK_ENTITY = "solar_outlook_entity"   # sensor with an hourly list attribute
+CA_SOLAR_PRODUCTION_ENTITY = "solar_production_entity"  # energy sensor, kWh (learns the correction)
+CA_SOLAR_BASELINE_KW = "solar_baseline_kw"         # house daytime load taken off (forecast path)
+CA_SOLAR_FLOOR_PCT = "solar_floor_pct"             # always charged overnight
+CA_SOLAR_HOME_THRESHOLD = "solar_home_threshold_pct"  # count an hour from this home chance
+CA_SOLAR_EFFICIENCY = "solar_efficiency_pct"       # charging efficiency
+CA_SOLAR_MIN_HISTORY_DAYS = "solar_min_history_days"  # pattern history before trusting it
+CA_SOLAR_INVERTER_KW = "solar_inverter_kw"       # optional AC rating; caps a solar hour (else learned)
+CA_SOLAR_HOME_SCHEDULE = "solar_home_schedule"   # optional text; replaces the learned pattern
+CA_SOLAR_NOTIFY = "solar_plan_notify"              # bool: evening note (default True)
+DEFAULT_SOLAR_BASELINE_KW = 0.5
+DEFAULT_SOLAR_FLOOR_PCT = 50
+DEFAULT_SOLAR_HOME_THRESHOLD = 70
+DEFAULT_SOLAR_EFFICIENCY = 90
+DEFAULT_SOLAR_MIN_HISTORY_DAYS = 14
 
 # Solar-surplus mode fields. Start when surplus >= start for `debounce`
 # minutes; stop when surplus <= stop for `debounce` minutes (hysteresis +

@@ -122,6 +122,7 @@
           "battery_kwh": "Battery capacity (kWh) — for the ready-by estimate",
           "charge_power_kw": "Typical charge power (kW) — for the ready-by estimate",
           "handback_solar": "Target is just an overnight grid floor — hand back to the charger's own solar to fill past it (needs native Eco-Smart)",
+          "solar_cap_pct": "With hand back to solar: stop solar charging at this battery level (empty = no cap)",
           "balance_enabled": "Periodic full charge to balance the battery (good for LFP)",
           "balance_target_pct": "Balance charge level (%)",
           "balance_interval_days": "Balance every (days)",
@@ -460,6 +461,9 @@
       },
       "effective_target": {
         "name": "Effective charge target"
+      },
+      "solar_plan": {
+        "name": "Tonight's planned charge"
       },
       "projected_soc": {
         "name": "Projected SOC after a day's driving"

@@ -4,6 +4,47 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Plan the night around tomorrow's solar** (Smart charge and Smart + Solar,
+  off by default; Preview shows the plan without changing anything). Works out
+  how much of tomorrow's spare solar the car can actually take, and charges
+  that much less overnight, never below a morning floor (default 50 %).
+  - Solar source: any installed forecast integration (Forecast.Solar, Solcast,
+    Open-Meteo) corrected against a production sensor, or a sensor with an
+    hourly spare-solar outlook (e.g. Solar Comfort's).
+  - Only hours when the car is likely home and plugged in for the whole hour
+    count. When it's home is learned from the charger (weekdays and weekends
+    apart, about two weeks before it's trusted; until then nothing counts and
+    the night charges as before), or set by hand with an optional home
+    schedule such as `Mon-Fri 17:00-08:00; Sat,Sun 00:00-24:00`.
+  - Each hour is capped at what the charger can take and at the inverter's
+    output: an optional inverter size (any size, three-phase as the total),
+    else the most it has been seen to make.
+  - Sensor "Tonight's planned charge" explains the plan; optional evening note.
+- **The floor holds at any time, not only overnight.** With the planner On, a
+  car plugged in below the floor outside the cheap window is charged to the
+  floor straight away, unless the window starts within 2 hours. At the floor
+  it stops and hands back to the charger's own solar.
+- **Solar cap for Smart charge with hand back to solar.** With hand back on,
+  the charger's own Eco-Smart solar kept filling the car to 100 %. A new
+  setting ("stop solar charging at this battery level", for example 90 %)
+  pauses that solar charge at the cap and holds the pause, so auto-resume
+  doesn't start it again. The hold ends, and the charger's own solar is
+  handed back, when the car is unplugged, drops 3 % below the cap, or the cap
+  is turned off. A charge the assistant started itself (a night top-up, a
+  trip, a battery balance) is never stopped for the cap. Off by default.
+- **The charger's real power is learned** from its own readings (full-speed
+  charging, at the wall), so "charge power" is only a starting value.
+
+### Fixed
+- **Charge timing counts charging losses.** Window finish, departure, cheapest
+  window and multi-car sums used the charge power as if it all reached the
+  battery; at about 7 kW at the wall the battery gets about 6.2 kW, so
+  just-in-time starts ran about 10 % late. They now use the wall power times
+  the charging efficiency.
+
 ## [0.37.7] - 2026-11-16
 
 ### Added
