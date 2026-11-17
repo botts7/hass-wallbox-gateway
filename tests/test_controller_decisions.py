@@ -162,6 +162,22 @@ def _cap_ca(soc, cap=90, charging=True):
     ca, calls = build(opts, {"sensor.soc": FakeState(str(soc))})
     ca._eco_smart_supported = lambda: True
     ca._is_charging = lambda: charging
+# ── floor at any time (floor_guard) ─────────────────────────────────
+class _PlannerOn:
+    def mode(self):
+        return "on"
+    def night_target(self, resolved):
+        return resolved
+
+
+def _floor_ca(soc, charging=False, mins_to_window=600, planner=True):
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_TARGET_AUTOSTART: True, C.CA_WINDOW_ENABLED: True,
+            C.CA_WINDOW_START: "00:00", C.CA_WINDOW_END: "06:00", C.CA_SOLAR_FLOOR_PCT: 50}
+    ca, calls = build(opts, {"sensor.soc": FakeState(str(soc))})
+    ca._planner = _PlannerOn() if planner else None
+    ca._is_charging = lambda: charging
+    ca._mins_to_window = lambda: mins_to_window
     return ca, calls
 
 
@@ -201,6 +217,38 @@ def test_solar_cap_never_stops_its_own_charge_for_the_cap():
     ca._finish_charge = lambda *a, **k: calls.append("finish")
     ca._eval_target()
     assert not ca._cap_hold and calls == ["finish"], (calls, ca._cap_hold)
+def test_floor_charges_below_the_floor_outside_the_window():
+    ca, calls = _floor_ca(40)
+    ca._eval_target()
+    assert calls == [True] and ca._floor_charging, (calls, ca._floor_charging)
+
+
+@case
+def test_floor_waits_when_the_window_is_close_or_planner_off():
+    ca, calls = _floor_ca(40, mins_to_window=60)
+    ca._eval_target()
+    assert calls == [] and not ca._floor_charging, calls
+    ca, calls = _floor_ca(40, planner=False)
+    ca._eval_target()
+    assert calls == [] and not ca._floor_charging, calls
+
+
+@case
+def test_floor_charge_is_not_stopped_by_the_window_and_stops_at_the_floor():
+    # Running floor charge outside the window: the window logic would stop our
+    # own charge, the floor hold keeps it going.
+    ca, calls = _floor_ca(45, charging=True)
+    ca._floor_charging = True
+    ca._we_started = True
+    ca._eval_target()
+    assert calls == [], calls
+    # At the floor: stop and hand back.
+    ca, calls = _floor_ca(50, charging=True)
+    ca._floor_charging = True
+    ca._we_started = True
+    ca._finish_charge = lambda *a, **k: calls.append("finish")
+    ca._eval_target()
+    assert calls == ["finish"] and not ca._floor_charging, calls
 
 
 # ── skip the overnight grid charge at or above a level (night_skip) ──

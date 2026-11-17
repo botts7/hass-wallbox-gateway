@@ -146,6 +146,9 @@ from .const import (
     MODE_SOLAR,
     MODE_TARGET,
     CA_WINDOW_ENABLED,
+    CA_SOLAR_FLOOR_PCT,
+    DEFAULT_SOLAR_FLOOR_PCT,
+    SOLAR_PLAN_ON,
     CA_WINDOW_START,
     CA_WINDOW_END,
     CA_WINDOW_OVERRUN,
@@ -171,6 +174,7 @@ from . import own_charge
 from .solar_planner import SolarPlanner
 from . import night_skip
 from . import solar_cap
+from . import floor_guard
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -372,6 +376,8 @@ class ChargeAssistant:
         self._we_started = False
         # Holding a solar charge paused at the solar cap (solar_cap.py).
         self._cap_hold = False
+        # A grid charge to the floor outside the cheap window (floor_guard.py).
+        self._floor_charging = False
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
         # and still to be checked against the charger (29 Oct live test).
@@ -1133,6 +1139,8 @@ class ChargeAssistant:
         charging = self._is_charging()
         if self._eval_solar_cap(soc, charging):
             return
+        if self._eval_floor(soc, charging):
+            return
         if self._cheapest_active():
             self._eval_cheapest(soc, target, charging)
             return
@@ -1510,6 +1518,49 @@ class ChargeAssistant:
                          soc)
             self._cap_hold = False
             self.hass.async_create_task(self._resume_and_restore_eco())
+    def _floor_now(self) -> float | None:
+        """The floor to hold at any time: the solar planner's floor while the
+        planner is On (it acts), else None."""
+        if self._planner is None or self._planner.mode() != SOLAR_PLAN_ON:
+            return None
+        return floor_guard.floor_of(self._opts.get(CA_SOLAR_FLOOR_PCT, DEFAULT_SOLAR_FLOOR_PCT))
+
+    def _mins_to_window(self) -> int | None:
+        """0 inside the cheap window, minutes until it starts, None without one."""
+        if not self._opts.get(CA_WINDOW_ENABLED):
+            return None
+        start = charge_window.to_minutes(self._opts.get(CA_WINDOW_START))
+        end = charge_window.to_minutes(self._opts.get(CA_WINDOW_END))
+        if start is None or end is None:
+            return None
+        now_local = dt_util.now()
+        now = now_local.hour * 60 + now_local.minute
+        inside = start <= now < end if start <= end else (now >= start or now < end)
+        return 0 if inside else (start - now) % (24 * 60)
+
+    def _eval_floor(self, soc: float, charging: bool) -> bool:
+        """Charge to the floor straight away when the car is plugged in below it
+        outside the cheap window (floor_guard.py). Returns True when the rest of
+        this tick must be skipped (our floor charge is running, or just
+        started/stopped), so the window logic doesn't stop it."""
+        floor = self._floor_now()
+        action = floor_guard.decide(
+            floor=floor, soc=soc, charging=charging, plugged=self._plugged_in(),
+            floor_charging=self._floor_charging, mins_to_window=self._mins_to_window(),
+        )
+        if action == floor_guard.START:
+            _LOGGER.info("Charge Assistant: SOC %.0f%% below the %.0f%% floor, charging to the floor", soc, floor)
+            self._floor_charging = True
+            self._begin_charge(f"below the {floor:.0f}% floor", soc, floor)
+            return True
+        if action == floor_guard.HOLD:
+            return True
+        if action == floor_guard.STOP:
+            self._floor_charging = False
+            if charging and self._we_started:
+                _LOGGER.info("Charge Assistant: floor charge done at %.0f%%, handing back", soc)
+                self._finish_charge(soc, floor if floor is not None else soc)
+                return True
         return False
 
     def _handback_solar(self) -> bool:

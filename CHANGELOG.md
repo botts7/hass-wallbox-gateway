@@ -16,6 +16,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is turned off. A charge the assistant started itself (a night top-up, a
   trip, a battery balance) is never stopped for the cap, so a trip target
   above it still wins. Off by default.
+### Added (solar planner)
+- **The floor holds at any time, not only overnight.** With the solar planner
+  On, a car plugged in below the floor (default 50 %) outside the cheap window
+  is charged to the floor straight away, unless the cheap window starts within
+  2 hours (then the normal overnight plan takes it). At the floor it stops and
+  hands back to the charger's own solar.
 
 ## [0.37.7] - 2026-11-16
 
