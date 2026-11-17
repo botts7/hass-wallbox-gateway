@@ -32,6 +32,7 @@ MODULES = [
     "test_schedule_arbiter",       # coexistence schedule scoping (#152); self-skips w/o HA
     "test_current_limits",         # charger current ceiling (US 40/48 A, #39)
     "test_night_skip",             # skip the overnight grid charge on chosen nights
+    "test_solar_cap",              # stop free solar past a cap (hand back to solar)
     "test_start_watch",            # start watcher: never interrupt the handshake (28 Oct)
     "test_solar_plan",             # plan around tomorrow's solar (pure modules)
     "test_own_charge",             # our charge survives an HA restart (29 Oct)

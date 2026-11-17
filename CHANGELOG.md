@@ -4,6 +4,19 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Solar cap for Smart charge with hand back to solar.** With hand back on,
+  the charger's own Eco-Smart solar kept filling the car to 100 %. A new
+  setting ("stop solar charging at this battery level", for example 90 %)
+  pauses that solar charge at the cap and holds the pause, so auto-resume
+  doesn't start it again. The hold ends, and the charger's own solar is
+  handed back, when the car is unplugged, drops 3 % below the cap, or the cap
+  is turned off. A charge the assistant started itself (a night top-up, a
+  trip, a battery balance) is never stopped for the cap, so a trip target
+  above it still wins. Off by default.
+
 ## [0.37.7] - 2026-11-16
 
 ### Added

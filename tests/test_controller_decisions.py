@@ -155,6 +155,54 @@ def test_autostart_allowed_below_price_cap():
     assert calls == [True], f"should start below cap, got {calls}"
 
 
+# ── solar cap: stop the charger's own solar past a level (solar_cap) ──
+def _cap_ca(soc, cap=90, charging=True):
+    opts = {C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc", C.CA_TARGET_PCT: 80,
+            C.CA_HANDBACK_SOLAR: True, C.CA_SOLAR_CAP_PCT: cap}
+    ca, calls = build(opts, {"sensor.soc": FakeState(str(soc))})
+    ca._eco_smart_supported = lambda: True
+    ca._is_charging = lambda: charging
+    return ca, calls
+
+
+@case
+def test_solar_cap_pauses_the_chargers_own_solar_and_holds():
+    ca, calls = _cap_ca(91)
+    ca._eval_target()
+    assert calls == [False] and ca._cap_hold, (calls, ca._cap_hold)
+    assert ca._resume_wanted() is False, "auto-resume must not undo the cap"
+
+
+@case
+def test_solar_cap_below_cap_leaves_solar_alone():
+    ca, calls = _cap_ca(85)
+    ca._eval_target()
+    assert calls == [] and not ca._cap_hold, calls
+
+
+@case
+def test_solar_cap_releases_below_cap_or_when_off():
+    ca, _ = _cap_ca(86, charging=False)
+    ca._cap_hold = True
+    ca._eval_target()
+    assert not ca._cap_hold, "3 % below the cap: hand back to solar"
+    ca, _ = _cap_ca(92, cap=None, charging=False)
+    ca._cap_hold = True
+    ca._eval_target()
+    assert not ca._cap_hold, "cap turned off: release"
+
+
+@case
+def test_solar_cap_never_stops_its_own_charge_for_the_cap():
+    # Our own top-up above target is stopped by the normal target rule, not
+    # held as a solar-cap pause.
+    ca, calls = _cap_ca(91)
+    ca._we_started = True
+    ca._finish_charge = lambda *a, **k: calls.append("finish")
+    ca._eval_target()
+    assert not ca._cap_hold and calls == ["finish"], (calls, ca._cap_hold)
+
+
 # ── skip the overnight grid charge at or above a level (night_skip) ──
 def _skip_opts(level, **extra):
     # No nights chosen = every night, so these don't depend on today's weekday.
