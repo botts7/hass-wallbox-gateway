@@ -251,7 +251,7 @@ class SolarPlanner:
         if src in ("auto", SOLAR_SOURCE_SENSOR):
             sens = self._sensor_outlook()
             if sens:
-                return sens, "sensor", None
+                return SO.cap(sens, self._max_hour_kwh), "sensor", None
             if src == SOLAR_SOURCE_SENSOR:
                 return {}, "sensor (no hourly outlook)", None
         if src in ("auto", SOLAR_SOURCE_FORECAST):
@@ -292,7 +292,9 @@ class SolarPlanner:
             b = HP.probability(self._home, hour + timedelta(minutes=30), today, min_days)
             if a is None or b is None:
                 return None
-            return (a + b) / 2
+            # The whole hour must be likely: a half hour the car often leaves
+            # in (e.g. 8:30 on a 9am departure) shouldn't count the full hour.
+            return min(a, b)
         return chance
 
     async def async_compute(self) -> None:
