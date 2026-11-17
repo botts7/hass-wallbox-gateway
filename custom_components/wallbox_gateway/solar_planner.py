@@ -62,6 +62,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _SEED_DAYS = 10            # what the recorder usually keeps
 _RECOMPUTE = timedelta(minutes=10)
+_PATTERN_V = 2   # whole-slot home rule (17 Nov 2026)
 _NOTIFY_AT = (20, 0)       # evening note, local time
 _PLAN_FRESH = timedelta(minutes=30)
 
@@ -114,7 +115,12 @@ class SolarPlanner:
         self._fc = data.get("fc") or {}
         self._max_hour_kwh = data.get("max_hour_kwh")
         HP.prune(self._home, dt_util.now().date())
-        if HP.history_days(self._home) < 7:
+        if data.get("pattern_v") != _PATTERN_V:
+            # Older stores marked a half hour home when the car was plugged in
+            # at its start (leaving at 8:31 still counted 8:30 as home).
+            # Rebuild what the recorder still has with the whole-slot rule.
+            await self._seed_from_recorder(overwrite=True)
+        elif HP.history_days(self._home) < 7:
             await self._seed_from_recorder()
         self._unsubs.append(async_track_time_change(
             self.hass, self._on_half_hour, minute=[0, 30], second=20))
@@ -134,12 +140,13 @@ class SolarPlanner:
     async def _save(self) -> None:
         try:
             await self._store.async_save({"home": self._home, "fc": self._fc,
-                                          "max_hour_kwh": self._max_hour_kwh})
+                                          "max_hour_kwh": self._max_hour_kwh,
+                                          "pattern_v": _PATTERN_V})
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Solar planner: save failed: %s", err)
 
     # ---- the home pattern -------------------------------------------------
-    async def _seed_from_recorder(self) -> None:
+    async def _seed_from_recorder(self, overwrite: bool = False) -> None:
         """Fill the pattern from the recorder's car-connected history."""
         eid = getattr(self._ca, "_connected_entity", None)
         if not eid:
@@ -160,8 +167,8 @@ class SolarPlanner:
         for st in (states or {}).get(eid, []):
             on = {"on": True, "off": False}.get(st.state)
             changes.append((dt_util.as_local(st.last_changed), on))
-        n = HP.seed_from_intervals(self._home, changes,
-                                   dt_util.as_local(start), dt_util.as_local(end))
+        n = HP.seed_from_intervals(self._home, changes, dt_util.as_local(start),
+                                   dt_util.as_local(end), overwrite=overwrite)
         _LOGGER.info("Solar planner: seeded %d half hours of car-connected history", n)
         await self._save()
 
@@ -171,7 +178,11 @@ class SolarPlanner:
         eid = getattr(self._ca, "_connected_entity", None)
         st = self.hass.states.get(eid) if eid else None
         if st is not None and st.state in ("on", "off"):
-            HP.record(self._home, local, st.state == "on")
+            # The half hour that just ended counts as home only if the car was
+            # plugged in for all of it.
+            slot = local.replace(second=0, microsecond=0) - timedelta(minutes=30)
+            home = st.state == "on" and dt_util.as_local(st.last_changed) <= slot
+            HP.set_slot(self._home, slot, home)
         if local.minute == 0:
             self._learn_production(local)
         HP.prune(self._home, local.date())

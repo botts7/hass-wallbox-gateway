@@ -108,12 +108,25 @@ def probability(days: dict, target: datetime, today: date,
     return num / den
 
 
-def seed_from_intervals(days: dict, changes: list, start: datetime, end: datetime) -> int:
+def set_slot(days: dict, slot_start: datetime, home: bool) -> None:
+    """Record a finished half hour: home only when the car was plugged in for
+    all of it (arriving or leaving mid-slot counts as away)."""
+    key = slot_start.date().isoformat()
+    row = days.get(key)
+    if not isinstance(row, list) or len(row) != SLOTS:
+        row = [None] * SLOTS
+        days[key] = row
+    row[slot_of(slot_start)] = 1 if home else 0
+
+
+def seed_from_intervals(days: dict, changes: list, start: datetime, end: datetime,
+                        overwrite: bool = False) -> int:
     """Fill ``days`` from a state history: ``changes`` is a time-ordered list of
-    (local datetime, plugged bool or None). Each half-hour slot between
-    ``start`` and ``end`` takes the state in force at its midpoint; unknown
-    states are skipped. Returns how many slots were filled. Existing values
-    are kept (live samples win over the seed)."""
+    (local datetime, plugged bool or None). A half-hour slot between ``start``
+    and ``end`` is home only when the car was plugged in at its start and never
+    unplugged during it; unknown states (e.g. a restart blip) are ignored.
+    Slots with no known state yet are skipped. Existing values are kept unless
+    ``overwrite``. Returns how many slots were filled."""
     if not changes:
         return 0
     filled = 0
@@ -121,19 +134,27 @@ def seed_from_intervals(days: dict, changes: list, start: datetime, end: datetim
     state = None
     t = start.replace(minute=(0 if start.minute < 30 else 30), second=0, microsecond=0)
     while t < end:
-        mid = t + timedelta(minutes=15)
-        while i < len(changes) and changes[i][0] <= mid:
-            state = changes[i][1]
+        while i < len(changes) and changes[i][0] <= t:
+            if changes[i][1] is not None:
+                state = changes[i][1]
             i += 1
-        if state is not None:
+        at_start = state
+        home = at_start is True
+        slot_end = t + timedelta(minutes=30)
+        j = i
+        while j < len(changes) and changes[j][0] < slot_end:
+            if changes[j][1] is False:
+                home = False
+            j += 1
+        if at_start is not None and slot_end <= end:
             key = t.date().isoformat()
             row = days.get(key)
             if not isinstance(row, list) or len(row) != SLOTS:
                 row = [None] * SLOTS
                 days[key] = row
             s = slot_of(t)
-            if row[s] is None:
-                row[s] = 1 if state else 0
+            if row[s] is None or overwrite:
+                row[s] = 1 if home else 0
                 filled += 1
-        t += timedelta(minutes=30)
+        t = slot_end
     return filled
