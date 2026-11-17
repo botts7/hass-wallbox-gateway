@@ -73,6 +73,8 @@ from .const import (
     CA_BALANCE_TARGET_PCT,
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
+    CA_SOLAR_EFFICIENCY,
+    DEFAULT_SOLAR_EFFICIENCY,
     CA_CHEAPEST,
     CA_DEPARTURE,
     CA_HANDBACK_SOLAR,
@@ -166,6 +168,7 @@ from .const import (
     CA_HOME_ENTITY,
 )
 from . import balance_schedule
+from . import charge_rate
 from . import ca_config
 from . import charge_window
 from .legacy_schedule import is_original_pulsar
@@ -435,6 +438,9 @@ class ChargeAssistant:
         self._last_balance: str | None = None
         # Created lazily in async_start (Store needs a fully-initialised hass).
         self._balance_store: Store | None = None
+        # The charger's full-speed power, learned from its readings (charge_rate.py).
+        self._rate_samples: list = []
+        self._rate_saved_at: float = 0.0
         # Plan the night around tomorrow's solar (solar_planner.py); created in
         # async_start when the strategy charges to a target.
         self._planner: SolarPlanner | None = None
@@ -515,6 +521,7 @@ class ChargeAssistant:
             data = await self._balance_store.async_load()
             self._last_balance = (data or {}).get("last_balance")
             self._restored_own = (data or {}).get("own_charge")
+            self._rate_samples = list((data or {}).get("charge_rate") or [])
             self._own_record = self._restored_own
         except Exception as err:  # noqa: BLE001 — never block startup on this
             _LOGGER.debug("Charge Assistant: balance-state load failed: %s", err)
@@ -625,6 +632,7 @@ class ChargeAssistant:
         """Coordinator tick — reconcile whenever the gateway's applied state
         doesn't yet match what we want (covers post-reboot retries)."""
         self._last_coord_update = dt_util.utcnow()
+        self._sample_charge_rate()
         if self._arbiter is None:
             return
         self._update_repair()
@@ -1083,9 +1091,7 @@ class ChargeAssistant:
         if not self._opts.get(CA_DEPARTURE):
             return False
         try:
-            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and float(
-                self._opts.get(CA_CHARGE_POWER_KW) or 0
-            ) > 0
+            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and self._charge_kw() > 0
         except (TypeError, ValueError):
             return False
 
@@ -1112,7 +1118,7 @@ class ChargeAssistant:
             return False
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return False
         if batt <= 0 or power <= 0:
@@ -1261,7 +1267,7 @@ class ChargeAssistant:
             return True
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return True
         if batt <= 0 or power <= 0:
@@ -1292,13 +1298,54 @@ class ChargeAssistant:
             v = DEFAULT_WINDOW_FINISH_BUFFER_MIN
         return max(0, min(v, 180))
 
+    # ------------------------------------------------------------------
+    # Charge power: learned from the charger's own readings (charge_rate.py)
+    # ------------------------------------------------------------------
+    def _sample_charge_rate(self) -> None:
+        coord = self._coordinator()
+        rt = ((getattr(coord, "data", None) or {}).get("charger_realtime") or {}) if coord else {}
+        try:
+            kw = float(rt.get("cp")) if rt.get("cp") is not None else None
+        except (TypeError, ValueError):
+            kw = None
+        now = dt_util.utcnow().timestamp()
+        if charge_rate.add_sample(self._rate_samples, now, kw) and (
+                now - self._rate_saved_at >= 1800):
+            self._rate_saved_at = now
+            self.hass.async_create_task(self._save_balance_state())
+
+    def charge_wall_kw(self) -> float | None:
+        """The charger's full-speed power at the wall: learned once there's
+        about half an hour of full-speed charging, else the configured
+        figure, else None."""
+        learned = charge_rate.learned_kw(self._rate_samples)
+        if learned:
+            return learned
+        try:
+            v = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    def _charge_kw(self) -> float:
+        """Power reaching the battery (wall power times charging efficiency),
+        for time-to-charge sums; 0 when unknown."""
+        wall = self.charge_wall_kw()
+        if not wall:
+            return 0.0
+        try:
+            eff = float(self._opts.get(CA_SOLAR_EFFICIENCY) or DEFAULT_SOLAR_EFFICIENCY) / 100.0
+        except (TypeError, ValueError):
+            eff = DEFAULT_SOLAR_EFFICIENCY / 100.0
+        return charge_rate.battery_kw(wall, eff)
+
     def _minutes_needed(self, soc: float, target: float, buffer_min: int = 10) -> int | None:
         """Charge time in minutes to reach target plus ``buffer_min`` of slack, or
         None without an energy model. One formula for every deadline: the window
         end passes the finish buffer, a departure keeps the 10-minute default."""
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
-            power = float(self._opts.get(CA_CHARGE_POWER_KW) or 0)
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return None
         if batt <= 0 or power <= 0:
@@ -1378,9 +1425,7 @@ class ChargeAssistant:
         if not self._opts.get(CA_CHEAPEST) or not self._opts.get(CA_PRICE_ENTITY):
             return False
         try:
-            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and float(
-                self._opts.get(CA_CHARGE_POWER_KW) or 0
-            ) > 0
+            return float(self._opts.get(CA_BATTERY_KWH) or 0) > 0 and self._charge_kw() > 0
         except (TypeError, ValueError):
             return False
 
@@ -1623,7 +1668,8 @@ class ChargeAssistant:
             return
         try:
             await self._balance_store.async_save({"last_balance": self._last_balance,
-                                                  "own_charge": self._own_record})
+                                                  "own_charge": self._own_record,
+                                                  "charge_rate": self._rate_samples})
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Charge Assistant: balance-state save failed: %s", err)
 
@@ -2321,7 +2367,9 @@ class ChargeAssistant:
         total_h = 0.0
         for c, d in needing:
             batt = self._read_float_cg(c, CA_BATTERY_KWH) or 0.0
-            pwr = self._read_float_cg(c, CA_CHARGE_POWER_KW) or 7.4
+            # A car's own figure (e.g. a slower on-board charger) wins.
+            pwr = self._read_float_cg(c, CA_CHARGE_POWER_KW) if CA_CHARGE_POWER_KW in c else None
+            pwr = pwr or self._charge_kw() or 7.4
             if batt > 0 and pwr > 0:
                 total_h += (d / 100.0 * batt) / pwr
         avail = self._available_charge_hours()
@@ -2408,7 +2456,7 @@ class ChargeAssistant:
         deadline = dep if dep is not None else now + timedelta(hours=24)
         try:
             batt = float(self._opts.get(CA_BATTERY_KWH))
-            power = float(self._opts.get(CA_CHARGE_POWER_KW))
+            power = self._charge_kw()
         except (TypeError, ValueError):
             return
         energy = max(0.0, (target - soc) / 100.0 * batt)

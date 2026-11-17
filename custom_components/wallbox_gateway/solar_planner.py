@@ -257,6 +257,15 @@ class SolarPlanner:
         out = SO.from_hourly_attr(st.attributes.get("hourly"))
         return {dt_util.as_local(h): v for h, v in out.items()} or None
 
+    def _charger_kw(self) -> float:
+        """Most the charger can take in an hour, at the wall: learned by the
+        Charge Assistant when it can, else the configured figure."""
+        try:
+            kw = self._ca.charge_wall_kw()
+        except Exception:  # noqa: BLE001
+            kw = None
+        return kw or self._o(CA_CHARGE_POWER_KW, 7.0)
+
     def _hour_cap(self) -> float | None:
         """Most solar one hour can give: the inverter's rating when set, else
         the most it has been seen to make in an hour. The learned figure can
@@ -346,7 +355,7 @@ class SolarPlanner:
             spare_by_hour=spare_day,
             home_chance=self._home_chance(now.date(), min_days, sched),
             threshold=self._o(CA_SOLAR_HOME_THRESHOLD, DEFAULT_SOLAR_HOME_THRESHOLD) / 100.0,
-            charger_kw=self._o(CA_CHARGE_POWER_KW, 7.0),
+            charger_kw=self._charger_kw(),
         )
         self._plan, self._computed_at = p, now
         hist = HP.history_days(self._home)
@@ -369,6 +378,8 @@ class SolarPlanner:
             "source": source,
             "correction_factor": round(factor, 2) if factor is not None else None,
             "history_days": hist,
+            "charger_kw": round(self._charger_kw(), 2),
+            "hour_cap_kwh": round(self._hour_cap(), 2) if self._hour_cap() else None,
             "home_source": "schedule" if sched else "learned",
             "mode": self.mode(),
             "reason": reason,
