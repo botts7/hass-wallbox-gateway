@@ -80,6 +80,8 @@ from .const import (
     CA_PRICE_ENTITY,
     CA_TRIP_TARGET,
     CA_TRIP_UNTIL,
+    CA_SKIP_NIGHT_ABOVE,
+    CA_SKIP_NIGHT_DAYS,
     CA_START_ACTION,
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
@@ -166,6 +168,7 @@ from .legacy_schedule import is_original_pulsar
 from . import start_watch
 from . import own_charge
 from .solar_planner import SolarPlanner
+from . import night_skip
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -175,7 +178,7 @@ from .charge_guards import (
     price_allows_charge,
     user_stop_holds,
 )
-from .current_limits import current_ceiling
+from .current_limits import below_ceiling, current_ceiling, known_ceiling, user_max
 from .charger_control import (
     WallboxGatewayCharger,
     ECO_DISABLED,
@@ -784,6 +787,29 @@ class ChargeAssistant:
         else:
             ir.async_delete_issue(self.hass, DOMAIN, solar_issue)
 
+        # The assistant's own maximum current is below what the charger can do.
+        # Older settings forms saved 32 A on their own, which holds a 40/48 A
+        # charger back in the solar strategies (where it's used). It can't be
+        # told apart from a deliberate limit, so say so and let the user choose
+        # (the Repair can be ignored if it's on purpose).
+        cap_issue = f"ca_max_current_below_ceiling_{self.entry.entry_id}"
+        # Only once the charger's ceiling is actually known: before the first
+        # poll the 32 A default would name the wrong ceiling.
+        coord = self._coordinator()
+        ceiling = known_ceiling(getattr(coord, "data", None))
+        low = below_ceiling(self._opts.get(CA_MAX_CURRENT), ceiling) if ceiling else None
+        strategy = ca_config.strategy_of(self._opts)
+        if low is not None and strategy in (MODE_SOLAR, MODE_SMART_SOLAR):
+            ir.async_create_issue(
+                self.hass, DOMAIN, cap_issue,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="ca_max_current_below_ceiling",
+                translation_placeholders={"saved": str(low), "ceiling": str(ceiling)},
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, cap_issue)
+
     async def _start_reminder(self) -> None:
         triggers = self._rem.get(CA_TRIGGERS) or []
         if not triggers:
@@ -1389,7 +1415,7 @@ class ChargeAssistant:
         commute mode is on, bounded by the unknown-car policy while the plugged
         car is a guess, raised to the balance target on a due balance night,
         then raised to the trip target until its deadline (auto-reverts by time).
-        Source ∈ {fixed, commute, unknown-hold, balance, trip}.
+        Source ∈ {fixed, commute, unknown-hold, balance, night-skip, trip}.
         """
         car = self._active_car()
         base = self._read_float_cg(car, CA_TARGET_PCT)
@@ -1420,6 +1446,17 @@ class ChargeAssistant:
             bt = self._balance_target()
             if bt > base:
                 base, source = bt, "balance"
+        # Chosen nights: a car already at or above the skip level isn't charged
+        # from the grid (target = its level, so no deficit) and the day is left
+        # to solar. Not on a balance night, and never part-way through a charge
+        # the assistant started (crossing the level mid-charge mustn't stop it).
+        # A trip target still wins below.
+        soc = self._read_float(self._cg(car, CA_SOC_ENTITY))
+        if (source != "balance" and self._own_record is None and soc is not None
+                and soc < base and night_skip.skip_tonight(
+                    soc, self._opts.get(CA_SKIP_NIGHT_ABOVE),
+                    self._opts.get(CA_SKIP_NIGHT_DAYS), dt_util.now())):
+            base, source = soc, "night-skip"
         resolved = effective_target(
             base,
             self._cg(car, CA_TRIP_TARGET),
@@ -2944,12 +2981,8 @@ class ChargeAssistant:
             lo = int(self._opts.get(CA_MIN_CURRENT, MIN_CURRENT_A) or MIN_CURRENT_A)
         except (TypeError, ValueError):
             lo = MIN_CURRENT_A
-        try:
-            hi = int(self._opts.get(CA_MAX_CURRENT, ceiling) or ceiling)
-        except (TypeError, ValueError):
-            hi = ceiling
+        hi = user_max(self._opts.get(CA_MAX_CURRENT), ceiling)
         lo = max(MIN_CURRENT_A, min(lo, ceiling))
-        hi = max(MIN_CURRENT_A, min(hi, ceiling))
         if lo > hi:
             lo, hi = hi, lo
         return lo, hi

@@ -4,6 +4,42 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.37.7] - 2026-11-16
+
+### Added
+- **Skip the overnight grid charge when the car already has enough.** New
+  Smart charge option: on the nights you pick (for example Friday and Saturday,
+  leaving the weekend to solar), a car at or above the chosen battery level
+  isn't charged from the grid. The charger's own Eco-Smart solar fills it by
+  day. Below that level the night charges as usual. It lives in HA because the
+  charger never knows the car's battery level.
+  - Off by default. No nights picked means every night.
+  - A night runs noon to noon, so a window starting after midnight belongs to
+    the evening before it.
+  - An unknown battery level charges as usual, a trip target still wins, a due
+    battery-balance night still charges, and a charge the assistant already
+    started is never cut short by crossing the level.
+  - The Effective charge target sensor shows source `night-skip` when it applies.
+  - In both Smart charge and Smart + Solar.
+
+## [0.37.6] - 2026-11-11
+
+### Fixed
+- **40 A and 48 A chargers: the Charge Assistant no longer saves a 32 A limit
+  nobody chose.** Its settings form pre-filled **Maximum current** with 32 A
+  when the charger's real ceiling wasn't known (older versions always did), so
+  saving the form capped solar and dynamic charging there. The box is now
+  empty unless you typed a value, and empty means the charger's full ceiling.
+  A value you saved is kept as it is.
+- **New repair: "Solar charging is limited to X A, your charger can do Y A".**
+  Shown when Solar or Smart + Solar is on and the saved maximum is below the
+  charger's ceiling, so anyone who got the old 32 A pre-fill can clear it. If
+  the limit is deliberate, ignore it.
+- **The charger's ceiling is known straight after a gateway restart.** Newer
+  gateway firmware reports its saved ceiling (`max_current_ceiling`), which is
+  used until the first charger poll, so the current slider, schedules and the
+  settings form don't fall back to 32 A in the meantime.
+
 ## [0.37.5] - 2026-10-31
 
 ### Changed

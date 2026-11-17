@@ -130,6 +130,8 @@
           "trip_target_pct": "Trip target charge level (%) — for an upcoming trip",
           "trip_until": "Trip target applies until (then reverts to the everyday target)",
           "price_cap": "Never charge above this price (your departure time still wins)",
+          "skip_night_above_pct": "Skip the overnight grid charge when the battery is at or above (empty = off)",
+          "skip_night_days": "On these nights (none picked = every night)",
           "notify_service": "Notify me when it starts/stops (optional)",
           "window_enabled": "Only charge during a set window (cheap hours)",
           "autostart_grace_min": "Grace before auto-start (minutes, 0 = start immediately)",
@@ -182,7 +184,9 @@
           "window_cost_warn": "Notify me when a charge runs outside the window",
           "rl_enabled": "Also send plug-in reminders (notifications only)",
           "rl_nightly_time": "Reminder time (nightly)",
-          "rl_notify": "Reminder notify service"
+          "rl_notify": "Reminder notify service",
+          "skip_night_above_pct": "Skip the overnight grid charge when the battery is at or above (empty = off)",
+          "skip_night_days": "On these nights (none picked = every night)"
         },
         "data_description": {
           "resume_eco_mode": "After the assistant finishes a managed charge and hands control back, force the charger's native Eco-Smart into this mode. \"Keep current mode\" leaves whatever was already set."
@@ -526,6 +530,10 @@
     "not_control_owner": {
       "title": "Charge Assistant isn't the charge-control owner",
       "description": "You've set up a smart-charge / solar mode, but the gateway's **Charge Control Owner** is set to `{owner}`, so the Charge Assistant is standing down and won't start or stop charging.\n\nTo let it take over, open the gateway's config page (http://your-gateway-ip/config) and set **Charge Control Owner** to **Home Assistant Integration**."
+    },
+    "ca_max_current_below_ceiling": {
+      "title": "Solar charging is limited to {saved} A, your charger can do {ceiling} A",
+      "description": "The Charge Assistant's **Maximum current** is set to {saved} A, so solar and dynamic charging never go above it, although your charger can do {ceiling} A.\n\nOlder versions of the settings form filled this in with 32 A on their own. If you didn't choose {saved} A on purpose, clear **Maximum current** in the Charge Assistant settings to use the charger's full {ceiling} A.\n\nIf the limit is deliberate, you can ignore this."
     },
     "solar_reminder_no_surplus": {
       "title": "'Solar available' reminder has no surplus source",
