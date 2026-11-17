@@ -88,6 +88,43 @@ def test_seed_from_intervals_keeps_live_samples():
     assert row[HP.slot_of(_t(d, 14))] == 0 and n > 40
 
 
+@case
+def test_seed_counts_only_whole_half_hours():
+    """17 Nov: unplugged at 8:31, so 8:30 to 9:00 is away, not home."""
+    d = date(2026, 11, 17)
+    days: dict = {}
+    changes = [(_t(d, 0), True), (_t(d, 8, 31), False), (_t(d, 18, 39), True)]
+    HP.seed_from_intervals(days, changes, _t(d, 0), _t(d, 23, 59))
+    row = days[d.isoformat()]
+    assert row[HP.slot_of(_t(d, 8))] == 1
+    assert row[HP.slot_of(_t(d, 8, 30))] == 0             # left mid-slot
+    assert row[HP.slot_of(_t(d, 18, 30))] == 0            # arrived mid-slot
+    assert row[HP.slot_of(_t(d, 19))] == 1
+
+
+@case
+def test_seed_ignores_restart_blips_and_can_overwrite():
+    d = date(2026, 11, 17)
+    days = {d.isoformat(): [1] * HP.SLOTS}                 # old start-of-slot data
+    changes = [(_t(d, 0), True), (_t(d, 7, 40), None), (_t(d, 7, 41), True),
+               (_t(d, 8, 31), False)]
+    HP.seed_from_intervals(days, changes, _t(d, 0), _t(d, 12), overwrite=True)
+    row = days[d.isoformat()]
+    assert row[HP.slot_of(_t(d, 7, 30))] == 1             # unavailable blip ignored
+    assert row[HP.slot_of(_t(d, 8, 30))] == 0             # overwritten
+    assert row[HP.slot_of(_t(d, 13))] == 1                # outside the seed: kept
+
+
+@case
+def test_set_slot_records_a_finished_half_hour():
+    d = date(2026, 11, 17)
+    days: dict = {}
+    HP.set_slot(days, _t(d, 8, 30), False)
+    HP.set_slot(days, _t(d, 8), True)
+    row = days[d.isoformat()]
+    assert row[HP.slot_of(_t(d, 8))] == 1 and row[HP.slot_of(_t(d, 8, 30))] == 0
+
+
 # ── solar_outlook ───────────────────────────────────────────────────
 @case
 def test_two_planes_add_up():
