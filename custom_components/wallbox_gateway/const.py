@@ -117,6 +117,9 @@ CA_TRIP_UNTIL = "trip_until"              # local "YYYY-MM-DDTHH:MM" — trip ta
 # this level, leaving the day to solar (night_skip.py). Off when unset or 0.
 CA_SKIP_NIGHT_ABOVE = "skip_night_above_pct"
 CA_SKIP_NIGHT_DAYS = "skip_night_days"    # ["fri", "sat", ...]; empty = every night
+# Smart charge with hand back to solar: stop the charger's own solar filling the
+# car past this level (solar_cap.py). Off when unset.
+CA_SOLAR_CAP_PCT = "solar_cap_pct"
 # Hard cost ceiling: never charge above this price (departure floor overrides).
 CA_PRICE_CAP = "price_cap"                # in the price entity's own units
 

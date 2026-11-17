@@ -82,6 +82,7 @@ from .const import (
     CA_TRIP_UNTIL,
     CA_SKIP_NIGHT_ABOVE,
     CA_SKIP_NIGHT_DAYS,
+    CA_SOLAR_CAP_PCT,
     CA_START_ACTION,
     CA_SOLAR_DYNAMIC,
     CA_SOLAR_USE_NATIVE,
@@ -168,6 +169,7 @@ from .legacy_schedule import is_original_pulsar
 from . import start_watch
 from . import own_charge
 from . import night_skip
+from . import solar_cap
 from . import price_planner
 from .charge_guards import (
     derive_surplus,
@@ -367,6 +369,8 @@ class ChargeAssistant:
         # Did *we* start the current charge? Cheapest-window only ever stops a
         # charge it started itself — never a manual / app-initiated one.
         self._we_started = False
+        # Holding a solar charge paused at the solar cap (solar_cap.py).
+        self._cap_hold = False
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
         # and still to be checked against the charger (29 Oct live test).
@@ -675,6 +679,8 @@ class ChargeAssistant:
         the stop and the car's next request restarts charging (#67)."""
         if user_stop_holds(self._user_stop_at, dt_util.utcnow().timestamp()):
             return False
+        if self._cap_hold:
+            return False   # holding solar at the cap (solar_cap.py)
         coord = self._coordinator()
         data = getattr(coord, "data", None) if coord is not None else None
         schedules = data.get("schedules") if isinstance(data, dict) else None
@@ -696,6 +702,9 @@ class ChargeAssistant:
         paused trap of a bare 'stop', and degrades gracefully on chargers without
         solar (the un-pause still resumes their schedule; the eco-mode restore is
         a no-op). See release_action / _resume_and_restore_eco."""
+        if self._cap_hold:
+            self._release_since = None
+            return   # the pause at the solar cap is deliberate (solar_cap.py)
         default = str(self.entry.options.get(CA_RELEASE_DEFAULT, _DEFAULT_RELEASE))
         action = release_action(
             controlling, default, self.control_owner(), self._is_charging()
@@ -1110,6 +1119,8 @@ class ChargeAssistant:
             return
         target = self._target_pct()
         charging = self._is_charging()
+        if self._eval_solar_cap(soc, charging):
+            return
         if self._cheapest_active():
             self._eval_cheapest(soc, target, charging)
             return
@@ -1444,6 +1455,30 @@ class ChargeAssistant:
     # ------------------------------------------------------------------
     # Hand-back-to-solar + periodic battery balance
     # ------------------------------------------------------------------
+    def _eval_solar_cap(self, soc: float, charging: bool) -> bool:
+        """Stop the charger's own solar filling the car past the solar cap, and
+        hold that pause until the car is unplugged, drops below the cap, or the
+        cap is turned off (solar_cap.py). Only with hand back to solar on.
+        Returns True when it acted, so the rest of this tick is skipped."""
+        cap = self._opts.get(CA_SOLAR_CAP_PCT) if self._handback_solar() else None
+        action = solar_cap.decide(
+            cap=cap, soc=soc, charging=charging, we_started=self._we_started,
+            holding=self._cap_hold, plugged=self._plugged_in(),
+        )
+        if action == solar_cap.PAUSE:
+            _LOGGER.info("Charge Assistant: solar charge at %.0f%% reached the solar cap %s%%, pausing",
+                         soc, cap)
+            self._cap_hold = True
+            self._auto_resume_since = None
+            self._set_charging(False)
+            return True
+        if action == solar_cap.RELEASE:
+            _LOGGER.info("Charge Assistant: solar cap hold released (SOC %.0f%%), handing back to the charger's solar",
+                         soc)
+            self._cap_hold = False
+            self.hass.async_create_task(self._resume_and_restore_eco())
+        return False
+
     def _handback_solar(self) -> bool:
         """User wants the SOC target treated as an overnight GRID FLOOR, handing
         straight back to the charger's native solar once reached (so free
