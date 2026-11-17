@@ -129,6 +129,12 @@ class SolarPlanner:
             self.hass, self._on_notify_time, hour=_NOTIFY_AT[0], minute=_NOTIFY_AT[1], second=0))
         self._unsubs.append(async_track_time_interval(
             self.hass, self._on_recompute, _RECOMPUTE))
+        outlook = self._opts().get(CA_SOLAR_OUTLOOK_ENTITY)
+        if outlook and str(self._opts().get(CA_SOLAR_SOURCE) or "auto") != SOLAR_SOURCE_FORECAST:
+            # Re-plan when the outlook is rebuilt (e.g. it loads a few seconds
+            # after this planner at startup), not only every 10 minutes.
+            self._unsubs.append(async_track_state_change_event(
+                self.hass, [outlook], self._on_outlook_change))
         self.hass.async_create_task(self.async_compute())
 
     async def async_stop(self) -> None:
@@ -413,6 +419,13 @@ class SolarPlanner:
         if self._input_unsub is not None:
             self._input_unsub()
             self._input_unsub = None
+
+    @callback
+    def _on_outlook_change(self, event) -> None:
+        new = event.data.get("new_state")
+        if new is None or new.state in ("unknown", "unavailable"):
+            return
+        self.hass.async_create_task(self.async_compute())
 
     @callback
     def _on_recompute(self, _now) -> None:
