@@ -4,6 +4,15 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added (solar planner)
+- **The floor holds at any time, not only overnight.** With the solar planner
+  On, a car plugged in below the floor (default 50 %) outside the cheap window
+  is charged to the floor straight away, unless the cheap window starts within
+  2 hours (then the normal overnight plan takes it). At the floor it stops and
+  hands back to the charger's own solar.
+
 ## [0.37.7] - 2026-11-16
 
 ### Added
