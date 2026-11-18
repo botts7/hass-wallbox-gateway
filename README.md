@@ -34,14 +34,39 @@ This integration is for users who:
 
 ## Status
 
-Well past the original roadmap — the integration is at **v0.37.x** with the full
+Well past the original roadmap — the integration is at **v0.38.x** with the full
 switch / number / select / button / update entity set, schedule services,
 charge-cost and solar/grid sensors, a Charge Assistant (smart charge to target,
 commute-aware overnight grid floor with hand-back to the charger's own solar by
-day, and periodic LFP balancing), solar-by-day + schedule coexistence, and
-resilience hardening (a slow endpoint no longer takes the device unavailable).
+day, periodic LFP balancing, skipping the overnight grid charge above a level,
+a solar cap, and planning the night around tomorrow's solar), solar-by-day +
+schedule coexistence, and resilience hardening (a slow endpoint no longer takes
+the device unavailable).
 See the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/botts7/hass-wallbox-gateway/releases)
 for what's shipped. Remaining goal: submit to HA core (v1.0.0).
+
+## Planning the night around tomorrow's solar
+
+Optional, off by default (Charge Assistant, Smart charge or Smart + Solar;
+**Preview** shows the plan without changing anything). Each evening it works
+out how much of tomorrow's spare solar the car can actually take and charges
+that much less overnight, never below a morning floor (default 50 %).
+
+- **Solar source** (all optional): any forecast integration that feeds HA's
+  Energy dashboard (Forecast.Solar, Solcast, Open-Meteo), corrected against your
+  production sensor, or a sensor with an hourly spare-solar outlook.
+- **When the car is home:** learned from the charger's car-connected history
+  (weekdays and weekends apart; only whole hours count; about two weeks before
+  it's trusted, and until then the night charges as before), or a manual
+  schedule such as `Mon-Fri 17:00-08:00; Sat,Sun 00:00-24:00`.
+- **Limits per hour:** the charger's power (learned from its own readings) and
+  the inverter's output (an optional rated size, any size incl. three-phase,
+  else the most it has been seen to make).
+- The **Tonight's planned charge** sensor explains each plan; an optional
+  evening notification says the same.
+
+Charge timing (window finish, departure, cheapest window) uses the learned
+charger power and allows for charging losses.
 
 ## Installation
 
@@ -95,6 +120,7 @@ stable unique-id.
 | `number.<name>_max_current`           | 6 – 32 A slider | current |
 | `select.<name>_eco_smart_mode`        | Disabled / Full Green / Eco Smart | — |
 | `button.<name>_refresh_now`           | force the coordinator to poll immediately | update |
+| `sensor.<name>_tonight_s_planned_charge` | kWh planned from the grid tonight; attributes explain the plan (solar planner on) | — |
 
 ## Compatibility
 
@@ -112,6 +138,7 @@ integration over the `get_config`/`set_config` services. Keep them matched:
 
 | Integration | Pairs with Add-on | Notes |
 |------------:|:------------------|:------|
+| **≥ 0.38.0** | **≥ 0.58.0** | Solar plan, home schedule, inverter size and solar cap fields in the Add-on. |
 | **≥ 0.18.0** | **≥ 0.40.0** | Config bridge on the HACS **default** channel — no pre-release toggle needed. |
 | 0.17.0b4 (beta) | 0.23.0 – 0.39.x | Bridge was beta-only; the Add-on's Charge Assistant needed it. |
 | ≤ 0.14.x | — | No config bridge; the Add-on's Charge Assistant page can't connect. |
