@@ -953,6 +953,28 @@ def test_charge_rate_samples_the_real_power_field():
 
 
 @case
+def test_live_power_checks_use_the_max_payload():
+    """A MAX: r_sta has cp, r_dat doesn't. The 'is it charging' fallback and
+    the Stop check used to read r_dat and always saw 0 there."""
+    ca, _ = _night()
+    coord = ca._coordinator()
+    coord.data["charger_realtime"] = {"charger_status": 194, "max_charging_current": 32}
+    coord.data["charger_status"] = {"cp": 7.04}
+    assert ca._live_charge_kw() == 7.04
+    assert ca._finish_still_charging() is True      # ignored the Stop
+    assert ca._is_charging() is True
+    coord.data["charger_status"] = {"cp": 0.0}
+    assert ca._finish_still_charging() is False     # stopped
+    coord.data["charger_status"] = {"cp": 0.6}      # ramp-down tail
+    assert ca._finish_still_charging() is False
+    coord.data["charger_status"] = {}
+    coord.data["charger_realtime"] = {"cp": 6.9}    # a charger that reports it in r_dat
+    assert ca._live_charge_kw() == 6.9
+    coord.data["charger_realtime"] = {}
+    assert ca._live_charge_kw() is None and ca._finish_still_charging() is False
+
+
+@case
 def test_learned_charge_power_wins_over_the_setting():
     ca, _ = _night()
     assert ca.charge_wall_kw() == 6.8
