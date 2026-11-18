@@ -75,6 +75,11 @@ def plan(*, soc: float, target_pct: float, floor_pct: float, battery_kwh: float,
     return p
 
 
+def _kwh(v: float) -> str:
+    """'about 4 kWh', or 'under 1 kWh' rather than 'about 0 kWh'."""
+    return "under 1 kWh" if v < 0.5 else f"about {v:.0f} kWh"
+
+
 def explain(p: Plan, soc: float, target_pct: float, floor_pct: float) -> str:
     """One plain sentence for the evening notification and the sensor."""
     if p.need_kwh <= 0:
@@ -84,9 +89,9 @@ def explain(p: Plan, soc: float, target_pct: float, floor_pct: float) -> str:
                 "No solar counted for tomorrow (not sunny enough, or the car usually isn't home).")
     if p.tonight_kwh <= p.floor_kwh and p.floor_kwh > 0:
         return (f"Tonight {p.tonight_kwh:.0f} kWh to the {floor_pct:.0f}% floor. "
-                f"Tomorrow about {p.solar_kwh:.0f} kWh from solar if the car is home.")
+                f"Tomorrow {_kwh(p.solar_kwh)} from solar if the car is home.")
     if p.tonight_kwh <= 0:
-        return (f"No charge tonight. Tomorrow about {p.solar_kwh:.0f} kWh from solar "
+        return (f"No charge tonight. Tomorrow {_kwh(p.solar_kwh)} from solar "
                 "if the car is home.")
     return (f"Tonight {p.tonight_kwh:.0f} kWh to {p.target_pct:.0f}%. "
-            f"Tomorrow about {p.solar_kwh:.0f} kWh from solar if the car is home.")
+            f"Tomorrow {_kwh(p.solar_kwh)} from solar if the car is home.")

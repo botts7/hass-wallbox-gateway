@@ -480,6 +480,16 @@ def test_departure_hour_needs_both_half_hours():
         SP.HP.probability = orig
 
 
+@case
+def test_tiny_solar_reads_under_1_kwh():
+    """18 Nov: 0.1 kWh of morning solar read "about 0 kWh"."""
+    p = OP.Plan(need_kwh=23, floor_kwh=0, solar_kwh=0.1, tonight_kwh=23, target_pct=82)
+    r = OP.explain(p, 57, 82, 50)
+    assert "under 1 kWh" in r and "about 0" not in r, r
+    p.solar_kwh = 4.4
+    assert "about 4 kWh" in OP.explain(p, 57, 82, 50)
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
