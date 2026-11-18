@@ -1302,12 +1302,19 @@ class ChargeAssistant:
     # Charge power: learned from the charger's own readings (charge_rate.py)
     # ------------------------------------------------------------------
     def _sample_charge_rate(self) -> None:
+        # Live power is r_sta's cp (charger_status, what the Charging power
+        # sensor shows); r_dat (charger_realtime) has no cp on a Pulsar MAX.
         coord = self._coordinator()
-        rt = ((getattr(coord, "data", None) or {}).get("charger_realtime") or {}) if coord else {}
-        try:
-            kw = float(rt.get("cp")) if rt.get("cp") is not None else None
-        except (TypeError, ValueError):
-            kw = None
+        data = (getattr(coord, "data", None) or {}) if coord else {}
+        kw = None
+        for key in ("charger_status", "charger_realtime"):
+            cp = (data.get(key) or {}).get("cp")
+            if cp is not None:
+                try:
+                    kw = float(cp)
+                except (TypeError, ValueError):
+                    kw = None
+                break
         now = dt_util.utcnow().timestamp()
         if charge_rate.add_sample(self._rate_samples, now, kw) and (
                 now - self._rate_saved_at >= 1800):
