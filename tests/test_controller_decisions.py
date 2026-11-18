@@ -931,6 +931,28 @@ def test_charge_time_includes_charging_losses():
 
 
 @case
+def test_charge_rate_samples_the_real_power_field():
+    """18 Nov: a Pulsar MAX's r_dat (charger_realtime) has no cp; the live
+    power is r_sta's cp (charger_status). A night at 7.03 kW learned nothing."""
+    ca, _ = _night()
+    coord = ca._coordinator()
+    coord.data["charger_realtime"] = {"charger_status": 18, "max_charging_current": 32}
+    from datetime import datetime as _dt, timezone as _tz
+    t0 = 1795000000
+    ca._rate_saved_at = float("inf")            # no Store writes in this test
+    orig = ca_mod.dt_util.utcnow
+    try:
+        for m in range(40):
+            coord.data["charger_status"] = {"cp": 7.03, "en": 1200}
+            ca_mod.dt_util.utcnow = lambda m=m: _dt.fromtimestamp(t0 + m * 60, _tz.utc)
+            ca._sample_charge_rate()
+    finally:
+        ca_mod.dt_util.utcnow = orig
+    assert len(ca._rate_samples) == 40, len(ca._rate_samples)
+    assert ca.charge_wall_kw() == 7.03
+
+
+@case
 def test_learned_charge_power_wins_over_the_setting():
     ca, _ = _night()
     assert ca.charge_wall_kw() == 6.8
