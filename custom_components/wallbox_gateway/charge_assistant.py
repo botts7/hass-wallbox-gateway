@@ -1302,24 +1302,27 @@ class ChargeAssistant:
     # Charge power: learned from the charger's own readings (charge_rate.py)
     # ------------------------------------------------------------------
     def _sample_charge_rate(self) -> None:
-        # Live power is r_sta's cp (charger_status, what the Charging power
-        # sensor shows); r_dat (charger_realtime) has no cp on a Pulsar MAX.
-        coord = self._coordinator()
-        data = (getattr(coord, "data", None) or {}) if coord else {}
-        kw = None
-        for key in ("charger_status", "charger_realtime"):
-            cp = (data.get(key) or {}).get("cp")
-            if cp is not None:
-                try:
-                    kw = float(cp)
-                except (TypeError, ValueError):
-                    kw = None
-                break
+        kw = self._live_charge_kw()
         now = dt_util.utcnow().timestamp()
         if charge_rate.add_sample(self._rate_samples, now, kw) and (
                 now - self._rate_saved_at >= 1800):
             self._rate_saved_at = now
             self.hass.async_create_task(self._save_balance_state())
+
+    def _live_charge_kw(self) -> float | None:
+        """The charger's live power in kW, or None when it isn't reported.
+        r_sta's cp (charger_status, what the Charging power sensor shows);
+        r_dat (charger_realtime) as a fallback, it has no cp on a Pulsar MAX."""
+        coord = self._coordinator()
+        data = (getattr(coord, "data", None) or {}) if coord else {}
+        for key in ("charger_status", "charger_realtime"):
+            cp = (data.get(key) or {}).get("cp")
+            if cp is not None:
+                try:
+                    return float(cp)
+                except (TypeError, ValueError):
+                    return None
+        return None
 
     def charge_wall_kw(self) -> float | None:
         """The charger's full-speed power at the wall: learned once there's
@@ -2521,16 +2524,8 @@ class ChargeAssistant:
                 return True
         if self._charge_switch and (sw := self.hass.states.get(self._charge_switch)) and sw.state == "on":
             return True
-        # Robust fallback: the gateway's live charge power (r_dat.cp).
-        coord = self._coordinator()
-        if coord is not None and getattr(coord, "data", None):
-            rt = coord.data.get("charger_realtime") or {}
-            try:
-                if float(rt.get("cp") or 0) > 0.05:
-                    return True
-            except (TypeError, ValueError):
-                pass
-        return False
+        # Robust fallback: the gateway's live charge power.
+        return (self._live_charge_kw() or 0.0) > 0.05
 
     def _set_charging(self, on: bool) -> None:
         """Autonomously start/stop charging — owner-tagged so the gateway
@@ -3054,14 +3049,9 @@ class ChargeAssistant:
         a ramp-down tail and the coordinator only polls ~10s, so the binary sensor
         / switch lag 'on'. Only a clearly-significant charge power counts as
         'ignored the Stop' — otherwise a tail / poll lag would false-alarm."""
-        coord = self._coordinator()
-        if coord is None or not getattr(coord, "data", None):
-            return False
-        rt = coord.data.get("charger_realtime") or {}
-        try:
-            return float(rt.get("cp") or 0) > _FINISH_STILL_CHARGING_KW
-        except (TypeError, ValueError):
-            return False
+        # A retry is safe on a charger that did stop: the gateway skips a
+        # redundant stop (startStopRedundant), so a MAX isn't toggled back on.
+        return (self._live_charge_kw() or 0.0) > _FINISH_STILL_CHARGING_KW
 
     def _cancel_finish(self) -> None:
         """Drop any pending finish-verify (a new charge supersedes it, or we're
