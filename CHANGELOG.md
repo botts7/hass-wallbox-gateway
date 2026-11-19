@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.38.0] - 2026-11-19
 
 ### Added
 - **Plan the night around tomorrow's solar** (Smart charge and Smart + Solar,
@@ -44,6 +44,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   battery; at about 7 kW at the wall the battery gets about 6.2 kW, so
   just-in-time starts ran about 10 % late. They now use the wall power times
   the charging efficiency.
+- **The learned charge power reads the right field on a Pulsar MAX.** It
+  sampled r_dat, which has no power reading on a MAX, so nothing was learned;
+  it now uses r_sta's, the one the Charging power sensor shows.
+- **The check that a Stop at the target actually took works on a Pulsar MAX.**
+  It read the same empty field and never saw an ignored Stop. A retry on a
+  charger that did stop is safe: the gateway skips a redundant stop.
+- The plan says "under 1 kWh" instead of "about 0 kWh" from solar.
 
 ## [0.37.7] - 2026-11-16
 
