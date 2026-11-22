@@ -358,6 +358,40 @@ async def _noop():
     return None
 
 
+@case
+def test_only_half_hours_before_the_window_count():
+    """22 Nov, live: at 21:26:39 the check ran to 00:00:39 and looked at the
+    half hour starting AT the window (Mon 00:00, no weekday history yet), so it
+    charged instead of waiting. Only half hours before the window count."""
+    now = datetime(2026, 11, 22, 21, 26, 39, tzinfo=SYD)
+    until = datetime(2026, 11, 23, 0, 0, tzinfo=SYD)
+    sunday_known = lambda t: 1.0 if t < until else None    # Monday: no history yet
+    assert CU.needed_reason(now, until, sunday_known, 0.7) is None
+    assert CU.needed_reason(now, until + timedelta(seconds=39), sunday_known, 0.7) is not None
+
+
+@case
+def test_assistant_window_end_is_on_the_minute():
+    if not _HA_OK:
+        return
+    import wallbox_gateway.charge_assistant as CA
+    real_now = T.dt_util.now
+    fixed = datetime(2026, 11, 22, 21, 26, 39, tzinfo=SYD)
+    CA.dt_util.now = lambda tz=None: fixed
+    try:
+        ca, calls = T._floor_ca(66, mins_to_window=154)
+        ca._opts.update({T.C.CA_CRITICAL_PCT: 70, T.C.CA_SOLAR_FLOOR_PCT: 75,
+                         T.C.CA_TOPUP_WAIT_CHEAP: True})
+        until = datetime(2026, 11, 23, 0, 0, tzinfo=SYD)
+        ca._planner.usage_chance = lambda t: 1.0 if t < until else None
+        ca._eval_target_windowed = lambda *a, **k: None
+        ca._eval_target()
+        assert calls == [], calls
+        assert ca._topup_wait_noted is None, ca._topup_wait_noted
+    finally:
+        CA.dt_util.now = real_now
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

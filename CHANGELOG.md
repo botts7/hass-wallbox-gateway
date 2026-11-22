@@ -42,6 +42,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   time-sensitive (it reached a phone about 7 minutes late), and tagged: a
   cancelled countdown is removed from the phone, and a started one is
   replaced by "Charging now".
+- **"Wait for cheap hours" only looks at the half hours before the window.**
+  A check at 21:26:39 ran on to 00:00:39 and judged the half hour starting at
+  the window itself, so it charged instead of waiting. It now logs why it
+  charges now (which departure or half hour), and any failure as a warning.
+- **An HA restart no longer marks the car as out.** A restart resets the car
+  tracker's and the charger's "last changed", so the half hour of a restart
+  was learned as "out" (or unplugged). That half hour is now skipped, and the
+  car-location pattern is rebuilt from the recorder on every start.
 - **"Wait for cheap hours" works straight after a restart or settings
   change.** The first check ran before the solar planner (which holds the
   car's usual pattern) had started, so it saw no pattern, treated the car as

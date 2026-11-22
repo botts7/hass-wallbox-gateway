@@ -526,6 +526,7 @@ def test_location_pattern_recorded_and_used_for_car_use():
     pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
     pl.hass, pl._home, pl._loc, pl._fc = _Hass(states), {}, {}, {}
     pl._ca = type("CA", (), {"_connected_entity": "binary_sensor.plugged"})()
+    pl._started_at = None
     opts = {"car_location_entity": "device_tracker.car"}
     pl._opts = lambda: opts
     pl._learn_production = lambda local: None
@@ -547,6 +548,45 @@ def test_location_pattern_recorded_and_used_for_car_use():
     finally:
         SP.HP.probability = orig
     assert seen[0] is pl._loc and seen[1] is pl._home
+
+
+@case
+def test_half_hour_of_a_restart_is_not_recorded():
+    """22 Nov: HA restarts at 20:57 and 21:23 reset the tracker's last_changed,
+    so 20:30 and 21:00 on a Sunday at home were recorded as 'out'."""
+    if not _HA_OK:
+        return
+    from homeassistant.util import dt as dt_util
+    import wallbox_gateway.solar_planner as SP
+
+    class _St:
+        def __init__(self, state, changed):
+            self.state, self.last_changed, self.attributes = state, changed, {}
+
+    class _Hass:
+        def __init__(self, m):
+            self.states = type("S", (), {"get": lambda _s, e: m.get(e)})()
+        def async_create_task(self, coro):
+            coro.close()
+
+    tick = dt_util.now().replace(minute=30, second=20, microsecond=0)   # end of the :00 slot
+    slot = tick.replace(second=0) - timedelta(minutes=30)
+    restarted = slot + timedelta(minutes=23)                           # mid-slot restart
+    states = {"device_tracker.car": _St("home", restarted),
+              "binary_sensor.plugged": _St("on", restarted)}
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    pl.hass, pl._home, pl._loc, pl._fc = _Hass(states), {}, {}, {}
+    pl._ca = type("CA", (), {"_connected_entity": "binary_sensor.plugged"})()
+    pl._opts = lambda: {"car_location_entity": "device_tracker.car"}
+    pl._learn_production = lambda local: None
+    pl._started_at = restarted
+    pl._on_half_hour(tick)
+    key, i = slot.date().isoformat(), HP.slot_of(slot)
+    assert (pl._loc.get(key) or [None] * HP.SLOTS)[i] is None    # not 'out'
+    assert (pl._home.get(key) or [None] * HP.SLOTS)[i] is None
+    # The next half hour, watched in full, is recorded as home.
+    pl._on_half_hour(tick + timedelta(minutes=30))
+    assert pl._loc[key][HP.slot_of(slot + timedelta(minutes=30))] == 1
 
 
 def main():
