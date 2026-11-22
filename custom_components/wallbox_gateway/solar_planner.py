@@ -94,6 +94,7 @@ class SolarPlanner:
         self.result: dict | None = None       # the latest plan, for the sensor
         self._computed_at: datetime | None = None
         self._plan: OP.Plan | None = None
+        self._spare_all: dict = {}      # latest spare solar by local hour (today + tomorrow)
         self._input_unsub: Callable | None = None   # waiting for the SOC to load
 
     # ---- settings ---------------------------------------------------------
@@ -263,6 +264,13 @@ class SolarPlanner:
         out = SO.from_hourly_attr(st.attributes.get("hourly"))
         return {dt_util.as_local(h): v for h, v in out.items()} or None
 
+    def solar_left_today_kwh(self, now: datetime | None = None) -> float | None:
+        """Spare solar (kWh, at the wall) the car can still take today, from the
+        latest outlook or forecast; None when there's none."""
+        if not self._spare_all:
+            return None
+        return SO.left_today(self._spare_all, now or dt_util.now(), self._charger_kw())
+
     def _charger_kw(self) -> float:
         """Most the charger can take in an hour, at the wall: learned by the
         Charge Assistant when it can, else the configured figure."""
@@ -348,6 +356,7 @@ class SolarPlanner:
         self._stop_input_watch()
         now = dt_util.now()
         spare, source, factor = await self._spare_by_hour()
+        self._spare_all = spare or {}
         day = self._solar_day(now)
         spare_day = SO.for_day(spare, day)
         min_days = int(self._o(CA_SOLAR_MIN_HISTORY_DAYS, DEFAULT_SOLAR_MIN_HISTORY_DAYS))

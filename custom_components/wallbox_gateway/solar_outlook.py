@@ -22,7 +22,7 @@ Pure, HA-free; charge_assistant.py does the I/O.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DEFAULT_FACTOR = 1.0
 FACTOR_MIN, FACTOR_MAX = 0.3, 4.0
@@ -128,6 +128,22 @@ def cap(hourly: dict, max_hour_kwh: float | None) -> dict:
     if max_hour_kwh is None or max_hour_kwh <= 0:
         return dict(hourly)
     return {h: min(v, max_hour_kwh) for h, v in hourly.items()}
+
+
+def left_today(spare_by_hour: dict, now, charger_kw: float) -> float:
+    """Spare solar (kWh) the car can still take today: each hour from now to
+    midnight, capped at the charger's power, the current hour pro rata."""
+    total = 0.0
+    cap = max(0.0, charger_kw)
+    for h, v in spare_by_hour.items():
+        if h.date() != now.date():
+            continue
+        end = h + timedelta(hours=1)
+        if end <= now:
+            continue
+        share = 1.0 if h >= now else (end - now).total_seconds() / 3600.0
+        total += min(max(0.0, v), cap) * share
+    return total
 
 
 def for_day(hourly: dict, day) -> dict:

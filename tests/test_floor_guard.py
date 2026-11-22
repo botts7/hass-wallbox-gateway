@@ -51,6 +51,38 @@ def test_runs_to_the_floor_then_stops():
     assert d(floor_charging=True, charging=False, soc=45) == F.NONE   # starting up (grace)
 
 
+@case
+def test_waits_for_solar_that_will_get_there():
+    """22 Nov follow-up: below the floor by day, but today's sun will lift it."""
+    kw = dict(floor=50, soc=47, charging=False, plugged=True, floor_charging=False,
+              mins_to_window=600)
+    assert F.decide(**kw, solar_covers=True) == F.NONE
+    assert F.decide(**kw, solar_covers=False) == F.START
+
+
+@case
+def test_critical_level_charges_whatever_the_sun_or_window():
+    kw = dict(floor=50, charging=False, plugged=True, floor_charging=False)
+    # Below critical: charge now, even if the sun would cover it or the window is close.
+    assert F.decide(**kw, soc=15, mins_to_window=60, solar_covers=True, critical=20) == F.CRITICAL
+    # Above critical but below the floor: the normal floor rules.
+    assert F.decide(**kw, soc=30, mins_to_window=600, solar_covers=True, critical=20) == F.NONE
+    assert F.decide(**kw, soc=30, mins_to_window=600, solar_covers=False, critical=20) == F.START
+    # A critical level at or above the floor is ignored.
+    assert F.decide(**kw, soc=30, mins_to_window=600, solar_covers=True, critical=60) == F.NONE
+    # Works without a floor (planner off).
+    assert F.decide(floor=None, charging=False, plugged=True, floor_charging=False,
+                    soc=15, mins_to_window=600, critical=20) == F.CRITICAL
+
+
+@case
+def test_critical_charge_stops_at_the_critical_level():
+    kw = dict(floor=50, plugged=True, floor_charging=True, mins_to_window=600, critical=20)
+    assert F.decide(**kw, soc=18, charging=True, charge_to=20) == F.HOLD
+    assert F.decide(**kw, soc=20, charging=True, charge_to=20) == F.STOP
+    assert F.decide(**kw, soc=40, charging=True, charge_to=50) == F.HOLD   # a floor charge
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

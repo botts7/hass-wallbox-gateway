@@ -490,6 +490,16 @@ def test_tiny_solar_reads_under_1_kwh():
     assert "about 4 kWh" in OP.explain(p, 57, 82, 50)
 
 
+@case
+def test_solar_left_today_from_now():
+    d = date(2026, 11, 22)
+    spare = {_t(d, 13): 4.0, _t(d, 14): 8.0, _t(d, 15): 1.0,
+             _t(d, 12): 5.0, _t(date(2026, 11, 23), 10): 6.0}
+    now = _t(d, 13, 30)
+    # 13:00 half left (2.0) + 14:00 capped at 7.0 + 15:00 1.0; not 12:00, not tomorrow
+    assert abs(SO.left_today(spare, now, 7.0) - 10.0) < 1e-9
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
