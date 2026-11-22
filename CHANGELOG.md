@@ -26,6 +26,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   optional car location entity (any device_tracker, person, or a
   binary_sensor that's on at home), else from the charger's plug-in history.
   Not enough history yet means it charges now.
+- **A calendar as the departure source.** The departure entity can be a
+  calendar: its next timed event (all-day events don't count) is the next
+  departure, optionally only events containing a keyword (title, description
+  or location, any case). Read with calendar.get_events every 10 minutes; the
+  calendar's own attributes are the fallback.
 
 ### Fixed
 - **A floor or critical charge keeps its stop level across an HA restart,**
