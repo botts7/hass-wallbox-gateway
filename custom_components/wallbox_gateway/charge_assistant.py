@@ -1639,20 +1639,14 @@ class ChargeAssistant:
                     dict(st.attributes) if st is not None else None, dt_util.DEFAULT_TIME_ZONE)
                 events = [ev] if ev else []
             return car_use.next_departure(events, dt_util.now(),
-                                          self._opts.get(CA_DEPARTURE_KEYWORD))
+                                          self._opts.get(CA_DEPARTURE_KEYWORD),
+                                          tz=dt_util.DEFAULT_TIME_ZONE)
         st = self.hass.states.get(eid) if eid else None
-        if st is None or st.state in _UNAVAILABLE:
+        if st is None:
             return None
-        ts = st.attributes.get("timestamp") if eid.startswith("input_datetime.") else None
-        try:
-            if isinstance(ts, (int, float)):
-                return dt_util.as_local(dt_util.utc_from_timestamp(ts))
-            d = dt_util.parse_datetime(str(st.state))
-        except (TypeError, ValueError):
-            return None
-        if d is None:
-            return None
-        return dt_util.as_local(d if d.tzinfo else d.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE))
+        d = car_use.departure_from_state(eid.split(".", 1)[0], st.state, dict(st.attributes),
+                                         dt_util.now(), dt_util.DEFAULT_TIME_ZONE)
+        return dt_util.as_local(d) if d is not None else None
 
     def _topup_waits_for_window(self) -> bool:
         """'Wait for cheap hours': a critical or floor top-up outside the cheap

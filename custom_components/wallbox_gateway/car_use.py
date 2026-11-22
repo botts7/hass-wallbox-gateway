@@ -45,11 +45,15 @@ def _matches(ev: dict, keyword: str | None) -> bool:
     return k in hay
 
 
-def next_departure(events, now: datetime, keyword: str | None = None) -> datetime | None:
+def next_departure(events, now: datetime, keyword: str | None = None,
+                   tz=None) -> datetime | None:
     """Earliest timed event after ``now`` (matching ``keyword`` in its summary,
     description or location, if given), as an aware datetime. All-day events
-    (a date with no time) are never departures. Events are calendar.get_events
-    dicts: {"start": iso, "summary", "description", "location"}."""
+    (a date with no time) are never departures, nor are events located at
+    "home". Times without a zone are in ``tz`` (HA's time zone; defaults to
+    ``now``'s). Events are calendar.get_events dicts:
+    {"start": iso, "summary", "description", "location"}."""
+    zone = tz or now.tzinfo
     best = None
     for ev in events or []:
         if not isinstance(ev, dict):
@@ -62,9 +66,11 @@ def next_departure(events, now: datetime, keyword: str | None = None) -> datetim
         except ValueError:
             continue
         if d.tzinfo is None:
-            d = d.replace(tzinfo=now.tzinfo)
+            d = d.replace(tzinfo=zone)
         if d <= now or not _matches(ev, keyword):
             continue
+        if str(ev.get("location") or "").strip().lower() == "home":
+            continue   # an event at home isn't a drive
         if best is None or d < best:
             best = d
     return best
@@ -82,6 +88,45 @@ def event_from_attributes(attrs: dict, tz) -> dict | None:
     return {"start": d.isoformat(), "summary": attrs.get("message") or "",
             "description": attrs.get("description") or "",
             "location": attrs.get("location") or ""}
+
+
+def departure_from_state(domain: str, state, attrs: dict | None, now: datetime,
+                         tz) -> datetime | None:
+    """A departure time from a timestamp sensor or an input_datetime state, as
+    an aware datetime in ``tz`` (HA's time zone), or None.
+
+    - sensor: an ISO timestamp (a zone-less one is read in ``tz``);
+    - input_datetime with date and time: "YYYY-MM-DD HH:MM:SS" in ``tz``;
+    - input_datetime with a time only: the next time it comes round;
+    - input_datetime with a date only: no time, so no departure."""
+    s = str(state or "").strip()
+    if s.lower() in _UNKNOWN:
+        return None
+    attrs = attrs if isinstance(attrs, dict) else {}
+    if domain == "input_datetime":
+        has_date = attrs.get("has_date", True)
+        has_time = attrs.get("has_time", True)
+        if not has_time:
+            return None
+        if not has_date:
+            try:
+                t = datetime.strptime(s, "%H:%M:%S").time()
+            except ValueError:
+                return None
+            local = now.astimezone(tz)
+            d = datetime.combine(local.date(), t, tzinfo=tz)
+            if d <= local:
+                d = datetime.combine(local.date() + timedelta(days=1), t, tzinfo=tz)
+            return d
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+        except ValueError:
+            return None
+    try:
+        d = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=tz)
 
 
 def needed_before(now: datetime, until: datetime, chance: Callable[[datetime], float | None],
