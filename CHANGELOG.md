@@ -39,9 +39,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - **The "Charging will start in 5 min" notification arrives straight away
   and goes away if the charge is called off.** It's now sent as
-  time-sensitive (it reached a phone about 7 minutes late), and tagged: a
-  cancelled countdown is removed from the phone, and a started one is
-  replaced by "Charging now".
+  time-sensitive (it reached a phone about 7 minutes late) for a daytime
+  countdown outside the cheap window, and tagged: a cancelled countdown is
+  removed from the phone, and a started one is replaced by "Charging now".
+  The nightly countdown inside the window stays normal priority, so it never
+  wakes anyone.
 - **"Wait for cheap hours" only looks at the half hours before the window.**
   A check at 21:26:39 ran on to 00:00:39 and judged the half hour starting at
   the window itself, so it charged instead of waiting. It now logs why it

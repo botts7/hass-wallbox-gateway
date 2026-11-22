@@ -313,10 +313,16 @@ def _notify_ca():
 @case
 def test_countdown_is_sent_urgent_and_tagged_and_charging_now_replaces_it():
     """22 Nov: the countdown reached the phone ~7 min late and stayed after
-    being cancelled."""
+    being cancelled. Urgent by day; overnight it's tagged only."""
     if not _HA_OK:
         return
     ca, sent, asyncio = _notify_ca()
+    ca._grace_urgent = False                                          # overnight: tag only
+    asyncio.run(ca._send_notification("grace", message_override="Charging will start in 5 min",
+                                      action_set="grace"))
+    assert sent[0][1]["data"]["tag"] == "wb_ca_grace" and "priority" not in sent[0][1]["data"]
+    sent.clear()
+    ca._grace_urgent = True                                           # daytime top-up
     asyncio.run(ca._send_notification("grace", message_override="Charging will start in 5 min",
                                       action_set="grace"))
     assert [svc for svc, _ in sent] == ["notify.mobile_app_a", "notify.mobile_app_b"]
@@ -388,6 +394,42 @@ def test_assistant_window_end_is_on_the_minute():
         ca._eval_target()
         assert calls == [], calls
         assert ca._topup_wait_noted is None, ca._topup_wait_noted
+    finally:
+        CA.dt_util.now = real_now
+
+
+@case
+def test_countdown_urgent_only_by_day_outside_the_window():
+    """The nightly in-window countdown (~02:53) must stay normal priority:
+    urgent only for a daytime countdown outside the cheap window."""
+    if not _HA_OK:
+        return
+    import wallbox_gateway.charge_assistant as CA
+    real_now = CA.dt_util.now
+    cases = [(datetime(2026, 11, 22, 14, 0, tzinfo=SYD), 600, True),    # day, outside window
+             (datetime(2026, 11, 22, 2, 53, tzinfo=SYD), 0, False),     # night, in the window
+             (datetime(2026, 11, 22, 23, 0, tzinfo=SYD), 60, False),    # late, outside window
+             (datetime(2026, 11, 22, 6, 30, tzinfo=SYD), None, False),  # no window, early
+             (datetime(2026, 11, 22, 9, 0, tzinfo=SYD), None, True)]    # no window, day
+    try:
+        for when, mins, urgent in cases:
+            CA.dt_util.now = lambda tz=None, w=when: w
+            ca, sent, asyncio = _notify_ca()
+            ca._opts[T.C.CA_AUTOSTART_GRACE_MIN] = 5
+            ca._mins_to_window = lambda m=mins: m
+            ca._start_blocked = lambda: False
+            ca._is_charging = lambda: False
+            orig = CA.async_call_later
+            CA.async_call_later = lambda *a, **k: (lambda: None)
+            try:
+                ca._begin_charge("test", 40, 50)
+            finally:
+                CA.async_call_later = orig
+            assert ca._grace_urgent is urgent, (when, mins, ca._grace_urgent)
+            asyncio.run(ca._send_notification("grace", message_override="x", action_set="grace"))
+            data = sent[-1][1]["data"]
+            assert data["tag"] == "wb_ca_grace"
+            assert ("priority" in data) is urgent and ("push" in data) is urgent, (when, data)
     finally:
         CA.dt_util.now = real_now
 

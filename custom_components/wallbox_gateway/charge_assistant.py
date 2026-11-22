@@ -393,6 +393,7 @@ class ChargeAssistant:
         self._floor_charge_to: float | None = None   # where a running floor charge stops
         self._topup_wait_noted: str | None | bool = False   # last logged wait decision
         self._cal_events: list | None = None   # departure calendar's upcoming events (get_events)
+        self._grace_urgent = False   # the current countdown is outside the cheap window
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
         # and still to be checked against the charger (29 Oct live test).
@@ -2835,6 +2836,11 @@ class ChargeAssistant:
         if grace <= 0:
             self._do_start(reason, soc, target)
             return
+        # Urgent only for a daytime countdown outside the cheap window (one the
+        # user may want to stop); never overnight, so it can't wake anyone.
+        mins = self._mins_to_window()
+        self._grace_urgent = (not (mins is not None and mins == 0)
+                              and 7 <= dt_util.now().hour < 22)
         self._grace_pending = {"reason": reason, "target": target}
         self._grace_unsub = async_call_later(self.hass, grace * 60, self._grace_fire)
         _LOGGER.info("Charge Assistant: auto-start scheduled in %d min (%s)", grace, reason)
@@ -3934,9 +3940,12 @@ class ChargeAssistant:
                         {"action": CA_SNOOZE_ACTION, "title": "Not now"},
                     ]
                 if action_set in ("grace", "grace_done"):
-                    # Urgent and tagged: shown at once, and later replaced by
-                    # "Charging now" or cleared if the countdown is cancelled.
-                    data = notify_payload.time_sensitive(data)
+                    # Tagged, so later replaced by "Charging now" or cleared if
+                    # the countdown is cancelled. Urgent (shown at once) only
+                    # outside the cheap window: the nightly in-window countdown
+                    # must not wake anyone.
+                    data = (notify_payload.time_sensitive(data) if self._grace_urgent
+                            else notify_payload.tagged(data))
             else:
                 # Plug-aware default base line so the whole message never
                 # contradicts itself (a custom message is left untouched).
