@@ -37,6 +37,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   date-only helper has no time, so it's ignored (before, it read as midnight).
 
 ### Fixed
+- **The "Charging will start in 5 min" notification arrives straight away
+  and goes away if the charge is called off.** It's now sent as
+  time-sensitive (it reached a phone about 7 minutes late), and tagged: a
+  cancelled countdown is removed from the phone, and a started one is
+  replaced by "Charging now".
 - **"Wait for cheap hours" works straight after a restart or settings
   change.** The first check ran before the solar planner (which holds the
   car's usual pattern) had started, so it saw no pattern, treated the car as

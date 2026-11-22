@@ -176,6 +176,7 @@ from .const import (
 from . import balance_schedule
 from . import car_use
 from . import charge_rate
+from . import notify_payload
 from . import ca_config
 from . import charge_window
 from .legacy_schedule import is_original_pulsar
@@ -2836,6 +2837,17 @@ class ChargeAssistant:
             action_set="grace",
         ))
 
+    async def _clear_grace_notification(self) -> None:
+        """Remove a cancelled countdown notification from the phone(s)."""
+        raw = self._opts.get(CA_NOTIFY_SERVICE) or ""
+        for svc in [s.strip() for s in str(raw).split(",") if s.strip() and "." in s]:
+            domain, name = svc.split(".", 1)
+            try:
+                await self.hass.services.async_call(domain, name, notify_payload.clear(),
+                                                    blocking=True)
+            except Exception as err:  # noqa: BLE001 — never break the loop on this
+                _LOGGER.debug("Charge Assistant: clearing the countdown note failed: %s", err)
+
     @callback
     def _grace_fire(self, _now=None) -> None:
         """Grace elapsed — start unless the situation changed under us."""
@@ -2865,6 +2877,11 @@ class ChargeAssistant:
             self._grace_unsub = None
         if self._grace_pending is not None and why:
             _LOGGER.info("Charge Assistant: auto-start cancelled — %s", why)
+            if why != "user tapped Start now":   # that one becomes "Charging now"
+                try:
+                    self.hass.async_create_task(self._clear_grace_notification())
+                except Exception:  # noqa: BLE001 — no event loop (tests)
+                    pass
         self._grace_pending = None
 
     def _do_start(self, reason: str, soc: float, target: float) -> None:
@@ -2883,7 +2900,7 @@ class ChargeAssistant:
             if (soc and target) else f"Charging now — {reason}."
         )
         self.hass.async_create_task(
-            self._send_notification("target", message_override=msg)
+            self._send_notification("target", message_override=msg, action_set="grace_done")
         )
 
     # ------------------------------------------------------------------
@@ -3906,6 +3923,10 @@ class ChargeAssistant:
                         {"action": CA_START_ACTION, "title": "Start now"},
                         {"action": CA_SNOOZE_ACTION, "title": "Not now"},
                     ]
+                if action_set in ("grace", "grace_done"):
+                    # Urgent and tagged: shown at once, and later replaced by
+                    # "Charging now" or cleared if the countdown is cancelled.
+                    data = notify_payload.time_sensitive(data)
             else:
                 # Plug-aware default base line so the whole message never
                 # contradicts itself (a custom message is left untouched).

@@ -286,6 +286,78 @@ def test_planner_and_calendar_are_ready_before_the_first_evaluation():
     assert order[:3] == ["planner", "calendar", "strategy"], order
 
 
+# ── countdown notification: urgent, tagged, cleared when cancelled ──
+@case
+def test_countdown_notification_payloads():
+    import notify_payload as NP
+    d = NP.time_sensitive({"actions": [1]})
+    assert d == {"actions": [1], "tag": "wb_ca_grace", "priority": "high", "ttl": 0,
+                 "push": {"interruption-level": "time-sensitive"}}, d
+    assert NP.clear() == {"message": "clear_notification", "data": {"tag": "wb_ca_grace"}}
+
+
+def _notify_ca():
+    import asyncio
+    sent = []
+
+    class _Services:
+        async def async_call(self, domain, service, data, blocking=False, **k):
+            sent.append((f"{domain}.{service}", data))
+
+    ca, _ = T.build({T.C.CA_MODE: T.C.MODE_TARGET,
+                     T.C.CA_NOTIFY_SERVICE: "notify.mobile_app_a, notify.mobile_app_b"}, {})
+    ca.hass.services = _Services()
+    return ca, sent, asyncio
+
+
+@case
+def test_countdown_is_sent_urgent_and_tagged_and_charging_now_replaces_it():
+    """22 Nov: the countdown reached the phone ~7 min late and stayed after
+    being cancelled."""
+    if not _HA_OK:
+        return
+    ca, sent, asyncio = _notify_ca()
+    asyncio.run(ca._send_notification("grace", message_override="Charging will start in 5 min",
+                                      action_set="grace"))
+    assert [svc for svc, _ in sent] == ["notify.mobile_app_a", "notify.mobile_app_b"]
+    data = sent[0][1]["data"]
+    assert data["tag"] == "wb_ca_grace" and data["priority"] == "high" and data["ttl"] == 0
+    assert data["push"] == {"interruption-level": "time-sensitive"}
+    assert [a["title"] for a in data["actions"]] == ["Start now", "Not now"]
+    sent.clear()
+    asyncio.run(ca._send_notification("target", message_override="Charging now", action_set="grace_done"))
+    data = sent[0][1]["data"]
+    assert data["tag"] == "wb_ca_grace" and "actions" not in data       # replaces the countdown
+    sent.clear()
+    asyncio.run(ca._send_notification("target", message_override="Charged to 80 %"))
+    assert "data" not in sent[0][1]                                     # other notes unchanged
+
+
+@case
+def test_cancelled_countdown_is_cleared_but_start_now_is_not():
+    if not _HA_OK:
+        return
+    ca, sent, asyncio = _notify_ca()
+    asyncio.run(ca._clear_grace_notification())
+    assert sent == [("notify.mobile_app_a", {"message": "clear_notification", "data": {"tag": "wb_ca_grace"}}),
+                    ("notify.mobile_app_b", {"message": "clear_notification", "data": {"tag": "wb_ca_grace"}})], sent
+    cleared = []
+    ca._clear_grace_notification = lambda: cleared.append(1) or _noop()
+    for why in ("outside cheap window", "user tapped Not now", "assistant stopping", "car unplugged"):
+        ca._grace_pending = {"reason": "x", "target": 30}
+        ca._cancel_grace(why)
+    assert len(cleared) == 4, cleared
+    ca._grace_pending = {"reason": "x", "target": 30}
+    ca._cancel_grace("user tapped Start now")
+    assert len(cleared) == 4                      # becomes "Charging now" instead
+    ca._cancel_grace("nothing pending")           # no countdown: nothing to clear
+    assert len(cleared) == 4
+
+
+async def _noop():
+    return None
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
