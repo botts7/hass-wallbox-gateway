@@ -304,6 +304,18 @@ def test_floor_resets_when_its_start_never_happens():
     assert calls == [] and not ca._floor_charging, (calls, ca._floor_charging)
 
 
+@case
+def test_floor_waits_for_todays_solar_when_it_will_get_there():
+    """Below the floor by day: no grid charge when today's remaining solar
+    covers the gap with margin; a grid floor charge when it doesn't."""
+    for left, expect in ((10.0, []), (2.0, [True]), (None, [True])):
+        ca, calls = _floor_ca(47)
+        ca._opts[C.CA_BATTERY_KWH] = 82.56        # 3 % = 2.5 kWh, x1.25 = 3.1 kWh
+        ca._planner.solar_left_today_kwh = lambda now=None, v=left: v
+        ca._eval_target()
+        assert calls == expect, (left, calls)
+
+
 # ── skip the overnight grid charge at or above a level (night_skip) ──
 def _skip_opts(level, **extra):
     # No nights chosen = every night, so these don't depend on today's weekday.

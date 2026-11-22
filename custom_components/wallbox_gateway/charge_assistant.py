@@ -1585,6 +1585,22 @@ class ChargeAssistant:
             return None
         return floor_guard.floor_of(self._opts.get(CA_SOLAR_FLOOR_PCT, DEFAULT_SOLAR_FLOOR_PCT))
 
+    def _floor_solar_covers(self, soc: float, floor: float | None) -> bool:
+        """True when the rest of today's spare solar is forecast to lift the car
+        to the floor on its own (floor_guard.SOLAR_MARGIN to spare)."""
+        if floor is None or soc is None or soc >= floor or self._planner is None:
+            return False
+        try:
+            left = self._planner.solar_left_today_kwh()
+            batt = float(self._opts.get(CA_BATTERY_KWH) or 0)
+            eff = float(self._opts.get(CA_SOLAR_EFFICIENCY) or DEFAULT_SOLAR_EFFICIENCY) / 100.0
+        except Exception:  # noqa: BLE001
+            return False
+        if not left or batt <= 0:
+            return False
+        need = (floor - soc) / 100.0 * batt
+        return left * eff >= need * floor_guard.SOLAR_MARGIN
+
     def _mins_to_window(self) -> int | None:
         """0 inside the cheap window, minutes until it starts, None without one."""
         if not self._opts.get(CA_WINDOW_ENABLED):
@@ -1608,7 +1624,7 @@ class ChargeAssistant:
         action = floor_guard.decide(
             floor=floor, soc=soc, charging=charging, plugged=self._plugged_in(),
             floor_charging=self._floor_charging, mins_to_window=self._mins_to_window(),
-            start_pending=pending,
+            start_pending=pending, solar_covers=self._floor_solar_covers(soc, floor),
         )
         if action == floor_guard.START:
             if self._autostart_suppressed() or self._start_blocked():

@@ -4,6 +4,22 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- **The floor at any time waits for today's sun when it will get there.**
+  Plugged in below the floor by day, the car is left to the charger's own
+  solar when the rest of today's forecast will lift it above the floor (with
+  25 % to spare). Otherwise it charges to the floor from the grid straight
+  away; if the forecast drops while it waits, the grid top-up starts then.
+
+### Fixed
+- **A floor charge's 5-minute countdown is no longer cancelled by the cheap
+  window,** and "Start now" during it takes the assistant's own start, so it
+  stops at the floor and hands back to solar. Before, the countdown was
+  cancelled on the next check, "Start now" fell back to the plain charging
+  switch, and the charge ran past the floor on grid power.
+
 ## [0.38.0] - 2026-11-19
 
 ### Added

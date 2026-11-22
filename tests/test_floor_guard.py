@@ -51,6 +51,15 @@ def test_runs_to_the_floor_then_stops():
     assert d(floor_charging=True, charging=False, soc=45) == F.NONE   # starting up (grace)
 
 
+@case
+def test_waits_for_solar_that_will_get_there():
+    """22 Nov follow-up: below the floor by day, but today's sun will lift it."""
+    kw = dict(floor=50, soc=47, charging=False, plugged=True, floor_charging=False,
+              mins_to_window=600)
+    assert F.decide(**kw, solar_covers=True) == F.NONE
+    assert F.decide(**kw, solar_covers=False) == F.START
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
