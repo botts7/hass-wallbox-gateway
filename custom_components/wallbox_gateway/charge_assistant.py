@@ -1728,6 +1728,9 @@ class ChargeAssistant:
         # The session id is filled in once the charge is seen running
         # (_note_own_session): at the start command it may still be the last one.
         rec = own_charge.record(dt_util.utcnow().timestamp()) if on else None
+        if rec is not None and self._floor_charging and self._floor_charge_to is not None:
+            # A floor / critical charge: remember where it stops, across a restart.
+            rec["floor_to"] = self._floor_charge_to
         if rec == self._own_record:
             return
         self._own_record = rec
@@ -1783,6 +1786,11 @@ class ChargeAssistant:
         if verdict == own_charge.KEEP:
             self._we_started = True
             self._managed = True
+            floor_to = floor_guard.floor_of(saved.get("floor_to"))
+            if floor_to is not None:
+                # It was a floor / critical charge: keep it held and stopping there,
+                # or the window logic would stop it and the floor restart it.
+                self._floor_charging, self._floor_charge_to = True, floor_to
             _LOGGER.warning("Charge Assistant: a charge it started before HA restarted "
                             "is still running, taking it back")
         else:
