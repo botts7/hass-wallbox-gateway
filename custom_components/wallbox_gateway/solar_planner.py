@@ -90,6 +90,7 @@ class SolarPlanner:
         self._store = Store(hass, 1, f"wallbox_gateway_solar_{entry_id}")
         self._home: dict = {}
         self._loc: dict = {}            # car at home (location entity), same shape as _home
+        self._started_at: datetime | None = None   # half hours begun before this aren't recorded
         self._fc: dict = {}            # {"YYYY-MM-DD": {"forecast", "start", "actual"}}
         self._max_hour_kwh: float | None = None
         self._last_hour_reading: float | None = None
@@ -116,6 +117,7 @@ class SolarPlanner:
         if self.mode() == SOLAR_PLAN_OFF:
             return
         data = await self._store.async_load() or {}
+        self._started_at = dt_util.now()
         self._home = data.get("home") or {}
         self._loc = data.get("loc") or {}
         self._fc = data.get("fc") or {}
@@ -129,7 +131,11 @@ class SolarPlanner:
         elif HP.history_days(self._home) < 7:
             await self._seed_from_recorder()
         HP.prune(self._loc, dt_util.now().date())
-        if self._location_entity() and HP.history_days(self._loc) < 7:
+        if self._location_entity():
+            # Rebuilt from the recorder on every start: its history isn't touched
+            # by HA restarts, which reset an entity's last_changed and made the
+            # half hour of a restart look 'out' (22 Nov: 20:30 and 21:00 on a
+            # Sunday at home read as out, so a top-up didn't wait).
             await self._seed_location()
         self._unsubs.append(async_track_time_change(
             self.hass, self._on_half_hour, minute=[0, 30], second=20))
@@ -228,18 +234,21 @@ class SolarPlanner:
         local = dt_util.as_local(now)
         eid = getattr(self._ca, "_connected_entity", None)
         st = self.hass.states.get(eid) if eid else None
-        if st is not None and st.state in ("on", "off"):
+        slot = local.replace(second=0, microsecond=0) - timedelta(minutes=30)
+        # A half hour HA wasn't watching all of (it started or restarted during
+        # it) isn't recorded: a restart resets last_changed, which would read as
+        # 'arrived mid-slot' and mark it out.
+        watched = self._started_at is None or dt_util.as_local(self._started_at) <= slot
+        if watched and st is not None and st.state in ("on", "off"):
             # The half hour that just ended counts as home only if the car was
             # plugged in for all of it.
-            slot = local.replace(second=0, microsecond=0) - timedelta(minutes=30)
             home = st.state == "on" and dt_util.as_local(st.last_changed) <= slot
             HP.set_slot(self._home, slot, home)
         loc = self._location_entity()
         lst = self.hass.states.get(loc) if loc else None
         home = CU.is_home(loc.split(".", 1)[0], lst.state) if lst is not None else None
-        if home is not None:
+        if watched and home is not None:
             # Whole half hour at home, like the plug-in pattern.
-            slot = local.replace(second=0, microsecond=0) - timedelta(minutes=30)
             HP.set_slot(self._loc, slot, home and dt_util.as_local(lst.last_changed) <= slot)
         if local.minute == 0:
             self._learn_production(local)

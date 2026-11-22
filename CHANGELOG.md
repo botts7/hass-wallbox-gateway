@@ -37,6 +37,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   date-only helper has no time, so it's ignored (before, it read as midnight).
 
 ### Fixed
+- **The "Charging will start in 5 min" notification arrives straight away
+  and goes away if the charge is called off.** It's now sent as
+  time-sensitive (it reached a phone about 7 minutes late), and tagged: a
+  cancelled countdown is removed from the phone, and a started one is
+  replaced by "Charging now".
+- **"Wait for cheap hours" only looks at the half hours before the window.**
+  A check at 21:26:39 ran on to 00:00:39 and judged the half hour starting at
+  the window itself, so it charged instead of waiting. It now logs why it
+  charges now (which departure or half hour), and any failure as a warning.
+- **An HA restart no longer marks the car as out.** A restart resets the car
+  tracker's and the charger's "last changed", so the half hour of a restart
+  was learned as "out" (or unplugged). That half hour is now skipped, and the
+  car-location pattern is rebuilt from the recorder on every start.
+- **"Wait for cheap hours" works straight after a restart or settings
+  change.** The first check ran before the solar planner (which holds the
+  car's usual pattern) had started, so it saw no pattern, treated the car as
+  needed and started a top-up that should have waited. The planner and a
+  departure calendar now load before the first check.
 - **A floor or critical charge keeps its stop level across an HA restart,**
   instead of being stopped by the window and restarted by the floor rule.
 - **A floor charge's 5-minute countdown is no longer cancelled by the cheap

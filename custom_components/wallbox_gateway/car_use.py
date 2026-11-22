@@ -129,20 +129,28 @@ def departure_from_state(domain: str, state, attrs: dict | None, now: datetime,
     return d if d.tzinfo else d.replace(tzinfo=tz)
 
 
-def needed_before(now: datetime, until: datetime, chance: Callable[[datetime], float | None],
-                  threshold: float, departures: list | None = None) -> bool:
-    """True when the car is likely to be needed (away) between ``now`` and
-    ``until``. ``chance(t)`` is the chance the car is home in the half hour
-    starting at ``t`` (None = not enough history)."""
+def needed_reason(now: datetime, until: datetime, chance: Callable[[datetime], float | None],
+                  threshold: float, departures: list | None = None) -> str | None:
+    """Why the car is likely to be needed (away) between ``now`` and ``until``,
+    or None when it isn't. ``chance(t)`` is the chance the car is home in the
+    half hour starting at ``t`` (None = not enough history)."""
     if until <= now:
-        return False
+        return None
     for d in departures or []:
         if d is not None and now < d <= until:
-            return True
+            return f"departure at {d.strftime('%H:%M')}"
     t = now.replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0)
     while t < until:
         p = chance(t)
-        if p is None or p < threshold:
-            return True
+        if p is None:
+            return f"not enough history for {t.strftime('%a %H:%M')}"
+        if p < threshold:
+            return f"usually out at {t.strftime('%a %H:%M')} (home {p:.0%})"
         t += _SLOT
-    return False
+    return None
+
+
+def needed_before(now: datetime, until: datetime, chance: Callable[[datetime], float | None],
+                  threshold: float, departures: list | None = None) -> bool:
+    """True when the car is likely to be needed before ``until`` (needed_reason)."""
+    return needed_reason(now, until, chance, threshold, departures) is not None

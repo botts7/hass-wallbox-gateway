@@ -176,6 +176,7 @@ from .const import (
 from . import balance_schedule
 from . import car_use
 from . import charge_rate
+from . import notify_payload
 from . import ca_config
 from . import charge_window
 from .legacy_schedule import is_original_pulsar
@@ -390,7 +391,7 @@ class ChargeAssistant:
         # A grid charge to the floor outside the cheap window (floor_guard.py).
         self._floor_charging = False
         self._floor_charge_to: float | None = None   # where a running floor charge stops
-        self._topup_wait_noted = False   # logged 'waits for the cheap window' once
+        self._topup_wait_noted: str | None | bool = False   # last logged wait decision
         self._cal_events: list | None = None   # departure calendar's upcoming events (get_events)
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
@@ -560,6 +561,23 @@ class ChargeAssistant:
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
         self._connected_entity = self._own_entity("car_connected", "binary_sensor")
+        # Plan around tomorrow's solar: only meaningful when charging to a target.
+        # Started BEFORE the strategy: the strategy evaluates straight away, and
+        # the floor / critical rules and 'wait for cheap hours' need the planner's
+        # patterns then (22 Nov: a reload started a top-up that should have waited).
+        if strategy in (MODE_TARGET, MODE_SMART_SOLAR):
+            self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
+                                         lambda: self._opts)
+            await self._planner.async_start()
+
+        # A calendar as the departure source: read its upcoming events now (before
+        # the first evaluation) and every 10 minutes (the entity's own attributes
+        # only show one event).
+        if str(self._opts.get(CA_DEPARTURE_ENTITY) or "").startswith("calendar."):
+            await self._refresh_calendar()
+            self._unsubs.append(async_track_time_interval(
+                self.hass, self._on_calendar_tick, _CALENDAR_REFRESH))
+
         # Acting strategy.
         if strategy == MODE_TARGET:
             await self._start_target()
@@ -570,18 +588,6 @@ class ChargeAssistant:
         # Plug-in reminder layer — independent, runs on top of ANY strategy.
         if self._rem.get(CA_TRIGGERS):
             await self._start_reminder()
-        # Plan around tomorrow's solar: only meaningful when charging to a target.
-        if strategy in (MODE_TARGET, MODE_SMART_SOLAR):
-            self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
-                                         lambda: self._opts)
-            await self._planner.async_start()
-
-        # A calendar as the departure source: read its upcoming events now and
-        # every 10 minutes (the entity's own attributes only show one event).
-        if str(self._opts.get(CA_DEPARTURE_ENTITY) or "").startswith("calendar."):
-            self.hass.async_create_task(self._refresh_calendar())
-            self._unsubs.append(async_track_time_interval(
-                self.hass, self._on_calendar_tick, _CALENDAR_REFRESH))
 
         # Native-schedule arbiter: while we actively control charging, the
         # charger's own schedules are disabled (and restored when we hand back).
@@ -1659,7 +1665,10 @@ class ChargeAssistant:
         if mins is None or mins <= 0:
             return False
         now = dt_util.now()
-        until = now + timedelta(minutes=mins)
+        # The window starts on the minute: drop the seconds, or a check at
+        # 21:26:39 ran to 00:00:39 and judged the half hour starting at the
+        # window (Mon 00:00, no weekday history yet) as 'needed' (22 Nov).
+        until = (now + timedelta(minutes=mins)).replace(second=0, microsecond=0)
         planner = self._planner
         chance = getattr(planner, "usage_chance", None) or (lambda t: None)
         try:
@@ -1669,13 +1678,20 @@ class ChargeAssistant:
         dep = self._next_departure()
         departures = [dt_util.as_local(dep) if dep else None, self._departure_entity_time()]
         try:
-            needed = car_use.needed_before(now, until, chance, thr, departures)
-        except Exception:  # noqa: BLE001 — never block a top-up on a bad input
-            needed = True
-        if not needed and not self._topup_wait_noted:
-            _LOGGER.info("Charge Assistant: top-up waits for the cheap window (car not needed before it)")
-        self._topup_wait_noted = not needed
-        return not needed
+            reason = car_use.needed_reason(now, until, chance, thr, departures)
+        except Exception as err:  # noqa: BLE001 — never block a top-up on a bad input
+            reason = f"check failed ({type(err).__name__}: {err})"
+            _LOGGER.warning("Charge Assistant: 'wait for cheap hours' check failed, "
+                            "charging now: %s", err, exc_info=True)
+        if reason != self._topup_wait_noted:
+            if reason is None:
+                _LOGGER.info("Charge Assistant: top-up waits for the cheap window "
+                             "(car not needed before it)")
+            else:
+                _LOGGER.info("Charge Assistant: top-up charges now, car likely needed "
+                             "before the cheap window: %s", reason)
+        self._topup_wait_noted = reason
+        return reason is None
 
     def _floor_solar_covers(self, soc: float, floor: float | None) -> bool:
         """True when the rest of today's spare solar is forecast to lift the car
@@ -2831,6 +2847,17 @@ class ChargeAssistant:
             action_set="grace",
         ))
 
+    async def _clear_grace_notification(self) -> None:
+        """Remove a cancelled countdown notification from the phone(s)."""
+        raw = self._opts.get(CA_NOTIFY_SERVICE) or ""
+        for svc in [s.strip() for s in str(raw).split(",") if s.strip() and "." in s]:
+            domain, name = svc.split(".", 1)
+            try:
+                await self.hass.services.async_call(domain, name, notify_payload.clear(),
+                                                    blocking=True)
+            except Exception as err:  # noqa: BLE001 — never break the loop on this
+                _LOGGER.debug("Charge Assistant: clearing the countdown note failed: %s", err)
+
     @callback
     def _grace_fire(self, _now=None) -> None:
         """Grace elapsed — start unless the situation changed under us."""
@@ -2860,6 +2887,11 @@ class ChargeAssistant:
             self._grace_unsub = None
         if self._grace_pending is not None and why:
             _LOGGER.info("Charge Assistant: auto-start cancelled — %s", why)
+            if why != "user tapped Start now":   # that one becomes "Charging now"
+                try:
+                    self.hass.async_create_task(self._clear_grace_notification())
+                except Exception:  # noqa: BLE001 — no event loop (tests)
+                    pass
         self._grace_pending = None
 
     def _do_start(self, reason: str, soc: float, target: float) -> None:
@@ -2878,7 +2910,7 @@ class ChargeAssistant:
             if (soc and target) else f"Charging now — {reason}."
         )
         self.hass.async_create_task(
-            self._send_notification("target", message_override=msg)
+            self._send_notification("target", message_override=msg, action_set="grace_done")
         )
 
     # ------------------------------------------------------------------
@@ -3901,6 +3933,10 @@ class ChargeAssistant:
                         {"action": CA_START_ACTION, "title": "Start now"},
                         {"action": CA_SNOOZE_ACTION, "title": "Not now"},
                     ]
+                if action_set in ("grace", "grace_done"):
+                    # Urgent and tagged: shown at once, and later replaced by
+                    # "Charging now" or cleared if the countdown is cancelled.
+                    data = notify_payload.time_sensitive(data)
             else:
                 # Plug-aware default base line so the whole message never
                 # contradicts itself (a custom message is left untouched).

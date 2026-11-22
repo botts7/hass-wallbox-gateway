@@ -225,6 +225,173 @@ def test_wait_needs_a_window_to_wait_for():
     assert calls == [True], calls
 
 
+@case
+def test_planner_and_calendar_are_ready_before_the_first_evaluation():
+    """22 Nov, live: a config reload evaluated before the planner existed, so
+    'wait for cheap hours' saw no pattern, took it as 'needed' and started a
+    top-up that should have waited. Run the real async_start and check the
+    planner and the calendar events are there when the strategy starts."""
+    if not _HA_OK:
+        return
+    import asyncio
+    import wallbox_gateway.charge_assistant as CA
+    C = T.C
+    order = []
+
+    class _Planner:
+        def __init__(self, *a, **k):
+            pass
+        async def async_start(self):
+            order.append("planner")
+        def mode(self):
+            return "on"
+
+    class _Store:
+        def __init__(self, *a, **k):
+            pass
+        async def async_load(self):
+            return {}
+        async def async_save(self, data):
+            pass
+
+    class _Services:
+        async def async_call(self, *a, **k):
+            order.append("calendar")
+            return {"calendar.family": {"events": []}}
+
+    ca, _ = T.build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                     C.CA_TARGET_PCT: 80, C.CA_DEPARTURE_ENTITY: "calendar.family"},
+                    {"sensor.soc": T.FakeState("66")})
+    ca.entry.options = {C.CA_KEY: dict(ca._opts)}
+    ca.entry.title = "Wallbox test"
+    ca._own_entity = lambda *a, **k: None          # entity registry: not under test
+    ca.entry.entry_id = "e1"
+    ca.hass.services = _Services()
+    async def _start_target():
+        order.append("strategy" if ca._planner is not None else "strategy-without-planner")
+    ca._start_target = _start_target
+    patches = {"SolarPlanner": _Planner, "Store": _Store,
+               "async_track_time_interval": lambda *a, **k: (lambda: None)}
+    saved = {k: getattr(CA, k) for k in patches}
+    for k, v in patches.items():
+        setattr(CA, k, v)
+    try:
+        try:
+            asyncio.run(ca.async_start())
+        except Exception as err:   # later startup steps need more of HA
+            order.append(f"stopped: {type(err).__name__}: {err}")
+    finally:
+        for k, v in saved.items():
+            setattr(CA, k, v)
+    assert order[:3] == ["planner", "calendar", "strategy"], order
+
+
+# ── countdown notification: urgent, tagged, cleared when cancelled ──
+@case
+def test_countdown_notification_payloads():
+    import notify_payload as NP
+    d = NP.time_sensitive({"actions": [1]})
+    assert d == {"actions": [1], "tag": "wb_ca_grace", "priority": "high", "ttl": 0,
+                 "push": {"interruption-level": "time-sensitive"}}, d
+    assert NP.clear() == {"message": "clear_notification", "data": {"tag": "wb_ca_grace"}}
+
+
+def _notify_ca():
+    import asyncio
+    sent = []
+
+    class _Services:
+        async def async_call(self, domain, service, data, blocking=False, **k):
+            sent.append((f"{domain}.{service}", data))
+
+    ca, _ = T.build({T.C.CA_MODE: T.C.MODE_TARGET,
+                     T.C.CA_NOTIFY_SERVICE: "notify.mobile_app_a, notify.mobile_app_b"}, {})
+    ca.hass.services = _Services()
+    return ca, sent, asyncio
+
+
+@case
+def test_countdown_is_sent_urgent_and_tagged_and_charging_now_replaces_it():
+    """22 Nov: the countdown reached the phone ~7 min late and stayed after
+    being cancelled."""
+    if not _HA_OK:
+        return
+    ca, sent, asyncio = _notify_ca()
+    asyncio.run(ca._send_notification("grace", message_override="Charging will start in 5 min",
+                                      action_set="grace"))
+    assert [svc for svc, _ in sent] == ["notify.mobile_app_a", "notify.mobile_app_b"]
+    data = sent[0][1]["data"]
+    assert data["tag"] == "wb_ca_grace" and data["priority"] == "high" and data["ttl"] == 0
+    assert data["push"] == {"interruption-level": "time-sensitive"}
+    assert [a["title"] for a in data["actions"]] == ["Start now", "Not now"]
+    sent.clear()
+    asyncio.run(ca._send_notification("target", message_override="Charging now", action_set="grace_done"))
+    data = sent[0][1]["data"]
+    assert data["tag"] == "wb_ca_grace" and "actions" not in data       # replaces the countdown
+    sent.clear()
+    asyncio.run(ca._send_notification("target", message_override="Charged to 80 %"))
+    assert "data" not in sent[0][1]                                     # other notes unchanged
+
+
+@case
+def test_cancelled_countdown_is_cleared_but_start_now_is_not():
+    if not _HA_OK:
+        return
+    ca, sent, asyncio = _notify_ca()
+    asyncio.run(ca._clear_grace_notification())
+    assert sent == [("notify.mobile_app_a", {"message": "clear_notification", "data": {"tag": "wb_ca_grace"}}),
+                    ("notify.mobile_app_b", {"message": "clear_notification", "data": {"tag": "wb_ca_grace"}})], sent
+    cleared = []
+    ca._clear_grace_notification = lambda: cleared.append(1) or _noop()
+    for why in ("outside cheap window", "user tapped Not now", "assistant stopping", "car unplugged"):
+        ca._grace_pending = {"reason": "x", "target": 30}
+        ca._cancel_grace(why)
+    assert len(cleared) == 4, cleared
+    ca._grace_pending = {"reason": "x", "target": 30}
+    ca._cancel_grace("user tapped Start now")
+    assert len(cleared) == 4                      # becomes "Charging now" instead
+    ca._cancel_grace("nothing pending")           # no countdown: nothing to clear
+    assert len(cleared) == 4
+
+
+async def _noop():
+    return None
+
+
+@case
+def test_only_half_hours_before_the_window_count():
+    """22 Nov, live: at 21:26:39 the check ran to 00:00:39 and looked at the
+    half hour starting AT the window (Mon 00:00, no weekday history yet), so it
+    charged instead of waiting. Only half hours before the window count."""
+    now = datetime(2026, 11, 22, 21, 26, 39, tzinfo=SYD)
+    until = datetime(2026, 11, 23, 0, 0, tzinfo=SYD)
+    sunday_known = lambda t: 1.0 if t < until else None    # Monday: no history yet
+    assert CU.needed_reason(now, until, sunday_known, 0.7) is None
+    assert CU.needed_reason(now, until + timedelta(seconds=39), sunday_known, 0.7) is not None
+
+
+@case
+def test_assistant_window_end_is_on_the_minute():
+    if not _HA_OK:
+        return
+    import wallbox_gateway.charge_assistant as CA
+    real_now = T.dt_util.now
+    fixed = datetime(2026, 11, 22, 21, 26, 39, tzinfo=SYD)
+    CA.dt_util.now = lambda tz=None: fixed
+    try:
+        ca, calls = T._floor_ca(66, mins_to_window=154)
+        ca._opts.update({T.C.CA_CRITICAL_PCT: 70, T.C.CA_SOLAR_FLOOR_PCT: 75,
+                         T.C.CA_TOPUP_WAIT_CHEAP: True})
+        until = datetime(2026, 11, 23, 0, 0, tzinfo=SYD)
+        ca._planner.usage_chance = lambda t: 1.0 if t < until else None
+        ca._eval_target_windowed = lambda *a, **k: None
+        ca._eval_target()
+        assert calls == [], calls
+        assert ca._topup_wait_noted is None, ca._topup_wait_noted
+    finally:
+        CA.dt_util.now = real_now
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")
