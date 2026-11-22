@@ -257,6 +257,53 @@ def test_floor_charge_is_not_stopped_by_the_window_and_stops_at_the_floor():
     assert calls == ["finish"] and not ca._floor_charging, calls
 
 
+@case
+def test_floor_start_survives_the_window_and_start_now_stops_at_the_floor():
+    """22 Nov: plugged in at 47 % at 13:44 with a 5 min grace. The next tick's
+    window logic cancelled the countdown ('outside cheap window'), so 'Start
+    now' fell back to the plain switch, the charge wasn't ours and ran past the
+    50 % floor on grid power to 66 %."""
+    sched = {}
+    orig = ca_mod.async_call_later
+    ca_mod.async_call_later = lambda hass, delay, cb: (
+        sched.update(delay=delay, cb=cb) or (lambda: sched.update(cancelled=True)))
+    try:
+        ca, calls = _floor_ca(47)
+        ca._opts[C.CA_AUTOSTART_GRACE_MIN] = 5
+        # Like the real _set_charging: a start marks the charge as ours.
+        ca._set_charging = lambda on: (calls.append(on), setattr(ca, "_we_started", bool(on)))
+        ca._eval_target()                         # plug-in: countdown starts
+        assert ca._floor_charging and ca._grace_pending is not None and calls == []
+        ca._eval_target()                         # next tick: must not cancel it
+        assert ca._grace_pending is not None and not sched.get("cancelled"), sched
+        ca._on_action(type("E", (), {"data": {"action": C.CA_START_ACTION}})())
+        assert calls == [True] and ca._we_started   # a tracked start, not the switch
+        # At the floor: stop and hand back to solar.
+        ca._is_charging = lambda: True
+        ca.hass.states._m["sensor.soc"] = FakeState("50")
+        ca._finish_charge = lambda *a, **k: calls.append("finish")
+        ca._eval_target()
+        assert calls == [True, "finish"] and not ca._floor_charging, calls
+    finally:
+        ca_mod.async_call_later = orig
+
+
+@case
+def test_floor_resets_when_its_start_never_happens():
+    """'Not now' (or a failed start): the floor flag clears so it doesn't stick."""
+    ca, calls = _floor_ca(47)
+    ca._floor_charging = True                     # flagged, but nothing pending or running
+    ca._eval_target()
+    assert calls == [] and not ca._floor_charging   # stale flag cleared
+    ca._eval_target()
+    assert calls == [True] and ca._floor_charging   # next tick decides afresh: starts
+    ca, calls = _floor_ca(47)
+    ca._floor_charging = True
+    ca._autostart_suppress_until = ca_mod.dt_util.utcnow() + ca_mod.timedelta(minutes=30)
+    ca._eval_target()
+    assert calls == [] and not ca._floor_charging, (calls, ca._floor_charging)
+
+
 # ── skip the overnight grid charge at or above a level (night_skip) ──
 def _skip_opts(level, **extra):
     # No nights chosen = every night, so these don't depend on today's weekday.

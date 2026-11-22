@@ -1601,14 +1601,18 @@ class ChargeAssistant:
     def _eval_floor(self, soc: float, charging: bool) -> bool:
         """Charge to the floor straight away when the car is plugged in below it
         outside the cheap window (floor_guard.py). Returns True when the rest of
-        this tick must be skipped (our floor charge is running, or just
-        started/stopped), so the window logic doesn't stop it."""
+        this tick must be skipped (our floor charge is running or counting down,
+        or just started/stopped), so the window logic doesn't stop or cancel it."""
         floor = self._floor_now()
+        pending = self._grace_pending is not None
         action = floor_guard.decide(
             floor=floor, soc=soc, charging=charging, plugged=self._plugged_in(),
             floor_charging=self._floor_charging, mins_to_window=self._mins_to_window(),
+            start_pending=pending,
         )
         if action == floor_guard.START:
+            if self._autostart_suppressed() or self._start_blocked():
+                return False   # 'Not now', or a start guard: leave it to the normal path
             _LOGGER.info("Charge Assistant: SOC %.0f%% below the %.0f%% floor, charging to the floor", soc, floor)
             self._floor_charging = True
             self._begin_charge(f"below the {floor:.0f}% floor", soc, floor)
@@ -1617,10 +1621,17 @@ class ChargeAssistant:
             return True
         if action == floor_guard.STOP:
             self._floor_charging = False
+            if pending:
+                self._cancel_grace("floor no longer needed")
             if charging and self._we_started:
                 _LOGGER.info("Charge Assistant: floor charge done at %.0f%%, handing back", soc)
                 self._finish_charge(soc, floor if floor is not None else soc)
                 return True
+            return False
+        if self._floor_charging and not charging and not pending:
+            # Our floor start never happened (snoozed, or the start failed):
+            # forget it so the next tick decides afresh.
+            self._floor_charging = False
         return False
 
     def _handback_solar(self) -> bool:

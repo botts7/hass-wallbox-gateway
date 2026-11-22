@@ -30,16 +30,18 @@ def floor_of(value: Any) -> float | None:
 
 
 def decide(*, floor: Any, soc: float | None, charging: bool, plugged: bool | None,
-           floor_charging: bool, mins_to_window: int | None) -> str:
+           floor_charging: bool, mins_to_window: int | None,
+           start_pending: bool = False) -> str:
     """mins_to_window: 0 inside the cheap window, minutes until it starts,
-    or None when there is no window."""
+    or None when there is no window. start_pending: our floor start is in its
+    grace countdown, so it must be held too (the window logic would cancel it)."""
     level = floor_of(floor)
     if floor_charging:
         if level is None or plugged is False or soc is None:
             return STOP
         if soc >= level:
             return STOP
-        return HOLD if charging else NONE
+        return HOLD if (charging or start_pending) else NONE
     if level is None or soc is None or charging or plugged is not True:
         return NONE
     if soc >= level:
