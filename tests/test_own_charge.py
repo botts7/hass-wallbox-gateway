@@ -110,6 +110,31 @@ def test_assistant_reclaims_and_window_end_stops_it():
 
 
 @case
+def test_floor_charge_keeps_its_stop_level_across_a_restart():
+    """A floor / critical charge outside the window: after a restart it must
+    stay held (not stopped by the window) and still stop at its level."""
+    if not _HA_OK:
+        return
+    from homeassistant.util import dt as dt_util
+    # The record a floor charge saves when it starts.
+    import wallbox_gateway.charge_assistant as CA
+    C = T.C
+    ca0, _ = T.build({C.CA_MODE: C.MODE_TARGET}, {})
+    ca0._floor_charging, ca0._floor_charge_to = True, 30.0
+    ca0._set_own_record(True)
+    assert ca0._own_record.get("floor_to") == 30.0
+    # After the restart.
+    saved = {**O.record(dt_util.utcnow().timestamp() - 300), "floor_to": 30.0}
+    ca, _ = _restarted_assistant(saved)
+    ca._maybe_reclaim_after_restart()
+    assert ca._we_started and ca._floor_charging and ca._floor_charge_to == 30.0
+    # An ordinary charge's record restores no floor state.
+    ca, _ = _restarted_assistant(O.record(dt_util.utcnow().timestamp() - 300))
+    ca._maybe_reclaim_after_restart()
+    assert ca._we_started and not ca._floor_charging and ca._floor_charge_to is None
+
+
+@case
 def test_assistant_waits_for_data_then_decides():
     if not _HA_OK:
         return

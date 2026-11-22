@@ -336,6 +336,59 @@ def test_critical_level_charges_then_hands_the_rest_to_the_sun():
     assert calls == [True, ("finish", 20)], calls
 
 
+def _wait_ca(chance, wait=True, soc=28, departure_entity_state=None):
+    ca, calls = _floor_ca(soc)
+    ca._opts[C.CA_CRITICAL_PCT] = 30
+    ca._opts[C.CA_BATTERY_KWH] = 82.56
+    ca._opts[C.CA_TOPUP_WAIT_CHEAP] = wait
+    ca._planner.solar_left_today_kwh = lambda now=None: 0.0    # no sun left today
+    ca._planner.usage_chance = chance
+    if departure_entity_state is not None:
+        ca._opts[C.CA_DEPARTURE_ENTITY] = "sensor.next_departure"
+        ca.hass.states._m["sensor.next_departure"] = FakeState(departure_entity_state)
+    return ca, calls
+
+
+@case
+def test_topup_waits_for_the_cheap_window_when_the_car_stays_home():
+    """'Wait for cheap hours': 28 % (below the 30 % critical level) outside the
+    window, car usually home until then -> wait; usually out -> charge now."""
+    ca, calls = _wait_ca(lambda t: 0.95)
+    ca._eval_target()
+    assert calls == [] and not ca._floor_charging, calls
+    ca, calls = _wait_ca(lambda t: 0.2)                         # usually out
+    ca._eval_target()
+    assert calls == [True] and ca._floor_charge_to == 30, calls
+    ca, calls = _wait_ca(lambda t: None)                        # no pattern yet
+    ca._eval_target()
+    assert calls == [True], calls
+    ca, calls = _wait_ca(lambda t: 0.95, wait=False)            # option off
+    ca._eval_target()
+    assert calls == [True], calls
+    # The floor (40 %, above critical) waits too, and starts when needed.
+    ca, calls = _wait_ca(lambda t: 0.95, soc=40)
+    ca._eval_target()
+    assert calls == [], calls
+    ca, calls = _wait_ca(lambda t: 0.2, soc=40)
+    ca._eval_target()
+    assert calls == [True] and ca._floor_charge_to == 50, calls
+
+
+@case
+def test_topup_charges_now_for_a_departure_before_the_window():
+    soon = (dt_util.now() + timedelta(hours=2)).isoformat()
+    ca, calls = _wait_ca(lambda t: 0.95, departure_entity_state=soon)
+    ca._eval_target()
+    assert calls == [True], calls
+    later = (dt_util.now() + timedelta(hours=30)).isoformat()   # after the window
+    ca, calls = _wait_ca(lambda t: 0.95, departure_entity_state=later)
+    ca._eval_target()
+    assert calls == [], calls
+    ca, calls = _wait_ca(lambda t: 0.95, departure_entity_state="unknown")
+    ca._eval_target()
+    assert calls == [], calls
+
+
 # ── skip the overnight grid charge at or above a level (night_skip) ──
 def _skip_opts(level, **extra):
     # No nights chosen = every night, so these don't depend on today's weekday.
