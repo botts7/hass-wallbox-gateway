@@ -500,6 +500,55 @@ def test_solar_left_today_from_now():
     assert abs(SO.left_today(spare, now, 7.0) - 10.0) < 1e-9
 
 
+@case
+def test_location_pattern_recorded_and_used_for_car_use():
+    """The car location entity (e.g. a BYD device_tracker) teaches when the car
+    is out, also while home but unplugged; without one, plug-in history is used."""
+    if not _HA_OK:
+        return
+    from homeassistant.util import dt as dt_util
+    import wallbox_gateway.solar_planner as SP
+
+    class _St:
+        def __init__(self, state, changed):
+            self.state, self.last_changed, self.attributes = state, changed, {}
+
+    class _Hass:
+        def __init__(self, m):
+            self.states = type("S", (), {"get": lambda _s, e: m.get(e)})()
+        def async_create_task(self, coro):
+            coro.close()
+
+    now = dt_util.now().replace(minute=30, second=20, microsecond=0)
+    long_ago = now - timedelta(hours=5)
+    states = {"device_tracker.car": _St("not_home", long_ago),
+              "binary_sensor.plugged": _St("off", long_ago)}
+    pl = SP.SolarPlanner.__new__(SP.SolarPlanner)
+    pl.hass, pl._home, pl._loc, pl._fc = _Hass(states), {}, {}, {}
+    pl._ca = type("CA", (), {"_connected_entity": "binary_sensor.plugged"})()
+    opts = {"car_location_entity": "device_tracker.car"}
+    pl._opts = lambda: opts
+    pl._learn_production = lambda local: None
+    pl._on_half_hour(now)
+    slot = dt_util.as_local(now).replace(second=0) - timedelta(minutes=30)
+    assert pl._loc[slot.date().isoformat()][HP.slot_of(slot)] == 0      # out
+    states["device_tracker.car"] = _St("home", long_ago)
+    pl._on_half_hour(now + timedelta(minutes=30))
+    slot2 = slot + timedelta(minutes=30)
+    assert pl._loc[slot2.date().isoformat()][HP.slot_of(slot2)] == 1     # home
+    # usage_chance reads the location pattern when set, the plug-in one otherwise.
+    seen = []
+    orig = SP.HP.probability
+    SP.HP.probability = lambda days, t, today, n: seen.append(days) or 0.5
+    try:
+        pl.usage_chance(now)
+        opts.pop("car_location_entity")
+        pl.usage_chance(now)
+    finally:
+        SP.HP.probability = orig
+    assert seen[0] is pl._loc and seen[1] is pl._home
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

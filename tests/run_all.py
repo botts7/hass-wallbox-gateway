@@ -37,6 +37,7 @@ MODULES = [
     "test_start_watch",            # start watcher: never interrupt the handshake (28 Oct)
     "test_solar_plan",             # plan around tomorrow's solar (pure modules)
     "test_charge_rate",            # learned charger power (wall side)
+    "test_car_use",                # will the car be needed before the cheap window
     "test_home_schedule",          # manual home schedule for the solar planner
     "test_own_charge",             # our charge survives an HA restart (29 Oct)
     "test_pulsar_schedule",        # original Pulsar schedules, snoop replay (#68)

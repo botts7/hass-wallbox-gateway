@@ -74,6 +74,10 @@ from .const import (
     CA_BATTERY_KWH,
     CA_CHARGE_POWER_KW,
     CA_CRITICAL_PCT,
+    CA_DEPARTURE_ENTITY,
+    CA_SOLAR_HOME_THRESHOLD,
+    CA_TOPUP_WAIT_CHEAP,
+    DEFAULT_SOLAR_HOME_THRESHOLD,
     CA_SOLAR_EFFICIENCY,
     DEFAULT_SOLAR_EFFICIENCY,
     CA_CHEAPEST,
@@ -169,6 +173,7 @@ from .const import (
     CA_HOME_ENTITY,
 )
 from . import balance_schedule
+from . import car_use
 from . import charge_rate
 from . import ca_config
 from . import charge_window
@@ -383,6 +388,7 @@ class ChargeAssistant:
         # A grid charge to the floor outside the cheap window (floor_guard.py).
         self._floor_charging = False
         self._floor_charge_to: float | None = None   # where a running floor charge stops
+        self._topup_wait_noted = False   # logged 'waits for the cheap window' once
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
         # and still to be checked against the charger (29 Oct live test).
@@ -1587,6 +1593,53 @@ class ChargeAssistant:
             return None
         return floor_guard.floor_of(self._opts.get(CA_SOLAR_FLOOR_PCT, DEFAULT_SOLAR_FLOOR_PCT))
 
+    def _departure_entity_time(self) -> datetime | None:
+        """Next departure from the optional departure entity (a timestamp
+        sensor or an input_datetime), as aware local time, or None."""
+        eid = self._opts.get(CA_DEPARTURE_ENTITY)
+        st = self.hass.states.get(eid) if eid else None
+        if st is None or st.state in _UNAVAILABLE:
+            return None
+        ts = st.attributes.get("timestamp") if eid.startswith("input_datetime.") else None
+        try:
+            if isinstance(ts, (int, float)):
+                return dt_util.as_local(dt_util.utc_from_timestamp(ts))
+            d = dt_util.parse_datetime(str(st.state))
+        except (TypeError, ValueError):
+            return None
+        if d is None:
+            return None
+        return dt_util.as_local(d if d.tzinfo else d.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE))
+
+    def _topup_waits_for_window(self) -> bool:
+        """'Wait for cheap hours': a critical or floor top-up outside the cheap
+        window waits for it, unless the car is likely to be needed first
+        (car_use.py: a departure, or the car's usual pattern; no pattern yet
+        means needed)."""
+        if not self._opts.get(CA_TOPUP_WAIT_CHEAP) or not self._opts.get(CA_WINDOW_ENABLED):
+            return False
+        mins = self._mins_to_window()
+        if mins is None or mins <= 0:
+            return False
+        now = dt_util.now()
+        until = now + timedelta(minutes=mins)
+        planner = self._planner
+        chance = getattr(planner, "usage_chance", None) or (lambda t: None)
+        try:
+            thr = float(self._opts.get(CA_SOLAR_HOME_THRESHOLD) or DEFAULT_SOLAR_HOME_THRESHOLD) / 100.0
+        except (TypeError, ValueError):
+            thr = DEFAULT_SOLAR_HOME_THRESHOLD / 100.0
+        dep = self._next_departure()
+        departures = [dt_util.as_local(dep) if dep else None, self._departure_entity_time()]
+        try:
+            needed = car_use.needed_before(now, until, chance, thr, departures)
+        except Exception:  # noqa: BLE001 — never block a top-up on a bad input
+            needed = True
+        if not needed and not self._topup_wait_noted:
+            _LOGGER.info("Charge Assistant: top-up waits for the cheap window (car not needed before it)")
+        self._topup_wait_noted = not needed
+        return not needed
+
     def _floor_solar_covers(self, soc: float, floor: float | None) -> bool:
         """True when the rest of today's spare solar is forecast to lift the car
         to the floor on its own (floor_guard.SOLAR_MARGIN to spare)."""
@@ -1629,6 +1682,8 @@ class ChargeAssistant:
             start_pending=pending, solar_covers=self._floor_solar_covers(soc, floor),
             critical=self._opts.get(CA_CRITICAL_PCT), charge_to=self._floor_charge_to,
         )
+        if action in (floor_guard.CRITICAL, floor_guard.START) and self._topup_waits_for_window():
+            return False   # 'wait for cheap hours': the overnight charge covers it
         if action == floor_guard.CRITICAL:
             if self._autostart_suppressed() or self._start_blocked():
                 return False

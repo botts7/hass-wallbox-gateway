@@ -28,6 +28,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from . import car_use as CU
 from . import home_pattern as HP
 from . import home_schedule as HS
 from . import overnight_plan as OP
@@ -39,6 +40,7 @@ from .const import (
     CA_SOLAR_ENTITY,
     CA_SOLAR_FLOOR_PCT,
     CA_SOLAR_FORECAST_ENTRIES,
+    CA_CAR_LOCATION_ENTITY,
     CA_SOLAR_HOME_SCHEDULE,
     CA_SOLAR_INVERTER_KW,
     CA_SOLAR_HOME_THRESHOLD,
@@ -87,6 +89,7 @@ class SolarPlanner:
         self._opts = get_opts
         self._store = Store(hass, 1, f"wallbox_gateway_solar_{entry_id}")
         self._home: dict = {}
+        self._loc: dict = {}            # car at home (location entity), same shape as _home
         self._fc: dict = {}            # {"YYYY-MM-DD": {"forecast", "start", "actual"}}
         self._max_hour_kwh: float | None = None
         self._last_hour_reading: float | None = None
@@ -114,6 +117,7 @@ class SolarPlanner:
             return
         data = await self._store.async_load() or {}
         self._home = data.get("home") or {}
+        self._loc = data.get("loc") or {}
         self._fc = data.get("fc") or {}
         self._max_hour_kwh = data.get("max_hour_kwh")
         HP.prune(self._home, dt_util.now().date())
@@ -124,6 +128,9 @@ class SolarPlanner:
             await self._seed_from_recorder(overwrite=True)
         elif HP.history_days(self._home) < 7:
             await self._seed_from_recorder()
+        HP.prune(self._loc, dt_util.now().date())
+        if self._location_entity() and HP.history_days(self._loc) < 7:
+            await self._seed_location()
         self._unsubs.append(async_track_time_change(
             self.hass, self._on_half_hour, minute=[0, 30], second=20))
         self._unsubs.append(async_track_time_change(
@@ -147,7 +154,7 @@ class SolarPlanner:
 
     async def _save(self) -> None:
         try:
-            await self._store.async_save({"home": self._home, "fc": self._fc,
+            await self._store.async_save({"home": self._home, "loc": self._loc, "fc": self._fc,
                                           "max_hour_kwh": self._max_hour_kwh,
                                           "pattern_v": _PATTERN_V})
         except Exception as err:  # noqa: BLE001
@@ -180,6 +187,42 @@ class SolarPlanner:
         _LOGGER.info("Solar planner: seeded %d half hours of car-connected history", n)
         await self._save()
 
+    # ---- the car's location pattern (when it's normally away) ---------------
+    def _location_entity(self) -> str | None:
+        return self._opts().get(CA_CAR_LOCATION_ENTITY) or None
+
+    async def _seed_location(self) -> None:
+        """Fill the location pattern from the recorder's history of the car
+        location entity (a device_tracker, person or binary_sensor)."""
+        eid = self._location_entity()
+        try:
+            from homeassistant.components.recorder import get_instance, history
+        except ImportError:
+            return
+        end = dt_util.utcnow()
+        start = end - timedelta(days=_SEED_DAYS)
+        try:
+            states = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period, self.hass, start, end, eid)
+        except Exception as err:  # noqa: BLE001 — no recorder, no seed
+            _LOGGER.debug("Solar planner: location seed skipped: %s", err)
+            return
+        domain = eid.split(".", 1)[0]
+        changes = [(dt_util.as_local(st.last_changed), CU.is_home(domain, st.state))
+                   for st in (states or {}).get(eid, [])]
+        n = HP.seed_from_intervals(self._loc, changes, dt_util.as_local(start),
+                                   dt_util.as_local(end), overwrite=True)
+        _LOGGER.info("Solar planner: seeded %d half hours of car location history", n)
+        await self._save()
+
+    def usage_chance(self, t: datetime) -> float | None:
+        """Chance the car is home in the half hour starting at local ``t``, for
+        'will it be needed': from the car location entity when set, else the
+        charger's plug-in history. None while there isn't enough history."""
+        days = self._loc if self._location_entity() else self._home
+        min_days = int(self._o(CA_SOLAR_MIN_HISTORY_DAYS, DEFAULT_SOLAR_MIN_HISTORY_DAYS))
+        return HP.probability(days, t, dt_util.now().date(), min_days)
+
     @callback
     def _on_half_hour(self, now: datetime) -> None:
         local = dt_util.as_local(now)
@@ -191,9 +234,17 @@ class SolarPlanner:
             slot = local.replace(second=0, microsecond=0) - timedelta(minutes=30)
             home = st.state == "on" and dt_util.as_local(st.last_changed) <= slot
             HP.set_slot(self._home, slot, home)
+        loc = self._location_entity()
+        lst = self.hass.states.get(loc) if loc else None
+        home = CU.is_home(loc.split(".", 1)[0], lst.state) if lst is not None else None
+        if home is not None:
+            # Whole half hour at home, like the plug-in pattern.
+            slot = local.replace(second=0, microsecond=0) - timedelta(minutes=30)
+            HP.set_slot(self._loc, slot, home and dt_util.as_local(lst.last_changed) <= slot)
         if local.minute == 0:
             self._learn_production(local)
         HP.prune(self._home, local.date())
+        HP.prune(self._loc, local.date())
         self.hass.async_create_task(self._save())
 
     # ---- forecast correction ------------------------------------------------

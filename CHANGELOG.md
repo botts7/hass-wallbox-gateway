@@ -18,7 +18,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   window; above it the floor rules take over. Works with the solar planner off
   too.
 
+- **Wait for cheap hours (optional, off by default).** A critical or floor
+  top-up outside the cheap window waits for the window, unless the car is
+  likely to be needed first: a departure before the window (the daily
+  departure time, or an optional departure sensor), or the car being usually
+  out in a half hour before it. When it's usually out is learned from an
+  optional car location entity (any device_tracker, person, or a
+  binary_sensor that's on at home), else from the charger's plug-in history.
+  Not enough history yet means it charges now.
+
 ### Fixed
+- **A floor or critical charge keeps its stop level across an HA restart,**
+  instead of being stopped by the window and restarted by the floor rule.
 - **A floor charge's 5-minute countdown is no longer cancelled by the cheap
   window,** and "Start now" during it takes the assistant's own start, so it
   stops at the floor and hands back to solar. Before, the countdown was
