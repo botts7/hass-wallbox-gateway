@@ -316,6 +316,26 @@ def test_floor_waits_for_todays_solar_when_it_will_get_there():
         assert calls == expect, (left, calls)
 
 
+@case
+def test_critical_level_charges_then_hands_the_rest_to_the_sun():
+    ca, calls = _floor_ca(15)
+    ca._opts[C.CA_CRITICAL_PCT] = 20
+    ca._opts[C.CA_BATTERY_KWH] = 82.56
+    ca._planner.solar_left_today_kwh = lambda now=None: 40.0      # a sunny day
+    ca._eval_target()
+    assert calls == [True] and ca._floor_charge_to == 20, (calls, ca._floor_charge_to)
+    ca._we_started = True
+    ca._is_charging = lambda: True
+    ca.hass.states._m["sensor.soc"] = FakeState("20")
+    ca._finish_charge = lambda *a, **k: calls.append(("finish", a[1]))
+    ca._eval_target()
+    assert calls == [True, ("finish", 20)] and not ca._floor_charging, calls
+    # Now at 20 % with a sunny forecast: no grid floor charge, the sun does the rest.
+    ca._is_charging = lambda: False
+    ca._eval_target()
+    assert calls == [True, ("finish", 20)], calls
+
+
 # ── skip the overnight grid charge at or above a level (night_skip) ──
 def _skip_opts(level, **extra):
     # No nights chosen = every night, so these don't depend on today's weekday.

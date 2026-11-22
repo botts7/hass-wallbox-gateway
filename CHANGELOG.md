@@ -13,6 +13,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   25 % to spare). Otherwise it charges to the floor from the grid straight
   away; if the forecast drops while it waits, the grid top-up starts then.
 
+- **Critical level (optional, off by default).** Below it the car is charged
+  to it from the grid straight away, whatever the forecast or the cheap
+  window; above it the floor rules take over. Works with the solar planner off
+  too.
+
 ### Fixed
 - **A floor charge's 5-minute countdown is no longer cancelled by the cheap
   window,** and "Start now" during it takes the assistant's own start, so it

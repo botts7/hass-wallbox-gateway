@@ -165,6 +165,7 @@ CA_SOLAR_OUTLOOK_ENTITY = "solar_outlook_entity"   # sensor with an hourly list 
 CA_SOLAR_PRODUCTION_ENTITY = "solar_production_entity"  # energy sensor, kWh (learns the correction)
 CA_SOLAR_BASELINE_KW = "solar_baseline_kw"         # house daytime load taken off (forecast path)
 CA_SOLAR_FLOOR_PCT = "solar_floor_pct"             # always charged overnight
+CA_CRITICAL_PCT = "critical_floor_pct"             # optional: below it, grid-charge to it now
 CA_SOLAR_HOME_THRESHOLD = "solar_home_threshold_pct"  # count an hour from this home chance
 CA_SOLAR_EFFICIENCY = "solar_efficiency_pct"       # charging efficiency
 CA_SOLAR_MIN_HISTORY_DAYS = "solar_min_history_days"  # pattern history before trusting it

@@ -10,6 +10,10 @@ When today's remaining solar is forecast to lift the car above the floor on
 its own (with SOLAR_MARGIN to spare), it's left to the charger's solar; if the
 forecast later says it won't make it, the floor charge starts then.
 
+An optional critical level sits below the floor: under it the car is charged
+to it from the grid straight away, whatever the forecast or the window; from
+there the floor rules above take over.
+
 Pure, HA-free; charge_assistant.py does the I/O.
 """
 
@@ -22,6 +26,7 @@ SOLAR_MARGIN = 1.25   # today's remaining solar must cover the gap by this much
 
 NONE = "none"
 START = "start"   # start a grid charge to the floor
+CRITICAL = "critical"   # below the critical level: grid-charge to it now, whatever the sun
 HOLD = "hold"     # our floor charge is running: let it run (skip the window stop)
 STOP = "stop"     # reached the floor: stop and hand back
 
@@ -36,20 +41,32 @@ def floor_of(value: Any) -> float | None:
 
 def decide(*, floor: Any, soc: float | None, charging: bool, plugged: bool | None,
            floor_charging: bool, mins_to_window: int | None,
-           start_pending: bool = False, solar_covers: bool = False) -> str:
+           start_pending: bool = False, solar_covers: bool = False,
+           critical: Any = None, charge_to: Any = None) -> str:
     """mins_to_window: 0 inside the cheap window, minutes until it starts,
     or None when there is no window. start_pending: our floor start is in its
     grace countdown, so it must be held too (the window logic would cancel it).
     solar_covers: today's remaining solar is forecast to lift the car above the
-    floor on its own, so leave it to the charger's solar instead of the grid."""
+    floor on its own, so leave it to the charger's solar instead of the grid.
+    critical: an optional lower level; below it the car is charged to it from
+    the grid straight away (no solar wait, no window wait). charge_to: the level
+    the running floor charge stops at (the critical level or the floor)."""
     level = floor_of(floor)
+    crit = floor_of(critical)
+    if crit is not None and level is not None and crit >= level:
+        crit = None   # a critical level at or above the floor means nothing
     if floor_charging:
-        if level is None or plugged is False or soc is None:
+        stop_at = floor_of(charge_to) or level
+        if stop_at is None or plugged is False or soc is None:
             return STOP
-        if soc >= level:
+        if soc >= stop_at:
             return STOP
         return HOLD if (charging or start_pending) else NONE
-    if level is None or soc is None or charging or plugged is not True:
+    if soc is None or charging or plugged is not True:
+        return NONE
+    if crit is not None and soc < crit:
+        return CRITICAL
+    if level is None:
         return NONE
     if soc >= level:
         return NONE
