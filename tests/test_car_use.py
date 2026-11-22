@@ -64,6 +64,71 @@ def test_already_in_or_past_the_window():
     assert CU.needed_before(_t(0, 30, 23), _t(0, 0, 23), lambda t: 0.0, 0.7) is False
 
 
+# ── calendar departures (formats from HA's calendar.get_events) ─────
+NOW = _t(14, 0)
+
+
+@case
+def test_calendar_next_timed_event_is_the_departure():
+    evs = [{"start": "2026-11-22T18:00:00+11:00", "end": "2026-11-22T19:00:00+11:00",
+            "summary": "Dinner at Mum's"},
+           {"start": "2026-11-22T16:30:00+11:00", "summary": "Dentist"}]
+    assert CU.next_departure(evs, NOW) == _t(16, 30)     # earliest, not list order
+
+
+@case
+def test_calendar_skips_all_day_past_and_malformed():
+    evs = [{"start": "2026-11-22", "end": "2026-11-23", "summary": "Birthday"},  # all-day
+           {"start": "2026-11-22T09:00:00+11:00", "summary": "Gym"},            # past
+           {"start": "2026-11-22T14:00:00+11:00", "summary": "Now"},            # == now
+           {"start": "not a date", "summary": "Bad"},
+           {"summary": "No start"}, "junk", None,
+           {"start": "2026-11-23T07:30:00+11:00", "summary": "Work"}]
+    assert CU.next_departure(evs, NOW) == _t(7, 30, 23)
+    assert CU.next_departure([], NOW) is None and CU.next_departure(None, NOW) is None
+
+
+@case
+def test_calendar_keyword_matches_summary_description_location_any_case():
+    evs = [{"start": "2026-11-22T15:00:00+11:00", "summary": "Call with bank"},
+           {"start": "2026-11-22T17:00:00+11:00", "summary": "Flight", "location": "Airport T2"},
+           {"start": "2026-11-22T19:00:00+11:00", "summary": "x", "description": "DRIVE to Bob's"}]
+    assert CU.next_departure(evs, NOW, "airport") == _t(17, 0)
+    assert CU.next_departure(evs, NOW, "drive") == _t(19, 0)
+    assert CU.next_departure(evs, NOW, " Drive ") == _t(19, 0)
+    assert CU.next_departure(evs, NOW, "") == _t(15, 0)          # empty = any event
+    assert CU.next_departure(evs, NOW, "holiday") is None
+
+
+@case
+def test_calendar_naive_and_utc_times():
+    evs = [{"start": "2026-11-22T17:00:00", "summary": "naive local"}]
+    assert CU.next_departure(evs, NOW) == _t(17, 0)
+    evs = [{"start": "2026-11-22T06:00:00+00:00", "summary": "utc"}]    # = 17:00 local
+    assert CU.next_departure(evs, NOW) == _t(17, 0)
+
+
+@case
+def test_calendar_entity_attributes_fallback():
+    attrs = {"message": "Airport run", "all_day": False, "start_time": "2026-11-22 18:00:00",
+             "end_time": "2026-11-22 19:00:00", "location": "", "description": ""}
+    ev = CU.event_from_attributes(attrs, TZ)
+    assert CU.next_departure([ev], NOW, "airport") == _t(18, 0)
+    assert CU.event_from_attributes({**attrs, "all_day": True}, TZ) is None
+    assert CU.event_from_attributes({"message": "x"}, TZ) is None
+    assert CU.event_from_attributes({**attrs, "start_time": "garbage"}, TZ) is None
+    assert CU.event_from_attributes(None, TZ) is None
+
+
+@case
+def test_calendar_departure_feeds_needed_before():
+    home = lambda t: 0.95
+    dep = CU.next_departure([{"start": "2026-11-22T18:00:00+11:00", "summary": "drive"}], NOW)
+    assert CU.needed_before(NOW, _t(0, 0, 23), home, 0.7, [dep]) is True
+    dep = CU.next_departure([{"start": "2026-11-23T08:00:00+11:00", "summary": "drive"}], NOW)
+    assert CU.needed_before(NOW, _t(0, 0, 23), home, 0.7, [dep]) is False
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

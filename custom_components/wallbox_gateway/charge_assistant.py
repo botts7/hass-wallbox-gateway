@@ -75,6 +75,7 @@ from .const import (
     CA_CHARGE_POWER_KW,
     CA_CRITICAL_PCT,
     CA_DEPARTURE_ENTITY,
+    CA_DEPARTURE_KEYWORD,
     CA_SOLAR_HOME_THRESHOLD,
     CA_TOPUP_WAIT_CHEAP,
     DEFAULT_SOLAR_HOME_THRESHOLD,
@@ -258,6 +259,7 @@ _START_VERIFY_DELAY_S = 12   # first check (start_watch.CHECK_DELAYS_S drives th
 # the 6 A minimum (82 kWh pack); one this old means the car stopped reporting.
 _SOC_STALE_MIN = 60
 _TARGET_TICK = timedelta(seconds=60)
+_CALENDAR_REFRESH = timedelta(minutes=10)   # departure calendar re-read
 # After the stop that ends a failed start, before handing back: the session has
 # to leave "waiting for car" first (the charger rejects the hand-back there).
 _ABANDON_SETTLE_S = 5
@@ -389,6 +391,7 @@ class ChargeAssistant:
         self._floor_charging = False
         self._floor_charge_to: float | None = None   # where a running floor charge stops
         self._topup_wait_noted = False   # logged 'waits for the cheap window' once
+        self._cal_events: list | None = None   # departure calendar's upcoming events (get_events)
         # _we_started survives an HA restart through a saved record (own_charge):
         # _own_record is the live one, _restored_own the one loaded at startup
         # and still to be checked against the charger (29 Oct live test).
@@ -572,6 +575,13 @@ class ChargeAssistant:
             self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
                                          lambda: self._opts)
             await self._planner.async_start()
+
+        # A calendar as the departure source: read its upcoming events now and
+        # every 10 minutes (the entity's own attributes only show one event).
+        if str(self._opts.get(CA_DEPARTURE_ENTITY) or "").startswith("calendar."):
+            self.hass.async_create_task(self._refresh_calendar())
+            self._unsubs.append(async_track_time_interval(
+                self.hass, self._on_calendar_tick, _CALENDAR_REFRESH))
 
         # Native-schedule arbiter: while we actively control charging, the
         # charger's own schedules are disabled (and restored when we hand back).
@@ -1593,23 +1603,50 @@ class ChargeAssistant:
             return None
         return floor_guard.floor_of(self._opts.get(CA_SOLAR_FLOOR_PCT, DEFAULT_SOLAR_FLOOR_PCT))
 
-    def _departure_entity_time(self) -> datetime | None:
-        """Next departure from the optional departure entity (a timestamp
-        sensor or an input_datetime), as aware local time, or None."""
-        eid = self._opts.get(CA_DEPARTURE_ENTITY)
-        st = self.hass.states.get(eid) if eid else None
-        if st is None or st.state in _UNAVAILABLE:
-            return None
-        ts = st.attributes.get("timestamp") if eid.startswith("input_datetime.") else None
+    @callback
+    def _on_calendar_tick(self, _now) -> None:
+        self.hass.async_create_task(self._refresh_calendar())
+
+    async def _refresh_calendar(self) -> None:
+        """Cache the departure calendar's events for the next 36 h
+        (calendar.get_events). On failure the last list is kept; with none,
+        the calendar's own attributes are used."""
+        eid = str(self._opts.get(CA_DEPARTURE_ENTITY) or "")
+        if not eid.startswith("calendar."):
+            return
         try:
-            if isinstance(ts, (int, float)):
-                return dt_util.as_local(dt_util.utc_from_timestamp(ts))
-            d = dt_util.parse_datetime(str(st.state))
-        except (TypeError, ValueError):
+            resp = await self.hass.services.async_call(
+                "calendar", "get_events",
+                {"entity_id": eid, "duration": {"hours": 36}},
+                blocking=True, return_response=True)
+        except Exception as err:  # noqa: BLE001 — no calendar, keep what we had
+            _LOGGER.debug("Charge Assistant: departure calendar read failed: %s", err)
+            return
+        events = ((resp or {}).get(eid) or {}).get("events")
+        if isinstance(events, list):
+            self._cal_events = events
+
+    def _departure_entity_time(self) -> datetime | None:
+        """Next departure from the optional departure entity, as aware local
+        time, or None: a timestamp sensor, an input_datetime, or a calendar's
+        next timed event (containing the departure keyword, if one is set)."""
+        eid = self._opts.get(CA_DEPARTURE_ENTITY)
+        if str(eid or "").startswith("calendar."):
+            events = self._cal_events
+            if events is None:
+                st = self.hass.states.get(eid)
+                ev = car_use.event_from_attributes(
+                    dict(st.attributes) if st is not None else None, dt_util.DEFAULT_TIME_ZONE)
+                events = [ev] if ev else []
+            return car_use.next_departure(events, dt_util.now(),
+                                          self._opts.get(CA_DEPARTURE_KEYWORD),
+                                          tz=dt_util.DEFAULT_TIME_ZONE)
+        st = self.hass.states.get(eid) if eid else None
+        if st is None:
             return None
-        if d is None:
-            return None
-        return dt_util.as_local(d if d.tzinfo else d.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE))
+        d = car_use.departure_from_state(eid.split(".", 1)[0], st.state, dict(st.attributes),
+                                         dt_util.now(), dt_util.DEFAULT_TIME_ZONE)
+        return dt_util.as_local(d) if d is not None else None
 
     def _topup_waits_for_window(self) -> bool:
         """'Wait for cheap hours': a critical or floor top-up outside the cheap

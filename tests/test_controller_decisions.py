@@ -389,6 +389,87 @@ def test_topup_charges_now_for_a_departure_before_the_window():
     assert calls == [], calls
 
 
+def _iso_in(hours):
+    return (dt_util.now() + timedelta(hours=hours)).replace(microsecond=0).isoformat()
+
+
+@case
+def test_departure_calendar_events_and_keyword():
+    ca, _ = build({C.CA_DEPARTURE_ENTITY: "calendar.family"}, {})
+    ca._cal_events = [{"start": _iso_in(2), "summary": "Swimming"},
+                      {"start": _iso_in(5), "summary": "Airport run"},
+                      {"start": dt_util.now().date().isoformat(), "summary": "All day"}]
+    d = ca._departure_entity_time()
+    assert d is not None and abs((d - dt_util.now()).total_seconds() - 7200) < 5, d
+    ca._opts[C.CA_DEPARTURE_KEYWORD] = "airport"
+    d = ca._departure_entity_time()
+    assert d is not None and abs((d - dt_util.now()).total_seconds() - 18000) < 5, d
+    ca._opts[C.CA_DEPARTURE_KEYWORD] = "holiday"
+    assert ca._departure_entity_time() is None
+
+
+@case
+def test_departure_calendar_falls_back_to_entity_attributes():
+    start = (dt_util.now() + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+    st = FakeState("off")
+    st.attributes = {"message": "Drive to Bob", "all_day": False, "start_time": start,
+                     "end_time": start, "location": "", "description": ""}
+    ca, _ = build({C.CA_DEPARTURE_ENTITY: "calendar.family"}, {"calendar.family": st})
+    assert ca._cal_events is None
+    d = ca._departure_entity_time()
+    assert d is not None and abs((d - dt_util.now()).total_seconds() - 10800) < 61, d
+    st.attributes = {**st.attributes, "all_day": True}
+    assert ca._departure_entity_time() is None
+    ca, _ = build({C.CA_DEPARTURE_ENTITY: "calendar.gone"}, {})     # no entity at all
+    assert ca._departure_entity_time() is None
+
+
+@case
+def test_refresh_calendar_calls_get_events_and_keeps_last_on_failure():
+    import asyncio
+    seen = {}
+
+    class _Services:
+        fail = False
+        async def async_call(self, domain, service, data, blocking=False, return_response=False):
+            seen.update(domain=domain, service=service, data=data,
+                        blocking=blocking, return_response=return_response)
+            if self.fail:
+                raise RuntimeError("calendar down")
+            return {"calendar.family": {"events": [{"start": _iso_in(2), "summary": "x"}]}}
+
+    ca, _ = build({C.CA_DEPARTURE_ENTITY: "calendar.family"}, {})
+    ca.hass.services = _Services()
+    asyncio.run(ca._refresh_calendar())
+    assert seen == {"domain": "calendar", "service": "get_events",
+                    "data": {"entity_id": "calendar.family", "duration": {"hours": 36}},
+                    "blocking": True, "return_response": True}, seen
+    assert len(ca._cal_events) == 1
+    ca.hass.services.fail = True
+    asyncio.run(ca._refresh_calendar())
+    assert len(ca._cal_events) == 1                 # kept the last good list
+    ca._opts[C.CA_DEPARTURE_ENTITY] = "sensor.next_departure"   # not a calendar: no call
+    seen.clear()
+    asyncio.run(ca._refresh_calendar())
+    assert seen == {}
+
+
+@case
+def test_calendar_departure_before_the_window_makes_the_topup_charge_now():
+    ca, calls = _wait_ca(lambda t: 0.95)               # usually home: would wait
+    ca._opts[C.CA_DEPARTURE_ENTITY] = "calendar.family"
+    ca._opts[C.CA_DEPARTURE_KEYWORD] = "drive"
+    ca._cal_events = [{"start": _iso_in(3), "summary": "Drive to the coast"}]
+    ca._eval_target()
+    assert calls == [True], calls
+    ca, calls = _wait_ca(lambda t: 0.95)
+    ca._opts[C.CA_DEPARTURE_ENTITY] = "calendar.family"
+    ca._opts[C.CA_DEPARTURE_KEYWORD] = "drive"
+    ca._cal_events = [{"start": _iso_in(3), "summary": "Book club"}]   # no keyword match
+    ca._eval_target()
+    assert calls == [], calls
+
+
 # ── skip the overnight grid charge at or above a level (night_skip) ──
 def _skip_opts(level, **extra):
     # No nights chosen = every night, so these don't depend on today's weekday.

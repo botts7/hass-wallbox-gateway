@@ -26,6 +26,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   optional car location entity (any device_tracker, person, or a
   binary_sensor that's on at home), else from the charger's plug-in history.
   Not enough history yet means it charges now.
+- **A calendar as the departure source.** The departure entity can be a
+  calendar: its next timed event (all-day events don't count) is the next
+  departure, optionally only events containing a keyword (title, description
+  or location, any case). Events located at "home" don't count. Read with
+  calendar.get_events every 10 minutes; the calendar's own attributes are the
+  fallback. Times without a zone are read in HA's time zone.
+- **Departure helpers of every kind.** A date-and-time helper is that moment;
+  a time-only helper (e.g. 18:00) means the next time it comes round; a
+  date-only helper has no time, so it's ignored (before, it read as midnight).
 
 ### Fixed
 - **A floor or critical charge keeps its stop level across an HA restart,**
