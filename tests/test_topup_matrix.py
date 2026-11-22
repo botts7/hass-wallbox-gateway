@@ -225,6 +225,67 @@ def test_wait_needs_a_window_to_wait_for():
     assert calls == [True], calls
 
 
+@case
+def test_planner_and_calendar_are_ready_before_the_first_evaluation():
+    """22 Nov, live: a config reload evaluated before the planner existed, so
+    'wait for cheap hours' saw no pattern, took it as 'needed' and started a
+    top-up that should have waited. Run the real async_start and check the
+    planner and the calendar events are there when the strategy starts."""
+    if not _HA_OK:
+        return
+    import asyncio
+    import wallbox_gateway.charge_assistant as CA
+    C = T.C
+    order = []
+
+    class _Planner:
+        def __init__(self, *a, **k):
+            pass
+        async def async_start(self):
+            order.append("planner")
+        def mode(self):
+            return "on"
+
+    class _Store:
+        def __init__(self, *a, **k):
+            pass
+        async def async_load(self):
+            return {}
+        async def async_save(self, data):
+            pass
+
+    class _Services:
+        async def async_call(self, *a, **k):
+            order.append("calendar")
+            return {"calendar.family": {"events": []}}
+
+    ca, _ = T.build({C.CA_MODE: C.MODE_TARGET, C.CA_SOC_ENTITY: "sensor.soc",
+                     C.CA_TARGET_PCT: 80, C.CA_DEPARTURE_ENTITY: "calendar.family"},
+                    {"sensor.soc": T.FakeState("66")})
+    ca.entry.options = {C.CA_KEY: dict(ca._opts)}
+    ca.entry.title = "Wallbox test"
+    ca._own_entity = lambda *a, **k: None          # entity registry: not under test
+    ca.entry.entry_id = "e1"
+    ca.hass.services = _Services()
+    async def _start_target():
+        order.append("strategy" if ca._planner is not None else "strategy-without-planner")
+    ca._start_target = _start_target
+    patches = {"SolarPlanner": _Planner, "Store": _Store,
+               "async_track_time_interval": lambda *a, **k: (lambda: None)}
+    saved = {k: getattr(CA, k) for k in patches}
+    for k, v in patches.items():
+        setattr(CA, k, v)
+    try:
+        try:
+            asyncio.run(ca.async_start())
+        except Exception as err:   # later startup steps need more of HA
+            order.append(f"stopped: {type(err).__name__}: {err}")
+    finally:
+        for k, v in saved.items():
+            setattr(CA, k, v)
+    assert order[:3] == ["planner", "calendar", "strategy"], order
+
+
 def main():
     for fn in CASES:
         fn(); print(f"  ok  {fn.__name__}")

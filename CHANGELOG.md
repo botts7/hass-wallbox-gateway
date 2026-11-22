@@ -37,6 +37,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   date-only helper has no time, so it's ignored (before, it read as midnight).
 
 ### Fixed
+- **"Wait for cheap hours" works straight after a restart or settings
+  change.** The first check ran before the solar planner (which holds the
+  car's usual pattern) had started, so it saw no pattern, treated the car as
+  needed and started a top-up that should have waited. The planner and a
+  departure calendar now load before the first check.
 - **A floor or critical charge keeps its stop level across an HA restart,**
   instead of being stopped by the window and restarted by the floor rule.
 - **A floor charge's 5-minute countdown is no longer cancelled by the cheap

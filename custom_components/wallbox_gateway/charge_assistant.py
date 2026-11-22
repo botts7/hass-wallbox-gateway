@@ -560,6 +560,23 @@ class ChargeAssistant:
         )
         self._next_charge = self._own_entity("next_scheduled_charge", "sensor")
         self._connected_entity = self._own_entity("car_connected", "binary_sensor")
+        # Plan around tomorrow's solar: only meaningful when charging to a target.
+        # Started BEFORE the strategy: the strategy evaluates straight away, and
+        # the floor / critical rules and 'wait for cheap hours' need the planner's
+        # patterns then (22 Nov: a reload started a top-up that should have waited).
+        if strategy in (MODE_TARGET, MODE_SMART_SOLAR):
+            self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
+                                         lambda: self._opts)
+            await self._planner.async_start()
+
+        # A calendar as the departure source: read its upcoming events now (before
+        # the first evaluation) and every 10 minutes (the entity's own attributes
+        # only show one event).
+        if str(self._opts.get(CA_DEPARTURE_ENTITY) or "").startswith("calendar."):
+            await self._refresh_calendar()
+            self._unsubs.append(async_track_time_interval(
+                self.hass, self._on_calendar_tick, _CALENDAR_REFRESH))
+
         # Acting strategy.
         if strategy == MODE_TARGET:
             await self._start_target()
@@ -570,18 +587,6 @@ class ChargeAssistant:
         # Plug-in reminder layer — independent, runs on top of ANY strategy.
         if self._rem.get(CA_TRIGGERS):
             await self._start_reminder()
-        # Plan around tomorrow's solar: only meaningful when charging to a target.
-        if strategy in (MODE_TARGET, MODE_SMART_SOLAR):
-            self._planner = SolarPlanner(self.hass, self.entry.entry_id, self,
-                                         lambda: self._opts)
-            await self._planner.async_start()
-
-        # A calendar as the departure source: read its upcoming events now and
-        # every 10 minutes (the entity's own attributes only show one event).
-        if str(self._opts.get(CA_DEPARTURE_ENTITY) or "").startswith("calendar."):
-            self.hass.async_create_task(self._refresh_calendar())
-            self._unsubs.append(async_track_time_interval(
-                self.hass, self._on_calendar_tick, _CALENDAR_REFRESH))
 
         # Native-schedule arbiter: while we actively control charging, the
         # charger's own schedules are disabled (and restored when we hand back).
