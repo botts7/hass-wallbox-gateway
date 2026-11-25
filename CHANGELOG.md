@@ -4,7 +4,7 @@ All notable changes to the Wallbox BLE Gateway HA integration.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.38.1] - 2026-11-25
 
 ### Changed
 - **The floor at any time waits for today's sun when it will get there.**
