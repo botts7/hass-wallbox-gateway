@@ -9,12 +9,21 @@ tagged, so a cancelled countdown is cleared and a started one is replaced by
 "Charging now". The HA companion app understands all of these keys; other
 notify services ignore what they don't know.
 
+Only a countdown outside the cheap window is urgent (a daytime top-up the
+user may want to stop). The nightly in-window countdown (~02:50) stays normal
+priority, tagged only, so it never wakes anyone.
+
 Pure, HA-free; charge_assistant.py does the I/O.
 """
 
 from __future__ import annotations
 
 GRACE_TAG = "wb_ca_grace"
+
+
+def tagged(data: dict, tag: str = GRACE_TAG) -> dict:
+    """``data`` with the tag only: replaceable / clearable, normal priority."""
+    return {**data, "tag": tag}
 
 
 def time_sensitive(data: dict, tag: str = GRACE_TAG) -> dict:
